@@ -5,6 +5,16 @@ namespace QuantDesk.Alpaca.Tests;
 
 public sealed class MarketDataParserTests
 {
+    [Theory]
+    [InlineData("[{\"T\":\"success\",\"msg\":\"connected\"}]", "connected", true)]
+    [InlineData("[{\"T\":\"success\",\"msg\":\"authenticated\"}]", "authenticated", true)]
+    [InlineData("[{\"T\":\"error\",\"code\":402,\"msg\":\"auth failed\"}]", "authenticated", false)]
+    [InlineData("not-json", "authenticated", false)]
+    public void HandshakeValidator_AcceptsOnlyExpectedSuccessMessage(string payload, string expected, bool accepted)
+    {
+        Assert.Equal(accepted, AlpacaStreamHandshake.IsSuccess(payload, expected));
+    }
+
     [Fact]
     public void ParsesValidQuoteAndRejectsInvalidSpread()
     {

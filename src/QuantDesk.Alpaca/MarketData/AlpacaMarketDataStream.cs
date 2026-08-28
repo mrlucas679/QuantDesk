@@ -40,8 +40,12 @@ public sealed class AlpacaMarketDataStream(
         try
         {
             await socket.ConnectAsync(_validatedEndpoint, cancellationToken);
+            string? welcome = await ReceiveMessageAsync(socket, cancellationToken);
+            if (!AlpacaStreamHandshake.IsSuccess(welcome, "connected")) yield break;
             await SendAsync(socket, new { action = "auth", key = _validatedApiKey, secret = _validatedSecretKey }, cancellationToken);
-        await SendAsync(socket, new { action = "subscribe", quotes = symbols, trades = symbols }, cancellationToken);
+            string? authentication = await ReceiveMessageAsync(socket, cancellationToken);
+            if (!AlpacaStreamHandshake.IsSuccess(authentication, "authenticated")) yield break;
+            await SendAsync(socket, new { action = "subscribe", quotes = symbols, trades = symbols }, cancellationToken);
         }
         catch (WebSocketException)
         {
@@ -79,6 +83,20 @@ public sealed class AlpacaMarketDataStream(
         await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
     }
 
+    private static async Task<string?> ReceiveMessageAsync(ClientWebSocket socket, CancellationToken cancellationToken)
+    {
+        byte[] buffer = new byte[8 * 1024];
+        using MemoryStream message = new();
+        WebSocketReceiveResult result;
+        do
+        {
+            result = await socket.ReceiveAsync(buffer, cancellationToken);
+            if (result.MessageType == WebSocketMessageType.Close) return null;
+            message.Write(buffer, 0, result.Count);
+        } while (!result.EndOfMessage);
+        return Encoding.UTF8.GetString(message.ToArray());
+    }
+
     private static Uri ValidateEndpoint(Uri endpoint)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -89,4 +107,30 @@ public sealed class AlpacaMarketDataStream(
 
     private static string ValidateCredential(string value, string name) =>
         string.IsNullOrWhiteSpace(value) ? throw new ArgumentException("Credential is required.", name) : value;
+}
+
+/// <summary>Validates Alpaca's mandatory connection and authentication acknowledgements.</summary>
+public static class AlpacaStreamHandshake
+{
+    public static bool IsSuccess(string? payload, string expectedMessage)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return false;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            JsonElement message = root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0
+                ? root[0]
+                : root;
+            return message.ValueKind == JsonValueKind.Object &&
+                message.TryGetProperty("T", out JsonElement type) &&
+                message.TryGetProperty("msg", out JsonElement text) &&
+                string.Equals(type.GetString(), "success", StringComparison.Ordinal) &&
+                string.Equals(text.GetString(), expectedMessage, StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 }
