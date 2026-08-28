@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.vs
+Docs
+research
+tests
+**/bin
+**/obj
+.env
+.env.*
+!.env.example
+*.user
+*.suo
+*.log
+.output.txt
+

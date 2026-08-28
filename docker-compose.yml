@@ -1,0 +1,19 @@
+services:
+  quantdesk-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    environment:
+      APCA_API_BASE_URL: ${APCA_API_BASE_URL:?Set APCA_API_BASE_URL to the Alpaca paper endpoint}
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:?Set APCA_API_KEY_ID outside this file}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:?Set APCA_API_SECRET_KEY outside this file}
+      QUANTDESK_OPERATOR_KEY: ${QUANTDESK_OPERATOR_KEY:?Set QUANTDESK_OPERATOR_KEY outside this file}
+    restart: unless-stopped

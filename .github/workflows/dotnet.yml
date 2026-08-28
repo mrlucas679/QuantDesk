@@ -1,0 +1,21 @@
+name: dotnet
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore QuantDesk.slnx
+      - run: dotnet build QuantDesk.slnx --no-restore --configuration Release
+      - run: dotnet test QuantDesk.slnx --no-build --configuration Release

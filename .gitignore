@@ -1,0 +1,25 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+.env
+.env.*
+!.env.example
+appsettings.*.local.json
+TestResults/
+coverage/
+artifacts/
+.output.txt
+
+# Private working specifications stay local. Public-facing docs belong under public-docs/.
+Docs/
+research/
+
+# Generated Python environments and test/build artifacts.
+research/python/.venv/
+research/python/**/__pycache__/
+research/python/**/*.pyc
+research/python/**/*.egg-info/
+research/python/.pytest_cache/

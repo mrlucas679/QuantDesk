@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/QuantDesk.Alpaca/QuantDesk.Alpaca.csproj" />
+    <Project Path="src/QuantDesk.Api/QuantDesk.Api.csproj" />
+    <Project Path="src/QuantDesk.Cli/QuantDesk.Cli.csproj" />
+    <Project Path="src/QuantDesk.Domain/QuantDesk.Domain.csproj" />
+    <Project Path="src/QuantDesk.Runtime/QuantDesk.Runtime.csproj" />
+  </Folder>
+  <Folder Name="/harness/">
+    <Project Path="harness/QuantDesk.Harness/QuantDesk.Harness.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/QuantDesk.Alpaca.Tests/QuantDesk.Alpaca.Tests.csproj" />
+    <Project Path="tests/QuantDesk.Api.Tests/QuantDesk.Api.Tests.csproj" />
+    <Project Path="tests/QuantDesk.Architecture.Tests/QuantDesk.Architecture.Tests.csproj" />
+    <Project Path="tests/QuantDesk.Domain.Tests/QuantDesk.Domain.Tests.csproj" />
+    <Project Path="tests/QuantDesk.Runtime.Tests/QuantDesk.Runtime.Tests.csproj" />
+  </Folder>
+</Solution>
