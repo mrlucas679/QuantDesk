@@ -14,6 +14,7 @@ verification evidence; it is not a declaration of live-trading readiness.
 | Control API | Runtime status/readiness, authenticated entry halt and risk-reduction endpoints | Docker HTTP check: 401 without operator key and 200 with it |
 | Docker | Multi-stage .NET API image and compose health check | Image build, host `/health` 200, and container health `healthy` |
 | Concurrency | Bounded event channel with synchronized queue/timestamp bookkeeping | 12,000-event producer/consumer stress test |
+| Performance | Tagged market-pipeline throughput regression gate | 50,000 normalized quotes through the bounded channel and state owner within a 10-second CI budget |
 
 ## Safe local verification
 
