@@ -7,6 +7,7 @@ public sealed class BoundedEventChannel<T>
 {
     private readonly Channel<Entry> _channel;
     private readonly ConcurrentQueue<long> _timestamps = new();
+    private readonly object _bookkeepingGate = new();
     private int _depth;
     private int _highWater;
     private long _oldestEnqueuedTicks;
@@ -36,34 +37,43 @@ public sealed class BoundedEventChannel<T>
 
     public bool TryPublish(T value, long monotonicTimestamp)
     {
-        if (!_channel.Writer.TryWrite(new Entry(value, monotonicTimestamp))) return false;
+        lock (_bookkeepingGate)
+        {
+            if (!_channel.Writer.TryWrite(new Entry(value, monotonicTimestamp))) return false;
 
-        _timestamps.Enqueue(monotonicTimestamp);
-        int depth = Interlocked.Increment(ref _depth);
-        UpdateHighWater(depth);
-        Interlocked.CompareExchange(ref _oldestEnqueuedTicks, monotonicTimestamp, 0);
-        return true;
+            _timestamps.Enqueue(monotonicTimestamp);
+            int depth = Interlocked.Increment(ref _depth);
+            UpdateHighWater(depth);
+            Interlocked.CompareExchange(ref _oldestEnqueuedTicks, monotonicTimestamp, 0);
+            return true;
+        }
     }
 
     public async ValueTask<T> ReadAsync(CancellationToken cancellationToken)
     {
-        Entry entry = await _channel.Reader.ReadAsync(cancellationToken);
-        if (!_timestamps.TryDequeue(out _))
+        while (await _channel.Reader.WaitToReadAsync(cancellationToken))
         {
-            throw new InvalidOperationException("Channel depth and timestamp tracking diverged.");
-        }
+            lock (_bookkeepingGate)
+            {
+                if (!_channel.Reader.TryRead(out Entry entry)) continue;
+                if (!_timestamps.TryDequeue(out _))
+                {
+                    throw new InvalidOperationException("Channel depth and timestamp tracking diverged.");
+                }
 
-        int depth = Interlocked.Decrement(ref _depth);
-        if (depth == 0)
-        {
-            Interlocked.Exchange(ref _oldestEnqueuedTicks, 0);
+                int depth = Interlocked.Decrement(ref _depth);
+                if (depth == 0)
+                {
+                    Interlocked.Exchange(ref _oldestEnqueuedTicks, 0);
+                }
+                else if (_timestamps.TryPeek(out long oldest))
+                {
+                    Interlocked.Exchange(ref _oldestEnqueuedTicks, oldest);
+                }
+                return entry.Value;
+            }
         }
-        else if (_timestamps.TryPeek(out long oldest))
-        {
-            Interlocked.Exchange(ref _oldestEnqueuedTicks, oldest);
-        }
-
-        return entry.Value;
+        throw new ChannelClosedException();
     }
 
     public double OldestMessageAgeMilliseconds(long nowMonotonicTimestamp, double timestampFrequency)
