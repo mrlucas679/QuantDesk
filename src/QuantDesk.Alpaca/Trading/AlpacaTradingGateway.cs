@@ -24,7 +24,7 @@ public sealed class AlpacaTradingGateway(
         using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint("/v2/account"));
         AddCredentials(request);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode) return null;
+        response.EnsureSuccessStatusCode();
         AlpacaAccount? account = await response.Content.ReadFromJsonAsync<AlpacaAccount>(JsonOptions, cancellationToken);
         return account is null || string.IsNullOrWhiteSpace(account.Id)
             ? null
@@ -70,7 +70,8 @@ public sealed class AlpacaTradingGateway(
             Endpoint($"/v2/orders:by_client_order_id?client_order_id={Uri.EscapeDataString(clientOrderId)}"));
         AddCredentials(request);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        if (response.StatusCode == HttpStatusCode.NotFound || !response.IsSuccessStatusCode) return null;
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        response.EnsureSuccessStatusCode();
 
         AlpacaOrder? order = await response.Content.ReadFromJsonAsync<AlpacaOrder>(JsonOptions, cancellationToken);
         return order is null ? null : ToSnapshot(order);
@@ -81,7 +82,7 @@ public sealed class AlpacaTradingGateway(
         using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint("/v2/orders?status=open"));
         AddCredentials(request);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode) return [];
+        response.EnsureSuccessStatusCode();
         List<AlpacaOrder>? orders = await response.Content.ReadFromJsonAsync<List<AlpacaOrder>>(JsonOptions, cancellationToken);
         return orders?.Select(ToSnapshot).ToArray() ?? [];
     }
@@ -91,7 +92,7 @@ public sealed class AlpacaTradingGateway(
         using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint("/v2/positions"));
         AddCredentials(request);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode) return [];
+        response.EnsureSuccessStatusCode();
         List<AlpacaPosition>? positions = await response.Content.ReadFromJsonAsync<List<AlpacaPosition>>(JsonOptions, cancellationToken);
         return positions?
             .Where(position => symbols.TryResolveBySymbol(position.Symbol, out _))

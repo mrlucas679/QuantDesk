@@ -1,6 +1,6 @@
 # QuantDesk
 
-QuantDesk is a paper-trading decision system. The production trading runtime is C#/.NET; Python is reserved for offline research and model development.
+QuantDesk is a paper-trading decision system. The production trading runtime and sole execution authority are C#/.NET; Python provides offline research, validation, and read-only MCP tools.
 
 ## Local configuration
 
@@ -10,6 +10,9 @@ Set these values in your user environment or a local secret store. Never commit 
 $env:APCA_API_BASE_URL = "https://paper-api.alpaca.markets"
 $env:APCA_API_KEY_ID = "your-paper-key"
 $env:APCA_API_SECRET_KEY = "your-paper-secret"
+$env:QUANTDESK_OPERATOR_KEY = "a-long-random-local-operator-key"
+$env:QUANTDESK_SYMBOLS = "SPY"
+$env:QUANTDESK_MAX_PAPER_ORDER_NOTIONAL = "1000"
 ```
 
 Build and test without starting the API:
@@ -32,7 +35,49 @@ Run it only when explicitly needed, with paper credentials injected by the shell
 docker compose up quantdesk-api
 ```
 
-Private specifications and Python research are excluded from the Docker build context.
+Private specifications and Python research dependencies are excluded from the production Docker image.
+
+## First paper trade
+
+Start the API with Docker Compose, then wait until broker reconciliation has completed:
+
+```powershell
+docker compose up -d --build quantdesk-api
+Invoke-RestMethod http://localhost:8080/ready
+```
+
+Submit a small limit order. Use a deliberately conservative limit price for the first connectivity test so it does not fill unexpectedly:
+
+```powershell
+$headers = @{ "X-QuantDesk-Operator-Key" = $env:QUANTDESK_OPERATOR_KEY }
+$order = @{
+  symbol = "SPY"
+  side = "buy"
+  quantity = 1
+  limitPrice = 1.00
+  clientOrderId = "quantdesk-first-paper-trade"
+} | ConvertTo-Json
+
+$submitted = Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:8080/api/paper/orders `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $order
+
+$submitted
+```
+
+Cancel the test order using the returned broker order ID:
+
+```powershell
+Invoke-RestMethod `
+  -Method Delete `
+  -Uri "http://localhost:8080/api/paper/orders/$($submitted.brokerOrderId)" `
+  -Headers $headers
+```
+
+The API accepts paper limit orders only, restricts symbols through `QUANTDESK_SYMBOLS`, rejects orders above `QUANTDESK_MAX_PAPER_ORDER_NOTIONAL`, checks paper-account status and buying power, and requires the operator key. It will not become ready when Alpaca reconciliation fails.
 
 ## MCP Servers
 

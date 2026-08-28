@@ -1,0 +1,45 @@
+[project]
+name = "quantdesk-research"
+version = "0.1.0"
+description = "QuantDesk Python Research Plane"
+requires-python = ">=3.14.7"
+dependencies = [
+    "numpy",
+    "scipy",
+    "polars",
+    "pandas",
+    "duckdb",
+    "pyarrow",
+    "lightgbm",
+    "statsmodels",
+    "arch",
+    "scikit-learn",
+    "pydantic",
+    "pydantic-settings",
+    "tomli; python_version < '3.11'",
+    "pytest",
+    "hypothesis",
+    "ruff",
+    "mypy",
+    "loguru",
+    "psutil",
+    "hmmlearn",
+    "mcp[cli]",
+    "fastmcp",
+    "pytest-asyncio"
+]
+
+[project.optional-dependencies]
+dev = []
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true

@@ -1,0 +1,57 @@
+import numpy as np
+from statsmodels.regression.linear_model import OLS  # type: ignore[import-untyped]
+
+
+class HARModel:
+    """
+    Heterogeneous AutoRegressive (HAR) model for volatility.
+    RV_t = c + beta_d * RV_{t-1} + beta_w * RV_{t-5:t-1} + beta_m * RV_{t-22:t-1} + epsilon_t
+    """
+
+    def __init__(self):
+        self.coefficients = None
+        self.is_fitted = False
+
+    def _prepare_features(self, rv: np.ndarray):
+        n = len(rv)
+        # rv_d: RV_{t-1}
+        # rv_w: average of RV over last 5 days
+        # rv_m: average of RV over last 22 days
+
+        rv_d = rv[21:-1]
+
+        rv_w = np.array([np.mean(rv[i - 5 : i]) for i in range(22, n)])
+        rv_m = np.array([np.mean(rv[i - 22 : i]) for i in range(22, n)])
+
+        y = rv[22:]
+        X = np.column_stack([np.ones(len(y)), rv_d, rv_w, rv_m])
+        return X, y
+
+    def fit(self, rv: np.ndarray):
+        if len(rv) < 23:
+            raise ValueError("Insufficient history for HAR model")
+
+        X, y = self._prepare_features(rv)
+        model = OLS(y, X).fit()
+        self.coefficients = model.params
+        self.is_fitted = True
+
+    def predict(self, rv_d: float, rv_w: float, rv_m: float) -> float:
+        if not self.is_fitted or self.coefficients is None:
+            raise ValueError("Model not fitted")
+        return float(
+            self.coefficients[0]
+            + self.coefficients[1] * rv_d
+            + self.coefficients[2] * rv_w
+            + self.coefficients[3] * rv_m
+        )
+
+    def export_coefficients(self) -> dict:
+        if not self.is_fitted or self.coefficients is None:
+            raise ValueError("Model not fitted")
+        return {
+            "const": float(self.coefficients[0]),
+            "beta_d": float(self.coefficients[1]),
+            "beta_w": float(self.coefficients[2]),
+            "beta_m": float(self.coefficients[3]),
+        }

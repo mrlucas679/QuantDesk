@@ -1,0 +1,20 @@
+# Research Configuration Defaults
+
+random_seed = 42
+data_root = "data"
+artifacts_root = "artifacts"
+experiment_db_path = "experiments.db"
+
+[training]
+default_window_days = 252
+validation_window_days = 63
+test_window_days = 63
+
+[evaluation]
+sharpe_threshold = 1.0
+deflated_sharpe_threshold = 0.5
+pbo_threshold = 0.1
+
+[costs]
+default_fee_bps = 1.0
+default_slippage_bps = 1.0

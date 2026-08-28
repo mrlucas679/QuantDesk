@@ -1,0 +1,7 @@
+# Resource Governor Defaults
+
+max_ram_gb = 8.0
+duckdb_threads = 4
+duckdb_memory_limit_gb = 4.0
+parallel_workers = 4
+min_free_disk_gb = 5.0

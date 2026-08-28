@@ -102,4 +102,14 @@ public interface IBrokerExecutionGateway
 
     Task<IReadOnlyList<BrokerPositionSnapshot>> ListPositionsAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<BrokerPositionSnapshot>>([]);
+
+    Task<BrokerSubmitResult> CancelAsync(string brokerOrderId, CancellationToken cancellationToken) =>
+        Task.FromResult(new BrokerSubmitResult(BrokerSubmitState.Rejected, brokerOrderId, "CANCEL_NOT_SUPPORTED", null));
+
+    Task<BrokerSubmitResult> ReplaceAsync(
+        string brokerOrderId,
+        decimal? quantity,
+        decimal? limitPrice,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new BrokerSubmitResult(BrokerSubmitState.Rejected, brokerOrderId, "REPLACE_NOT_SUPPORTED", null));
 }

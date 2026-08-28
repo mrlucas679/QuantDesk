@@ -15,7 +15,6 @@ artifacts/
 
 # Private working specifications stay local. Public-facing docs belong under public-docs/.
 Docs/
-/research/
 
 # Generated Python environments and test/build artifacts.
 research/python/.venv/
@@ -23,3 +22,6 @@ research/python/**/__pycache__/
 research/python/**/*.pyc
 research/python/**/*.egg-info/
 research/python/.pytest_cache/
+research/python/.mypy_cache/
+research/python/.ruff_cache/
+research/python/artifacts/

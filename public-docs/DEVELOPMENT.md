@@ -14,7 +14,8 @@ inputs and must pass validation before becoming actionable.
 
 ## Paper connectivity checks
 
-These commands are read-only: they do not submit, replace, or cancel orders.
+The first two commands are read-only. `paper-order-smoke` performs the bounded
+paper-order lifecycle described below.
 
 ```powershell
 dotnet run --project src/QuantDesk.Cli -- capabilities
@@ -31,9 +32,9 @@ It submits a single one-share SPY day-limit order at $1, reconciles it by client
 order ID, cancels it immediately, and polls for the terminal canceled state.
 Do not run it against a live account.
 
-Never commit API keys, secrets, account exports, private research, or generated
-runtime state. The private `Docs/` and research workspace are intentionally
-excluded by `.gitignore` and `.dockerignore`.
+Never commit API keys, secrets, account exports, private specifications, or
+generated runtime state. The private `Docs/` workspace is excluded by
+`.gitignore` and `.dockerignore`; the sanitized Python research source is public.
 
 Docker packaging is provided for local paper-only operation; live trading is not
 enabled by this project configuration.
