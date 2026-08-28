@@ -8,7 +8,8 @@ public sealed record FeatureSchemaContract(
     public bool IsValid() => !string.IsNullOrWhiteSpace(SchemaVersion)
         && !string.IsNullOrWhiteSpace(FeatureHash)
         && FeatureNames.Count > 0
-        && FeatureNames.All(name => !string.IsNullOrWhiteSpace(name));
+        && FeatureNames.All(name => !string.IsNullOrWhiteSpace(name))
+        && FeatureNames.Distinct(StringComparer.Ordinal).Count() == FeatureNames.Count;
 }
 
 public sealed record ModelArtifactContract(
@@ -42,7 +43,7 @@ public sealed record ForecastSnapshotContract(
     string FeatureSchemaHash,
     string ArtifactHash,
     string Status,
-    string ReasonCode)
+    string? ReasonCode)
 {
     public bool IsValid() => !string.IsNullOrWhiteSpace(ExpertId)
         && !string.IsNullOrWhiteSpace(ModelId)
@@ -53,7 +54,7 @@ public sealed record ForecastSnapshotContract(
         && !string.IsNullOrWhiteSpace(FeatureSchemaHash)
         && !string.IsNullOrWhiteSpace(ArtifactHash)
         && !string.IsNullOrWhiteSpace(Status)
-        && !string.IsNullOrWhiteSpace(ReasonCode);
+        && (string.Equals(Status, "valid", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(ReasonCode));
 }
 
 public static class ResearchContractValidator
