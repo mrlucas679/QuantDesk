@@ -143,6 +143,26 @@ public sealed class AlpacaTradingGateway(
             : new BrokerSubmitResult(BrokerSubmitState.Acknowledged, order.Id, null, requestId);
     }
 
+    public async Task<BrokerSubmitResult> ClosePositionAsync(
+        int instrumentSlot, CancellationToken cancellationToken)
+    {
+        if (!symbols.TryResolve(instrumentSlot, out string? symbol))
+            return new BrokerSubmitResult(BrokerSubmitState.Rejected, null, "UNKNOWN_INSTRUMENT_SLOT", null);
+        string brokerSymbol = symbol.Replace("/", string.Empty, StringComparison.Ordinal);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Delete,
+            Endpoint($"/v2/positions/{Uri.EscapeDataString(brokerSymbol)}"));
+        AddCredentials(request);
+        using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
+        string? requestId = ReadRequestId(response);
+        if (!response.IsSuccessStatusCode)
+            return new BrokerSubmitResult(BrokerSubmitState.Rejected, null, "BROKER_CLOSE_POSITION_REJECTED", requestId);
+        AlpacaOrder? order = await response.Content.ReadFromJsonAsync<AlpacaOrder>(JsonOptions, cancellationToken);
+        return string.IsNullOrWhiteSpace(order?.Id)
+            ? new BrokerSubmitResult(BrokerSubmitState.Unknown, null, "BROKER_RESPONSE_INVALID", requestId)
+            : new BrokerSubmitResult(BrokerSubmitState.Acknowledged, order.Id, null, requestId);
+    }
+
     private static object CreateOrder(ExecutionCommand command, string symbol)
     {
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal)

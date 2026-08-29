@@ -12,6 +12,7 @@ verification evidence; it is not a declaration of live-trading readiness.
 | Research contracts | Strict Python snake_case schema/artifact/forecast reader with model, artifact, and schema hash validation | Contract-reader tests using Python-compatible payloads |
 | Strategy/risk/options | Directional strategy compiler, costs, actionability/risk gates, committee allocation, options validation and defined-risk payoff calculations | Domain/runtime unit tests |
 | Control API | Runtime status/readiness, authenticated entry halt/risk-reduction, paper limit-order submission/list/cancel, symbol allowlist, buying-power and notional gates | Docker/Alpaca check: readiness after reconciliation, 401 without operator key, accepted non-marketable SPY order, successful cancellation, and absence from open orders |
+| Autonomous execution canary | Opt-in hosted cycle using latest crypto quote, bounded market entry, broker fill/fee-adjusted position reconciliation, exact-quantity exit, liquidation fallback, and flat-account verification | Live Docker/Alpaca BTC/USD round trip: entry and exit filled autonomously; final broker position count zero |
 | Docker | Multi-stage .NET API image and compose health check | Image build, host `/health` 200, and container health `healthy` |
 | Concurrency | Bounded event channel with synchronized queue/timestamp bookkeeping | 12,000-event producer/consumer stress test |
 | Performance | Tagged market-pipeline throughput regression gate | 50,000 normalized quotes through the bounded channel and state owner within a 10-second CI budget |

@@ -17,7 +17,8 @@ public sealed class DictionaryInstrumentSymbolResolver(
     {
         foreach ((int slot, string candidate) in symbols)
         {
-            if (string.Equals(candidate, symbol, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(candidate, symbol, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Normalize(candidate), Normalize(symbol), StringComparison.OrdinalIgnoreCase))
             {
                 instrumentSlot = slot;
                 return true;
@@ -27,5 +28,6 @@ public sealed class DictionaryInstrumentSymbolResolver(
         instrumentSlot = -1;
         return false;
     }
-}
 
+    private static string Normalize(string symbol) => symbol.Replace("/", string.Empty, StringComparison.Ordinal);
+}

@@ -93,6 +93,34 @@ public sealed class AlpacaTradingGatewayTests
         Assert.Null(handler.Request);
     }
 
+    [Fact]
+    public async Task ClosePositionAsync_NormalizesCryptoSymbolForBrokerRoute()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, """
+            {"id":"close-1","client_order_id":"broker-close","status":"pending_new"}
+            """);
+        using var client = new HttpClient(handler);
+        var resolver = new DictionaryInstrumentSymbolResolver(
+            new Dictionary<int, string> { [0] = "BTC/USD" });
+        var gateway = new AlpacaTradingGateway(client, Options(), resolver);
+
+        BrokerSubmitResult result = await gateway.ClosePositionAsync(0, CancellationToken.None);
+
+        Assert.Equal(BrokerSubmitState.Acknowledged, result.State);
+        Assert.Equal("close-1", result.BrokerOrderId);
+        Assert.Equal("/v2/positions/BTCUSD", handler.Request!.RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public void Resolver_MatchesBrokerNormalizedCryptoSymbol()
+    {
+        var resolver = new DictionaryInstrumentSymbolResolver(
+            new Dictionary<int, string> { [4] = "BTC/USD" });
+
+        Assert.True(resolver.TryResolveBySymbol("BTCUSD", out int slot));
+        Assert.Equal(4, slot);
+    }
+
     private static AlpacaOptions Options() => new()
     {
         BaseUrl = new Uri("https://paper-api.alpaca.markets"),

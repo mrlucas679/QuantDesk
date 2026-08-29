@@ -79,6 +79,28 @@ Invoke-RestMethod `
 
 The API accepts paper limit orders only, restricts symbols through `QUANTDESK_SYMBOLS`, rejects orders above `QUANTDESK_MAX_PAPER_ORDER_NOTIONAL`, checks paper-account status and buying power, and requires the operator key. It will not become ready when Alpaca reconciliation fails.
 
+## Autonomous paper execution canary
+
+The API can run a bounded, one-cycle autonomous paper trade without an operator
+submitting an order. It reads Alpaca's latest BTC/USD quote, buys approximately
+$20 of paper BTC, reconciles the actual fee-adjusted position quantity, closes
+that exact quantity, and verifies that the account is flat.
+
+Enable it only in the paper environment:
+
+```powershell
+$env:QUANTDESK_SYMBOLS = "SPY,BTC/USD"
+$env:QUANTDESK_MAX_PAPER_ORDER_NOTIONAL = "25"
+$env:QUANTDESK_AUTONOMOUS_ENABLED = "true"
+$env:QUANTDESK_AUTONOMOUS_SYMBOL = "BTC/USD"
+$env:QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL = "20"
+docker compose up -d --build quantdesk-api
+```
+
+Its observable state is available at `GET /api/autonomous/status`. A successful
+cycle ends in `completed_flat`. The feature is disabled by default so restarting
+the container cannot unexpectedly create repeated paper trades.
+
 ## MCP Servers
 
 QuantDesk Research uses two distinct MCP (Model Context Protocol) servers to maintain clear trust boundaries and security invariants.

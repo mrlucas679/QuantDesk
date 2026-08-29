@@ -112,4 +112,7 @@ public interface IBrokerExecutionGateway
         decimal? limitPrice,
         CancellationToken cancellationToken) =>
         Task.FromResult(new BrokerSubmitResult(BrokerSubmitState.Rejected, brokerOrderId, "REPLACE_NOT_SUPPORTED", null));
+
+    Task<BrokerSubmitResult> ClosePositionAsync(int instrumentSlot, CancellationToken cancellationToken) =>
+        Task.FromResult(new BrokerSubmitResult(BrokerSubmitState.Rejected, null, "CLOSE_POSITION_NOT_SUPPORTED", null));
 }

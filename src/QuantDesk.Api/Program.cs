@@ -18,10 +18,14 @@ builder.Services.AddSingleton<RuntimeModeState>();
 builder.Services.AddSingleton<OperatorKeyAuthorizer>();
 builder.Services.AddSingleton(AlpacaOptions.FromEnvironment());
 builder.Services.AddSingleton(PaperTradingOptions.FromEnvironment());
+builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.FromEnvironment(
+    services.GetRequiredService<PaperTradingOptions>()));
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 builder.Services.AddSingleton<PaperOrderApplicationService>();
+builder.Services.AddSingleton<AutonomousTradingState>();
 builder.Services.AddHostedService<PaperRuntimePreflightService>();
+builder.Services.AddHostedService<AutonomousPaperTradingService>();
 builder.Services.AddHttpClient<IAlpacaCapabilityProbe, AlpacaCapabilityProbe>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
@@ -29,6 +33,10 @@ builder.Services.AddHttpClient<IAlpacaCapabilityProbe, AlpacaCapabilityProbe>(cl
 builder.Services.AddHttpClient<IBrokerExecutionGateway, AlpacaTradingGateway>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddHttpClient<QuantDesk.Alpaca.MarketData.AlpacaLatestCryptoQuoteClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
 });
 
 WebApplication app = builder.Build();
@@ -52,6 +60,8 @@ app.MapGet("/api/system/capabilities", async (
     IAlpacaCapabilityProbe probe,
     CancellationToken cancellationToken) =>
     Results.Ok(await probe.ProbeAsync(cancellationToken)));
+app.MapGet("/api/autonomous/status", (AutonomousTradingState autonomous) =>
+    Results.Ok(autonomous.Snapshot()));
 app.MapPost("/api/system/halt", (
     HttpRequest request,
     RuntimeModeState runtimeMode,
