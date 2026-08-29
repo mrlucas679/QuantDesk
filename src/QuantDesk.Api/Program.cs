@@ -23,6 +23,7 @@ builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.FromEnvi
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 builder.Services.AddSingleton<PaperOrderApplicationService>();
+builder.Services.AddSingleton<CryptoResearchGate>();
 builder.Services.AddSingleton<AutonomousTradingState>();
 builder.Services.AddHostedService<PaperRuntimePreflightService>();
 builder.Services.AddHostedService<AutonomousPaperTradingService>();

@@ -12,6 +12,7 @@ public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
     AlpacaLatestCryptoQuoteClient quoteClient,
+    CryptoResearchGate researchGate,
     AutonomousPaperTradingOptions options,
     RuntimeModeState runtimeMode,
     AutonomousTradingState state,
@@ -54,9 +55,19 @@ public sealed class AutonomousPaperTradingService(
                 string.Equals(position.Symbol, options.Symbol, StringComparison.OrdinalIgnoreCase) && position.Quantity != 0))
             throw new InvalidOperationException("Autonomous canary requires no open orders or existing position in its symbol.");
 
+        CryptoMarketEvidence evidence = await quoteClient.GetEvidenceAsync(options.Symbol, cancellationToken);
+        CryptoResearchDecision decision = researchGate.Evaluate(evidence);
+        if (!decision.Approved)
+        {
+            state.Update("abstained", options.Symbol, reason: decision.Reason);
+            logger.LogInformation(
+                "Research abstained for {Symbol}: {Reason}; expected {ExpectedBps} bps, estimated cost {CostBps} bps.",
+                options.Symbol, decision.Reason, decision.ExpectedReturnBps, decision.EstimatedCostBps);
+            return;
+        }
         if (!symbols.TryResolveBySymbol(options.Symbol, out int slot))
             throw new InvalidOperationException("Autonomous symbol is not mapped to an instrument slot.");
-        decimal ask = await quoteClient.GetAskAsync(options.Symbol, cancellationToken);
+        decimal ask = evidence.Ask;
         decimal quantity = decimal.Round(options.OrderNotional / ask, 8, MidpointRounding.ToZero);
         if (quantity <= 0) throw new InvalidOperationException("Calculated autonomous order quantity is zero.");
 
