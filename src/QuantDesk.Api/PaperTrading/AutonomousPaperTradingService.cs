@@ -28,7 +28,11 @@ public sealed class AutonomousPaperTradingService(
         try
         {
             await WaitUntilReadyAsync(stoppingToken);
-            await ExecuteRoundTripAsync(stoppingToken);
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await ExecuteRoundTripAsync(stoppingToken);
+                await Task.Delay(options.CycleInterval, stoppingToken);
+            }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {

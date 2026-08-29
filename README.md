@@ -94,12 +94,14 @@ $env:QUANTDESK_MAX_PAPER_ORDER_NOTIONAL = "25"
 $env:QUANTDESK_AUTONOMOUS_ENABLED = "true"
 $env:QUANTDESK_AUTONOMOUS_SYMBOL = "BTC/USD"
 $env:QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL = "20"
+$env:QUANTDESK_AUTONOMOUS_CYCLE_INTERVAL_SECONDS = "300"
 docker compose up -d --build quantdesk-api
 ```
 
-Its observable state is available at `GET /api/autonomous/status`. A successful
-cycle ends in `completed_flat`. The feature is disabled by default so restarting
-the container cannot unexpectedly create repeated paper trades.
+Its observable state is available at `GET /api/autonomous/status`. Every
+successful cycle ends in `completed_flat`, waits for the configured interval,
+then repeats while the container remains healthy. The feature is disabled by
+default and must be explicitly enabled for paper-only autonomous testing.
 
 ## MCP Servers
 

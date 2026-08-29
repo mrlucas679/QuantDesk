@@ -7,7 +7,8 @@ public sealed record AutonomousPaperTradingOptions(
     string Symbol,
     decimal OrderNotional,
     TimeSpan HoldDuration,
-    TimeSpan FillTimeout)
+    TimeSpan FillTimeout,
+    TimeSpan CycleInterval)
 {
     public static AutonomousPaperTradingOptions FromEnvironment(PaperTradingOptions trading)
     {
@@ -19,13 +20,20 @@ public sealed record AutonomousPaperTradingOptions(
         decimal notional = ParsePositiveDecimal("QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL", 20m);
         int holdSeconds = ParsePositiveInteger("QUANTDESK_AUTONOMOUS_HOLD_SECONDS", 5);
         int fillTimeoutSeconds = ParsePositiveInteger("QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS", 30);
+        int cycleIntervalSeconds = ParsePositiveInteger("QUANTDESK_AUTONOMOUS_CYCLE_INTERVAL_SECONDS", 300);
 
         if (enabled && !trading.Symbols.Values.Contains(symbol, StringComparer.OrdinalIgnoreCase))
             throw new InvalidOperationException("QUANTDESK_AUTONOMOUS_SYMBOL must be present in QUANTDESK_SYMBOLS.");
         if (notional > trading.MaximumOrderNotional)
             throw new InvalidOperationException("Autonomous order notional exceeds the configured paper-order limit.");
 
-        return new(enabled, symbol, notional, TimeSpan.FromSeconds(holdSeconds), TimeSpan.FromSeconds(fillTimeoutSeconds));
+        return new(
+            enabled,
+            symbol,
+            notional,
+            TimeSpan.FromSeconds(holdSeconds),
+            TimeSpan.FromSeconds(fillTimeoutSeconds),
+            TimeSpan.FromSeconds(cycleIntervalSeconds));
     }
 
     private static decimal ParsePositiveDecimal(string name, decimal fallback)
