@@ -1,4 +1,5 @@
 import shutil
+from typing import TypedDict
 
 import psutil  # type: ignore[import-untyped]
 from loguru import logger
@@ -6,12 +7,17 @@ from loguru import logger
 from quantdesk_research.config import get_resource_config
 
 
+class DuckDbConfig(TypedDict):
+    threads: int
+    memory_limit: str
+
+
 class ResourceGovernor:
-    def __init__(self):
+    def __init__(self) -> None:
         self.config = get_resource_config()
         self._check_initial_state()
 
-    def _check_initial_state(self):
+    def _check_initial_state(self) -> None:
         ram = psutil.virtual_memory()
         total_ram_gb = ram.total / (1024**3)
         logger.info(f"System RAM: {total_ram_gb:.2f} GB")
@@ -25,16 +31,16 @@ class ResourceGovernor:
                 f"Low disk space: {free_disk_gb:.2f} GB < {self.config.min_free_disk_gb} GB"
             )
 
-    def get_duckdb_config(self):
+    def get_duckdb_config(self) -> DuckDbConfig:
         return {
             "threads": self.config.duckdb_threads,
             "memory_limit": f"{self.config.duckdb_memory_limit_gb}GB",
         }
 
-    def get_worker_count(self):
+    def get_worker_count(self) -> int:
         return self.config.parallel_workers
 
-    def check_limits(self):
+    def check_limits(self) -> bool:
         ram = psutil.virtual_memory()
         available_ram_gb = ram.available / (1024**3)
 
@@ -47,5 +53,5 @@ class ResourceGovernor:
 _governor = ResourceGovernor()
 
 
-def get_resource_governor():
+def get_resource_governor() -> ResourceGovernor:
     return _governor

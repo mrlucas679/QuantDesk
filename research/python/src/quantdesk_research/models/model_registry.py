@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -14,9 +15,10 @@ class ModelRegistry:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _init_db(self):
+    def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS models (
@@ -32,7 +34,7 @@ class ModelRegistry:
             """)
             conn.commit()
 
-    def register_model(self, artifact: ModelArtifact, artifact_path: Path):
+    def register_model(self, artifact: ModelArtifact, artifact_path: Path) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -57,7 +59,7 @@ class ModelRegistry:
             f"Registered model {artifact.model_id} (version {artifact.model_version}) in registry."
         )
 
-    def update_promotion_state(self, artifact_id: str, new_state: str):
+    def update_promotion_state(self, artifact_id: str, new_state: str) -> None:
         valid_states = [
             "EXPERIMENTAL",
             "VALIDATED",
@@ -77,7 +79,7 @@ class ModelRegistry:
             conn.commit()
         logger.info(f"Updated model {artifact_id} promotion state to {new_state}.")
 
-    def list_models(self, promotion_state: str | None = None) -> list[dict]:
+    def list_models(self, promotion_state: str | None = None) -> list[dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             if promotion_state:
                 cursor = conn.execute(
@@ -86,5 +88,7 @@ class ModelRegistry:
             else:
                 cursor = conn.execute("SELECT * FROM models")
 
+            if cursor.description is None:
+                return []
             columns = [column[0] for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]

@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any, cast
 
@@ -13,16 +14,8 @@ def chronological_split(
     train_end: exclusive
     test_start: inclusive
     """
-    train = df.filter(
-        pl.col(time_col) < pl.from_epoch(train_end)
-        if isinstance(train_end, int)
-        else pl.col(time_col) < pl.lit(train_end)
-    )
-    test = df.filter(
-        pl.col(time_col) >= pl.from_epoch(test_start)
-        if isinstance(test_start, int)
-        else pl.col(time_col) >= pl.lit(test_start)
-    )
+    train = df.filter(pl.col(time_col) < pl.lit(train_end))
+    test = df.filter(pl.col(time_col) >= pl.lit(test_start))
 
     logger.info(f"Chronological split: {len(train)} train, {len(test)} test")
     return train, test
@@ -30,7 +23,7 @@ def chronological_split(
 
 def get_walk_forward_folds(
     df: pl.DataFrame, time_col: str, train_window_days: int, test_window_days: int, step_days: int
-):
+) -> Iterator[tuple[pl.DataFrame, pl.DataFrame]]:
     """Generate (train, test) folds for walk-forward validation."""
     # Simplified version using days
     min_time = cast(Any, df[time_col].min())

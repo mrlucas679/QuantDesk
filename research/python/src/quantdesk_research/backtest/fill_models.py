@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 
 class FillModel(ABC):
@@ -6,7 +7,7 @@ class FillModel(ABC):
     def get_fill_price(self, bid: float, ask: float, side: str) -> float:
         """Return the simulated execution price for an order."""
 
-    def get_fill_quantity(self, requested_qty: float, **kwargs) -> float:
+    def get_fill_quantity(self, requested_qty: float, **kwargs: Any) -> float:
         return requested_qty
 
 
@@ -16,7 +17,7 @@ class MidpointFillModel(FillModel):
 
 
 class SpreadFillModel(FillModel):
-    def __init__(self, capture_pct: float = 0.0):
+    def __init__(self, capture_pct: float = 0.0) -> None:
         self.capture_pct = capture_pct
 
     def get_fill_price(self, bid: float, ask: float, side: str) -> float:
@@ -36,11 +37,11 @@ class AdverseSelectionFillModel(FillModel):
 
 
 class PartialFillModel(FillModel):
-    def __init__(self, fill_ratio: float = 0.5):
+    def __init__(self, fill_ratio: float = 0.5) -> None:
         self.fill_ratio = fill_ratio
 
     def get_fill_price(self, bid: float, ask: float, side: str) -> float:
         return ask if side == "buy" else bid
 
-    def get_fill_quantity(self, requested_qty: float, **kwargs) -> float:
+    def get_fill_quantity(self, requested_qty: float, **kwargs: Any) -> float:
         return requested_qty * self.fill_ratio

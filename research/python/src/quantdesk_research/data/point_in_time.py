@@ -18,7 +18,9 @@ def as_of_join(
     return left.join_asof(right, on=on, by=by, strategy="backward")
 
 
-def validate_no_lookahead(df: pl.DataFrame, event_time_col: str, available_time_col: str):
+def validate_no_lookahead(
+    df: pl.DataFrame, event_time_col: str, available_time_col: str
+) -> bool:
     """
     Hard failure if event_time > available_time in any row.
     """

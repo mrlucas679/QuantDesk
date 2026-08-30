@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -7,7 +8,7 @@ class PolicyProposal(BaseModel):
     proposal_id: str
     experiment_id: str
     target_expert: str
-    proposed_policy: dict
+    proposed_policy: dict[str, Any]
     rationale: str
     evidence_hash: str
     proposed_by: str

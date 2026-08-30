@@ -43,7 +43,7 @@ FORBIDDEN_PATTERNS = [
 ]
 
 
-def validate_alpaca_config():
+def validate_alpaca_config() -> bool:
     """
     Validates the Alpaca MCP configuration for security invariants.
     Specifically:
@@ -86,7 +86,7 @@ def validate_alpaca_config():
     return True
 
 
-def get_safe_alpaca_env():
+def get_safe_alpaca_env() -> dict[str, str]:
     """
     Returns a dictionary of environment variables for a safe Alpaca MCP server.
     Refuses to generate environment if validation fails.
@@ -108,7 +108,7 @@ def get_safe_alpaca_env():
     return env
 
 
-def get_alpaca_mcp_command():
+def get_alpaca_mcp_command() -> list[str]:
     """
     Returns the command to run the restricted Alpaca MCP server via uvx.
     """

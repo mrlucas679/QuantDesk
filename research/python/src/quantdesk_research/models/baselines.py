@@ -18,11 +18,14 @@ class BaselineModel(ABC):
 class HistoricalMeanBaseline(BaselineModel):
     """Predicts the historical mean of the target."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.mean = 0.0
 
-    def fit(self, X: pl.DataFrame, y: pl.Series):
-        self.mean = y.mean()
+    def fit(self, X: pl.DataFrame, y: pl.Series) -> None:
+        mean = y.mean()
+        if not isinstance(mean, (int, float)):
+            raise TypeError("Historical mean baseline requires a numeric target series")
+        self.mean = float(mean)
 
     def predict(self, X: pl.DataFrame) -> np.ndarray:
         return np.full(len(X), self.mean)

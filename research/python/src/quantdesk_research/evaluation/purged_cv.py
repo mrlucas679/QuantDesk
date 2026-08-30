@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -64,11 +65,11 @@ class CombinatorialPurgedCV:
     CPCV implementation for backtest evaluation.
     """
 
-    def __init__(self, n_folds: int = 10, n_test_folds: int = 2):
+    def __init__(self, n_folds: int = 10, n_test_folds: int = 2) -> None:
         self.n_folds = n_folds
         self.n_test_folds = n_test_folds
 
-    def split(self, df: pl.DataFrame):
+    def split(self, df: pl.DataFrame) -> Iterator[tuple[list[int], list[int]]]:
         # Implementation of combinatorial splits
         # For now, return simple chronological folds as a fallback
         n = len(df)

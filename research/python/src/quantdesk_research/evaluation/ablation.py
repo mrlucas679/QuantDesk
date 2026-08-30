@@ -1,4 +1,5 @@
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from loguru import logger
 
@@ -8,7 +9,11 @@ class AblationTester:
     Tests what happens when specific feature groups or model components are removed.
     """
 
-    def __init__(self, model_trainer: Callable, dataset_builder: Callable):
+    def __init__(
+        self,
+        model_trainer: Callable[[Any], Mapping[str, float]],
+        dataset_builder: Callable[[list[str]], Any],
+    ) -> None:
         self.model_trainer = model_trainer
         self.dataset_builder = dataset_builder
 
@@ -33,4 +38,4 @@ class AblationTester:
     def _train_and_eval(self, features: list[str]) -> float:
         dataset = self.dataset_builder(features)
         metrics = self.model_trainer(dataset)
-        return metrics.get("sharpe", metrics.get("score", 0.0))
+        return float(metrics.get("sharpe", metrics.get("score", 0.0)))

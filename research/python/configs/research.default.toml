@@ -3,7 +3,7 @@
 random_seed = 42
 data_root = "data"
 artifacts_root = "artifacts"
-experiment_db_path = "experiments.db"
+experiment_db_path = "data/experiments.db"
 
 [training]
 default_window_days = 252

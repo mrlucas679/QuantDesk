@@ -1,13 +1,14 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from loguru import logger
 
 from quantdesk_research.resource_governor import get_resource_governor
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(prog="quantdesk-research")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -26,6 +27,10 @@ def main():
     # MCP
     mcp_parser = subparsers.add_parser("mcp")
     mcp_parser.add_argument("--port", type=int, default=8000)
+
+    worker_parser = subparsers.add_parser("worker")
+    worker_parser.add_argument("--data-root", type=str, default="/app/data")
+    worker_parser.add_argument("--interval-seconds", type=int, default=21_600)
 
     args = parser.parse_args()
 
@@ -58,7 +63,14 @@ def main():
         from quantdesk_research.mcp.server import mcp
 
         logger.info(f"Starting MCP server on port {args.port}...")
-        mcp.run()
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=args.port)
+
+    elif args.command == "worker":
+        if args.interval_seconds < 60:
+            parser.error("--interval-seconds must be at least 60 to prevent uncontrolled retraining.")
+        from quantdesk_research.runtime.research_worker import run_forever
+
+        run_forever(Path(args.data_root), args.interval_seconds)
 
     elif args.command is None:
         parser.print_help()

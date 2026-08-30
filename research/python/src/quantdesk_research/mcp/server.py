@@ -1,10 +1,14 @@
 import os
 import shutil
 import sys
+from pathlib import Path
+from typing import Any
 
 import psutil  # type: ignore[import-untyped]
 from fastmcp import FastMCP
 from loguru import logger
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from quantdesk_research.config import get_research_config
 from quantdesk_research.evaluation.trial_ledger import TrialLedger
@@ -25,8 +29,54 @@ if (
     # but we warn that the separate Alpaca server might be insecure.
 
 
+def _validated_models() -> list[dict[str, Any]]:
+    config = get_research_config()
+    registry = ModelRegistry(str(config.experiment_db_path))
+    return registry.list_models(promotion_state="VALIDATED")
+
+
+def _microstructure_status() -> dict[str, int | str]:
+    """Summarize raw order-book evidence without treating it as a validated model."""
+    root = get_research_config().data_root
+    records = _count_jsonl(root / "orderbook-events")
+    gaps = _count_jsonl(root / "microstructure-gaps")
+    status = "SHADOW_ONLY" if records < 100_000 or gaps > 0 else "EVIDENCE_READY"
+    return {"records": records, "gaps": gaps, "status": status}
+
+
+def _count_jsonl(directory: Path) -> int:
+    """Count non-empty JSONL rows in a data directory without mutating evidence."""
+    return sum(
+        1
+        for path in directory.glob("*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ) if directory.exists() else 0
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_endpoint(_request: Request) -> JSONResponse:
+    """Expose process health for container and C# runtime supervision."""
+    return JSONResponse({"status": "HEALTHY"})
+
+
+@mcp.custom_route("/readiness", methods=["GET"])
+async def readiness_endpoint(_request: Request) -> JSONResponse:
+    """Expose evidence-bearing research readiness without enabling execution."""
+    models = _validated_models()
+    payload = {
+        "ready": bool(models),
+        "validated_model_count": len(models),
+        "features_ready": bool(models),
+        "experts_ready": bool(models),
+        "reason": "validated_models_available" if models else "no_validated_models",
+        "microstructure": _microstructure_status(),
+    }
+    return JSONResponse(payload, status_code=200 if models else 503)
+
+
 @mcp.tool()
-def quantdesk_get_system_health() -> dict:
+def quantdesk_get_system_health() -> dict[str, str | float]:
     """Get the health status and resource usage of the QuantDesk research plane."""
     ram = psutil.virtual_memory()
     usage = shutil.disk_usage(".")
@@ -39,7 +89,7 @@ def quantdesk_get_system_health() -> dict:
 
 
 @mcp.tool()
-def quantdesk_list_experiments() -> list:
+def quantdesk_list_experiments() -> list[str]:
     """List all recorded experiments from the ledger."""
     ledger = TrialLedger()
     try:
@@ -50,15 +100,13 @@ def quantdesk_list_experiments() -> list:
 
 
 @mcp.tool()
-def quantdesk_list_validated_models() -> list:
+def quantdesk_list_validated_models() -> list[dict[str, Any]]:
     """List all models in VALIDATED promotion state."""
-    config = get_research_config()
-    registry = ModelRegistry(str(config.experiment_db_path))
-    return registry.list_models(promotion_state="VALIDATED")
+    return _validated_models()
 
 
 @mcp.tool()
-def quantdesk_get_risk_summary() -> dict:
+def quantdesk_get_risk_summary() -> dict[str, str | float]:
     """Get a summary of current research-side risk metrics."""
     # In research mode, this might come from the latest backtest or shadow audit
     return {
@@ -70,18 +118,20 @@ def quantdesk_get_risk_summary() -> dict:
 
 
 @mcp.tool()
-def quantdesk_run_shadow_audit(recorded_events: list[dict], runtime_state: dict) -> dict:
+def quantdesk_run_shadow_audit(
+    recorded_events: list[dict[str, Any]], runtime_state: dict[str, Any]
+) -> dict[str, Any]:
     """
     Run a shadow audit comparing research reconstruction with runtime state.
     recorded_events: list of trade/price events.
     runtime_state: current state from C# agent.
     """
     auditor = ShadowAuditor()
-    return auditor.audit(recorded_events, runtime_state)
+    return auditor.audit(recorded_events, runtime_state).model_dump(mode="json")
 
 
 @mcp.tool()
-async def quantdesk_security_audit() -> dict:
+async def quantdesk_security_audit() -> dict[str, str | int | list[str]]:
     """Verify that no execution tools are exposed on the QuantDesk server."""
     tools = await mcp.list_tools()
     all_tools = [t.name for t in tools]

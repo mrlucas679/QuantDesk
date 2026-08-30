@@ -1,4 +1,7 @@
-def check_option_surface_sanity(quotes: list[dict]) -> dict:
+from typing import Any
+
+
+def check_option_surface_sanity(quotes: list[dict[str, Any]]) -> dict[str, bool | list[str]]:
     """
     Static sanity and arbitrage diagnostics for an options surface.
     quotes: list of dictionaries with strike, call_price, put_price, type, etc.

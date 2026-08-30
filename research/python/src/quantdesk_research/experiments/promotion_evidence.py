@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from quantdesk_research.contracts.model_artifact import ModelArtifact
 
@@ -10,27 +11,27 @@ class PromotionEvidence(BaseModel):
     model_id: str
     model_version: str
 
-    statistical_metrics: dict
-    economic_metrics: dict
+    statistical_metrics: dict[str, Any]
+    economic_metrics: dict[str, Any]
     actionability_score: float
 
-    calibration_report: dict
-    support_domain: dict
+    calibration_report: dict[str, Any]
+    support_domain: dict[str, Any]
 
-    robustness_summary: dict
-    ablation_summary: dict | None = None
+    robustness_summary: dict[str, Any]
+    ablation_summary: dict[str, Any] | None = None
 
     pbo_value: float | None = None
     deflated_sharpe: float | None = None
 
-    timestamp: datetime = datetime.now(UTC)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 def generate_promotion_evidence(
     artifact: ModelArtifact,
-    economic_utility: dict,
+    economic_utility: dict[str, Any],
     actionability_score: float,
-    robustness_results: dict,
+    robustness_results: dict[str, Any],
     pbo: float | None = None,
     dsr: float | None = None,
 ) -> PromotionEvidence:

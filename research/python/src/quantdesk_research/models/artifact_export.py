@@ -1,16 +1,17 @@
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from quantdesk_research.contracts.model_artifact import ModelArtifact
 
 
 class ArtifactExporter:
-    def __init__(self, artifacts_root: Path):
+    def __init__(self, artifacts_root: Path) -> None:
         self.artifacts_root = artifacts_root
         self.artifacts_root.mkdir(parents=True, exist_ok=True)
 
-    def export(self, artifact: ModelArtifact, model_payload: dict):
+    def export(self, artifact: ModelArtifact, model_payload: dict[str, Any]) -> Path:
         """
         Export model and manifest in a C#-consumable format.
         Manifest contains provenance and schema information.

@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 import polars as pl
 
@@ -10,13 +11,13 @@ def walk_forward_validation(
     train_size: timedelta,
     test_size: timedelta,
     step_size: timedelta,
-    model_factory,
-    eval_func,
-):
+    model_factory: Callable[[], Any],
+    eval_func: Callable[[Any, pl.DataFrame], dict[str, Any]],
+) -> list[dict[str, Any]]:
     """
     Perform walk-forward validation.
     """
-    results = []
+    results: list[dict[str, Any]] = []
     start_time = cast(datetime, df[time_col].min())
     end_time = cast(datetime, df[time_col].max())
 

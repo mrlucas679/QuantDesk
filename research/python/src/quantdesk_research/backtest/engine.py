@@ -1,9 +1,14 @@
+from typing import Any
+
 import polars as pl
 from loguru import logger
 
 from quantdesk_research.backtest.fill_models import FillModel
 from quantdesk_research.backtest.transaction_costs import TransactionCostModel
 from quantdesk_research.evaluation.metrics import calculate_max_drawdown, calculate_sharpe_ratio
+
+EventRecord = dict[str, Any]
+BacktestReport = dict[str, Any]
 
 
 class BacktestEngine:
@@ -13,7 +18,7 @@ class BacktestEngine:
         cost_model: TransactionCostModel | None = None,
         fill_model: FillModel | None = None,
         deterministic: bool = True,
-    ):
+    ) -> None:
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.positions: dict[str, float] = {}  # instrument -> quantity
@@ -22,11 +27,11 @@ class BacktestEngine:
         self.cost_model = cost_model
         self.fill_model = fill_model
         self.deterministic = deterministic
-        self.trades: list[dict] = []
-        self.equity_curve: list[dict] = []
+        self.trades: list[EventRecord] = []
+        self.equity_curve: list[EventRecord] = []
         self.realized_pnl = 0.0
 
-    def run(self, events: pl.DataFrame):
+    def run(self, events: pl.DataFrame) -> BacktestReport:
         """
         Deterministic event-based simulation.
         events: must contain 'timestamp', 'type', 'symbol', 'price' (or 'bid'/'ask')
@@ -40,9 +45,12 @@ class BacktestEngine:
         # We'll use a secondary sort key to ensure deterministic behavior
         event_priority = {"bar": 0, "quote": 1, "signal": 2}
 
+        def event_priority_for(event_type: object) -> int:
+            return event_priority.get(str(event_type), 9)
+
         sorted_events = events.with_columns(
             pl.col("type")
-            .map_elements(lambda t: event_priority.get(t, 9), return_dtype=pl.Int32)
+            .map_elements(event_priority_for, return_dtype=pl.Int32)
             .alias("priority")
         ).sort(["timestamp", "priority"])
 
@@ -52,7 +60,7 @@ class BacktestEngine:
 
         return self._generate_report()
 
-    def _handle_event(self, event: dict):
+    def _handle_event(self, event: EventRecord) -> None:
         symbol = event.get("symbol")
         event_type = event.get("type")
 
@@ -68,7 +76,7 @@ class BacktestEngine:
         if event_type == "signal":
             self._execute_signal(event)
 
-    def _execute_signal(self, signal: dict):
+    def _execute_signal(self, signal: EventRecord) -> None:
         symbol = signal["symbol"]
         target_qty = signal["quantity"]
         current_qty = self.positions.get(symbol, 0.0)
@@ -154,7 +162,7 @@ class BacktestEngine:
             }
         )
 
-    def _record_state(self, timestamp):
+    def _record_state(self, timestamp: object) -> None:
         # Value positions
         unrealized_pnl = 0.0
         for symbol, qty in self.positions.items():
@@ -180,7 +188,7 @@ class BacktestEngine:
             }
         )
 
-    def _generate_report(self):
+    def _generate_report(self) -> BacktestReport:
         final_equity = self.equity_curve[-1]["equity"] if self.equity_curve else self.initial_cash
 
         # Calculate metrics

@@ -7,11 +7,11 @@ from quantdesk_research.contracts.experiment import Experiment
 
 
 class SQLiteExperimentRegistry:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._init_db()
 
-    def _init_db(self):
+    def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS experiments (
@@ -30,7 +30,7 @@ class SQLiteExperimentRegistry:
                 )
             """)
 
-    def record_experiment(self, exp: Experiment):
+    def record_experiment(self, exp: Experiment) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """

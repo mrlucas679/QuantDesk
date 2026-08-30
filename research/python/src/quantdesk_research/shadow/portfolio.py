@@ -1,10 +1,19 @@
+from typing import Any, TypedDict
+
+
+class ReconstructedPortfolio(TypedDict):
+    holdings: dict[str, float]
+    average_prices: dict[str, float]
+    realized_pnl: float
+
+
 class PortfolioReconstructor:
-    def __init__(self):
-        self.holdings = {}  # symbol -> quantity
-        self.average_prices = {}  # symbol -> average_price
+    def __init__(self) -> None:
+        self.holdings: dict[str, float] = {}
+        self.average_prices: dict[str, float] = {}
         self.realized_pnl = 0.0
 
-    def apply_trade(self, symbol: str, quantity: float, price: float):
+    def apply_trade(self, symbol: str, quantity: float, price: float) -> None:
         old_qty = self.holdings.get(symbol, 0.0)
         new_qty = old_qty + quantity
 
@@ -42,13 +51,15 @@ class PortfolioReconstructor:
             self.holdings[symbol] = 0.0
             self.average_prices[symbol] = 0.0
 
-    def reconstruct_from_events(self, events: list[dict]):
+    def reconstruct_from_events(self, events: list[dict[str, Any]]) -> dict[str, float]:
         for event in events:
             if event["type"] == "trade":
                 self.apply_trade(event["symbol"], event["quantity"], event.get("price", 0.0))
         return self.holdings
 
-    def reconstruct_detailed_from_events(self, events: list[dict]):
+    def reconstruct_detailed_from_events(
+        self, events: list[dict[str, Any]]
+    ) -> ReconstructedPortfolio:
         self.holdings = {}
         self.average_prices = {}
         self.realized_pnl = 0.0

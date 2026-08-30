@@ -5,7 +5,7 @@ from loguru import logger
 from quantdesk_research.config import get_logging_config
 
 
-def setup_logging():
+def setup_logging() -> None:
     config = get_logging_config()
 
     logger.remove()

@@ -2,7 +2,7 @@ from loguru import logger
 
 
 class ActionabilityGate:
-    def __init__(self, fee_bps: float = 1.0, slippage_bps: float = 1.0):
+    def __init__(self, fee_bps: float = 1.0, slippage_bps: float = 1.0) -> None:
         self.fee_bps = fee_bps
         self.slippage_bps = slippage_bps
 
@@ -24,7 +24,7 @@ class ActionabilityGate:
 
 class EconomicUtility:
     @staticmethod
-    def calculate_utility(pnl: float, max_drawdown: float, turnover: float) -> dict:
+    def calculate_utility(pnl: float, max_drawdown: float, turnover: float) -> dict[str, float]:
         return {
             "pnl": pnl,
             "max_drawdown": max_drawdown,

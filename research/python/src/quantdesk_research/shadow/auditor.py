@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 from loguru import logger
 
@@ -8,11 +9,13 @@ from quantdesk_research.shadow.portfolio import PortfolioReconstructor
 
 
 class ShadowAuditor:
-    def __init__(self):
+    def __init__(self) -> None:
         self.reconstructor = PortfolioReconstructor()
         self.exposure_calc = ExposureCalculator()
 
-    def audit(self, recorded_events: list[dict], runtime_state: dict) -> ShadowAudit:
+    def audit(
+        self, recorded_events: list[dict[str, Any]], runtime_state: dict[str, Any]
+    ) -> ShadowAudit:
         """
         Independently reconstruct state from immutable events and compare with runtime_state.
         Purpose: reduce common-mode defects and provide independent verification.

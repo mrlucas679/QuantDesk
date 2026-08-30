@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from datetime import UTC, datetime
+from typing import Any
 
 from loguru import logger
 
@@ -18,7 +19,7 @@ class TrialLedger:
         self.db_path = db_path or str(config.experiment_db_path)
         self._init_db()
 
-    def _init_db(self):
+    def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS trials (
@@ -38,7 +39,7 @@ class TrialLedger:
             """)
             conn.commit()
 
-    def record_trial(self, trial_data: dict):
+    def record_trial(self, trial_data: dict[str, Any]) -> None:
         trial_id = trial_data.get("trial_id") or f"trial_{datetime.now(UTC).timestamp()}"
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -73,7 +74,8 @@ class TrialLedger:
                 "SELECT COUNT(*) FROM trials WHERE hypothesis_family_id = ?",
                 (hypothesis_family_id,),
             )
-            return cursor.fetchone()[0]
+            row = cursor.fetchone()
+            return int(row[0]) if row is not None else 0
 
     def get_all_sharpe_ratios(self, hypothesis_family_id: str) -> list[float]:
         with sqlite3.connect(self.db_path) as conn:

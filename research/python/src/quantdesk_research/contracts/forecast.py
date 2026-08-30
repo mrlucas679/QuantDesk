@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -12,7 +13,7 @@ class Forecast(BaseModel):
     forecast_family: str
     horizon_minutes: int
     point_forecast: float
-    prediction_interval: dict | None = None
+    prediction_interval: dict[str, Any] | None = None
     confidence: float
     calibration_status: str
     support_domain_status: str

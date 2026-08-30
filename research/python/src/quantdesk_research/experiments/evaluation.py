@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any, cast
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class AgentEvalCase:
     seed: int
 
 
-def evaluate_model(case, pipeline) -> EvalResult:
+def evaluate_model(case: QuantEvalCase, pipeline: Any) -> EvalResult:
     dataset = pipeline.load_point_in_time(case)
     splits = pipeline.build_splits(dataset, case)
     pipeline.validate_no_leakage(splits, case)
@@ -51,9 +52,12 @@ def evaluate_model(case, pipeline) -> EvalResult:
         case,
     )
 
-    return pipeline.build_result(
-        case,
-        baselines,
-        challenger,
-        economic,
+    return cast(
+        EvalResult,
+        pipeline.build_result(
+            case,
+            baselines,
+            challenger,
+            economic,
+        ),
     )

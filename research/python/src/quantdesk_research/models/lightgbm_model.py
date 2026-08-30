@@ -1,10 +1,14 @@
+from typing import Any, Literal
+
 import lightgbm as lgb
+import numpy as np
+from numpy.typing import NDArray
 
 from quantdesk_research.resource_governor import get_resource_governor
 
 
 class LightGBMModel:
-    def __init__(self, params=None, seed: int = 42):
+    def __init__(self, params: dict[str, Any] | None = None, seed: int = 42) -> None:
         gov = get_resource_governor()
         gov.get_duckdb_config()  # Use similar thread limit
 
@@ -20,18 +24,25 @@ class LightGBMModel:
             "n_jobs": gov.get_worker_count(),  # Enforce resource governance
             "device": "cpu",  # P1 Requirement: No GPU required
         }
-        self.model = None
+        self.model: lgb.Booster | None = None
 
-    def train(self, X_train, y_train, X_valid=None, y_valid=None, feature_names=None):
+    def train(
+        self,
+        x_train: NDArray[np.float64],
+        y_train: NDArray[np.float64],
+        x_valid: NDArray[np.float64] | None = None,
+        y_valid: NDArray[np.float64] | None = None,
+        feature_names: list[str] | Literal["auto"] = "auto",
+    ) -> None:
         gov = get_resource_governor()
         if not gov.check_limits():
             raise RuntimeWarning("Resource limits reached, training may fail.")
 
-        train_data = lgb.Dataset(X_train, label=y_train, feature_name=feature_names)
-        valid_sets = []
-        if X_valid is not None and y_valid is not None:
+        train_data = lgb.Dataset(x_train, label=y_train, feature_name=feature_names)
+        valid_sets: list[lgb.Dataset] = []
+        if x_valid is not None and y_valid is not None:
             valid_data = lgb.Dataset(
-                X_valid, label=y_valid, feature_name=feature_names, reference=train_data
+                x_valid, label=y_valid, feature_name=feature_names, reference=train_data
             )
             valid_sets = [valid_data]
 
@@ -43,10 +54,10 @@ class LightGBMModel:
             callbacks=[lgb.early_stopping(stopping_rounds=50)] if valid_sets else [],
         )
 
-    def predict(self, X):
+    def predict(self, features: NDArray[np.float64]) -> NDArray[np.float64]:
         if self.model is None:
             raise ValueError("Model not trained")
-        return self.model.predict(X)
+        return np.asarray(self.model.predict(features), dtype=np.float64)
 
     def get_feature_importance(self) -> dict[str, float]:
         if self.model is None:

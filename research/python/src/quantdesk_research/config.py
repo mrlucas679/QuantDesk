@@ -1,7 +1,33 @@
 from pathlib import Path
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
+
+
+class TomlBackedSettings(BaseSettings):
+    """Loads declared TOML defaults while preserving environment overrides."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            TomlConfigSettingsSource(settings_cls),
+            file_secret_settings,
+        )
 
 
 class TrainingConfig(BaseSettings):
@@ -21,20 +47,20 @@ class CostsConfig(BaseSettings):
     default_slippage_bps: float = 1.0
 
 
-class ResearchConfig(BaseSettings):
+class ResearchConfig(TomlBackedSettings):
     model_config = SettingsConfigDict(toml_file="configs/research.default.toml")
 
     random_seed: int = 42
     data_root: Path = Path("data")
     artifacts_root: Path = Path("artifacts")
-    experiment_db_path: Path = Path("experiments.db")
+    experiment_db_path: Path = Path("data/experiments.db")
 
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     costs: CostsConfig = Field(default_factory=CostsConfig)
 
 
-class ResourceConfig(BaseSettings):
+class ResourceConfig(TomlBackedSettings):
     model_config = SettingsConfigDict(toml_file="configs/resource.default.toml")
 
     max_ram_gb: float = 8.0
@@ -44,7 +70,7 @@ class ResourceConfig(BaseSettings):
     min_free_disk_gb: float = 5.0
 
 
-class LoggingConfig(BaseSettings):
+class LoggingConfig(TomlBackedSettings):
     model_config = SettingsConfigDict(toml_file="configs/logging.default.toml")
 
     level: str = "INFO"

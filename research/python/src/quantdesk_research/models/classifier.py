@@ -1,13 +1,15 @@
 import lightgbm as lgb
+import numpy as np
+from numpy.typing import NDArray
 
 
 def train_direction_classifier(
-    X_train,
-    y_train,
-    X_valid,
-    y_valid,
+    X_train: NDArray[np.float64],
+    y_train: NDArray[np.int_],
+    X_valid: NDArray[np.float64],
+    y_valid: NDArray[np.int_],
     seed: int,
-):
+) -> lgb.LGBMClassifier:
     model = lgb.LGBMClassifier(
         objective="multiclass",
         num_class=3,
