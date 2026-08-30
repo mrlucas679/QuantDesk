@@ -26,6 +26,7 @@ public static class PythonResearchContractReader
         using JsonDocument document = Parse(json);
         JsonElement root = RequireObject(document.RootElement);
         JsonElement supportDomain = RequireProperty(root, "support_domain");
+        JsonElement evidence = RequireProperty(root, "evidence_profile");
         if (supportDomain.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("Model artifact support_domain must be an object.");
         var contract = new ModelArtifactContract(
@@ -35,6 +36,9 @@ public static class PythonResearchContractReader
             RequirePropertyString(root, "feature_schema_hash"),
             RequirePropertyString(root, "artifact_hash"),
             RequirePropertyString(root, "evidence_grade"),
+            ReadEvidenceProfile(evidence),
+            RequireArray(root, "validation_gates").EnumerateArray()
+                .Select(value => RequireString(value, "validation_gates[]")).ToArray(),
             supportDomain.GetRawText(),
             RequireTimestamp(root, "creation_timestamp"));
         return contract.IsValid() ? contract : throw new InvalidDataException("Model artifact contract is invalid.");
@@ -76,6 +80,25 @@ public static class PythonResearchContractReader
         {
             throw new InvalidDataException("Forecast does not match its approved model artifact and feature schema.");
         }
+        if (!artifact.EvidenceProfile.IsExecutionEligible())
+            throw new InvalidDataException("Model artifact evidence transfer is not execution-eligible.");
+        if (!artifact.HasRequiredExecutionGates())
+            throw new InvalidDataException("Model artifact is missing required execution validation gates.");
+    }
+
+    private static EvidenceProfileContract ReadEvidenceProfile(JsonElement evidence)
+    {
+        JsonElement root = RequireObject(evidence);
+        string[] primaryIds = RequireArray(root, "primary_evidence_ids")
+            .EnumerateArray().Select(value => RequireString(value, "primary_evidence_ids[]")).ToArray();
+        var profile = new EvidenceProfileContract(
+            RequirePropertyString(root, "evidence_id"),
+            RequirePropertyString(root, "economic_hypothesis"),
+            RequirePropertyString(root, "counter_hypothesis"),
+            primaryIds,
+            RequirePropertyString(root, "transfer_grade"),
+            RequirePropertyString(root, "transfer_reason"));
+        return profile.IsValid() ? profile : throw new InvalidDataException("Artifact evidence profile is invalid.");
     }
 
     private static JsonDocument Parse(string json)

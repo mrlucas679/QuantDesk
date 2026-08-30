@@ -16,6 +16,17 @@ public sealed class MarketDataParserTests
     }
 
     [Fact]
+    public void SubscriptionValidator_RequiresEveryRequestedMarketDataChannel()
+    {
+        const string accepted = "[{\"T\":\"subscription\",\"trades\":[\"BTC/USD\"],\"quotes\":[\"BTC/USD\"],\"orderbooks\":[\"BTC/USD\"]}]";
+        const string missingTrade = "[{\"T\":\"subscription\",\"trades\":[],\"quotes\":[\"BTC/USD\"]}]";
+
+        Assert.True(AlpacaStreamHandshake.IsSubscriptionAccepted(accepted, ["BTC/USD"]));
+        Assert.False(AlpacaStreamHandshake.IsSubscriptionAccepted(missingTrade, ["BTC/USD"]));
+        Assert.False(AlpacaStreamHandshake.IsSubscriptionAccepted("[{\"T\":\"error\",\"msg\":\"invalid subscription\"}]", ["BTC/USD"]));
+    }
+
+    [Fact]
     public void ParsesValidQuoteAndRejectsInvalidSpread()
     {
         var parser = new AlpacaMarketDataParser(new Dictionary<string, int> { ["AAPL"] = 7 });
@@ -42,6 +53,22 @@ public sealed class MarketDataParserTests
         Assert.Equal(MarketEventKind.Quote, value.Kind);
         const string batch = "[{\"T\":\"q\",\"S\":\"AAPL\",\"bp\":100,\"ap\":101},{\"T\":\"t\",\"S\":\"AAPL\",\"p\":100.5,\"s\":2}]";
         Assert.Equal(2, parser.ParseMany(batch, 1).Count);
+    }
+
+    [Fact]
+    public void ParsesOrderBookResetAndIncrementalDepth()
+    {
+        var parser = new AlpacaMarketDataParser(new Dictionary<string, int> { ["BTC/USD"] = 1 });
+        const string reset = "{\"T\":\"o\",\"S\":\"BTC/USD\",\"t\":\"2026-08-28T12:00:00Z\",\"r\":true,\"b\":[{\"p\":100,\"s\":2}],\"a\":[{\"p\":101,\"s\":3}]}";
+        const string incremental = "{\"T\":\"o\",\"S\":\"BTC/USD\",\"t\":\"2026-08-28T12:00:01Z\",\"b\":[{\"p\":100,\"s\":4}],\"a\":[]}";
+
+        Assert.True(parser.TryParse(reset, 1, out NormalizedMarketEvent initial));
+        Assert.Equal(MarketEventKind.OrderBook, initial.Kind);
+        Assert.Equal(2, initial.OrderBook.BidDepth);
+        Assert.Equal(3, initial.OrderBook.AskDepth);
+        Assert.True(parser.TryParse(incremental, 2, out NormalizedMarketEvent updated));
+        Assert.Equal(4, updated.OrderBook.BidDepth);
+        Assert.Equal(3, updated.OrderBook.AskDepth);
     }
 
     [Fact]

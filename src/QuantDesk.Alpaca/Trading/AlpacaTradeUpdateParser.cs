@@ -22,6 +22,12 @@ public static class AlpacaTradeUpdateParser
     {
         update = default;
         JsonElement root = document.RootElement;
+        if (root.TryGetProperty("stream", out JsonElement stream) &&
+            string.Equals(stream.GetString(), "trade_updates", StringComparison.Ordinal) &&
+            root.TryGetProperty("data", out JsonElement data) && data.ValueKind == JsonValueKind.Object)
+        {
+            root = data;
+        }
         string? eventName = root.TryGetProperty("event", out JsonElement eventElement) ? eventElement.GetString() : null;
         JsonElement order = root.TryGetProperty("order", out JsonElement orderElement) ? orderElement : root;
         string? clientId = Read(order, "client_order_id");

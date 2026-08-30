@@ -19,6 +19,8 @@ public sealed record ModelArtifactContract(
     string FeatureSchemaHash,
     string ArtifactHash,
     string EvidenceGrade,
+    EvidenceProfileContract EvidenceProfile,
+    IReadOnlyList<string> ValidationGates,
     string SupportDomain,
     DateTimeOffset CreationTimestamp)
 {
@@ -28,7 +30,33 @@ public sealed record ModelArtifactContract(
         && !string.IsNullOrWhiteSpace(FeatureSchemaHash)
         && !string.IsNullOrWhiteSpace(ArtifactHash)
         && !string.IsNullOrWhiteSpace(EvidenceGrade)
+        && EvidenceProfile.IsValid()
+        && ValidationGates.Count > 0
         && !string.IsNullOrWhiteSpace(SupportDomain);
+
+    public bool HasRequiredExecutionGates() =>
+        RequiredExecutionGates.All(gate => ValidationGates.Contains(gate, StringComparer.Ordinal));
+
+    private static readonly string[] RequiredExecutionGates = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R11", "R12"];
+}
+
+public sealed record EvidenceProfileContract(
+    string EvidenceId,
+    string EconomicHypothesis,
+    string CounterHypothesis,
+    IReadOnlyList<string> PrimaryEvidenceIds,
+    string TransferGrade,
+    string TransferReason)
+{
+    public bool IsValid() => !string.IsNullOrWhiteSpace(EvidenceId)
+        && !string.IsNullOrWhiteSpace(EconomicHypothesis)
+        && !string.IsNullOrWhiteSpace(CounterHypothesis)
+        && PrimaryEvidenceIds.Count > 0
+        && PrimaryEvidenceIds.All(id => !string.IsNullOrWhiteSpace(id))
+        && !string.IsNullOrWhiteSpace(TransferGrade)
+        && !string.IsNullOrWhiteSpace(TransferReason);
+
+    public bool IsExecutionEligible() => TransferGrade is "A_Direct" or "B_Close";
 }
 
 public sealed record ForecastSnapshotContract(

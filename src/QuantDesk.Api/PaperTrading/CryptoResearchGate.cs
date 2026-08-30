@@ -6,7 +6,13 @@ public sealed record CryptoResearchDecision(
     bool Approved,
     decimal ExpectedReturnBps,
     decimal EstimatedCostBps,
-    string Reason);
+    string Reason)
+{
+    public decimal MediumMomentumBps { get; init; }
+    public decimal ShortMomentumBps { get; init; }
+    public decimal SpreadBps { get; init; }
+    public int LookbackBars => 13;
+}
 
 public sealed class CryptoResearchGate
 {
@@ -29,10 +35,25 @@ public sealed class CryptoResearchGate
         decimal estimatedCost = spreadBps + RoundTripTakerFeeBps + RoundTripSlippageAllowanceBps;
 
         if (mediumMomentum <= 0 || shortMomentum <= 0)
-            return new(false, expectedReturn, estimatedCost, "MOMENTUM_NOT_ALIGNED");
+            return new CryptoResearchDecision(false, expectedReturn, estimatedCost, "MOMENTUM_NOT_ALIGNED")
+            {
+                MediumMomentumBps = mediumMomentum,
+                ShortMomentumBps = shortMomentum,
+                SpreadBps = spreadBps
+            };
         if (expectedReturn <= estimatedCost + MinimumNetEdgeBps)
-            return new(false, expectedReturn, estimatedCost, "EXPECTED_EDGE_BELOW_COSTS");
-        return new(true, expectedReturn, estimatedCost, "RESEARCH_EDGE_APPROVED");
+            return new CryptoResearchDecision(false, expectedReturn, estimatedCost, "EXPECTED_EDGE_BELOW_COSTS")
+            {
+                MediumMomentumBps = mediumMomentum,
+                ShortMomentumBps = shortMomentum,
+                SpreadBps = spreadBps
+            };
+        return new CryptoResearchDecision(true, expectedReturn, estimatedCost, "RESEARCH_EDGE_APPROVED")
+        {
+            MediumMomentumBps = mediumMomentum,
+            ShortMomentumBps = shortMomentum,
+            SpreadBps = spreadBps
+        };
     }
 
     private static decimal ReturnBps(decimal start, decimal end) =>

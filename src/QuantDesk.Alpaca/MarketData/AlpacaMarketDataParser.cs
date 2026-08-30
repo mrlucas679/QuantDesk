@@ -11,6 +11,8 @@ public interface IAlpacaMarketDataParser
 
 public sealed class AlpacaMarketDataParser(IReadOnlyDictionary<string, int> symbolSlots) : IAlpacaMarketDataParser
 {
+    private readonly Dictionary<int, SortedDictionary<double, double>> _bids = [];
+    private readonly Dictionary<int, SortedDictionary<double, double>> _asks = [];
     public bool TryParse(string json, long receiveMonotonicTicks, out NormalizedMarketEvent marketEvent)
     {
         marketEvent = default;
@@ -34,7 +36,7 @@ public sealed class AlpacaMarketDataParser(IReadOnlyDictionary<string, int> symb
         }
         if (!root.TryGetProperty("T", out JsonElement type) || type.GetString() is not { } kind)
             return false;
-        if (kind is not ("q" or "t"))
+        if (kind is not ("q" or "t" or "o"))
             return false;
         if (!root.TryGetProperty("S", out JsonElement symbol) || !symbolSlots.TryGetValue(symbol.GetString() ?? "", out int slot))
             return false;
@@ -50,10 +52,85 @@ public sealed class AlpacaMarketDataParser(IReadOnlyDictionary<string, int> symb
             marketEvent = NormalizedMarketEvent.FromQuote(new QuoteEvent(eventId, slot, bid, ask, bidSize, askSize, timestamp, receiveMonotonicTicks, sequence));
             return true;
         }
+        if (kind == "o")
+            return TryParseOrderBook(root, slot, eventId, timestamp, receiveMonotonicTicks, sequence, out marketEvent);
         if (!TryGetPositive(root, "p", out double price) || !TryGetPositive(root, "s", out double size))
             return false;
         marketEvent = NormalizedMarketEvent.FromTrade(new TradeEvent(eventId, slot, price, size, timestamp, receiveMonotonicTicks, sequence));
         return true;
+    }
+
+    private bool TryParseOrderBook(
+        JsonElement root,
+        int slot,
+        long eventId,
+        long timestamp,
+        long receiveMonotonicTicks,
+        long sequence,
+        out NormalizedMarketEvent marketEvent)
+    {
+        marketEvent = default;
+        if (!TryReadLevels(root, "b", out IReadOnlyList<BookLevel> bidUpdates) ||
+            !TryReadLevels(root, "a", out IReadOnlyList<BookLevel> askUpdates))
+            return false;
+        SortedDictionary<double, double> bids = GetBook(_bids, slot);
+        SortedDictionary<double, double> asks = GetBook(_asks, slot);
+        if (root.TryGetProperty("r", out JsonElement reset) && reset.ValueKind == JsonValueKind.True)
+        {
+            bids.Clear();
+            asks.Clear();
+        }
+        ApplyUpdates(bids, bidUpdates);
+        ApplyUpdates(asks, askUpdates);
+        if (bids.Count == 0 || asks.Count == 0 || timestamp <= 0)
+            return false;
+
+        double bestBid = bids.Last().Key;
+        double bestAsk = asks.First().Key;
+        marketEvent = NormalizedMarketEvent.FromOrderBook(new OrderBookEvent(
+            eventId,
+            slot,
+            bestBid,
+            bestAsk,
+            bids.Values.Sum(),
+            asks.Values.Sum(),
+            timestamp,
+            receiveMonotonicTicks,
+            sequence));
+        return bestBid <= bestAsk;
+    }
+
+    private static SortedDictionary<double, double> GetBook(
+        IDictionary<int, SortedDictionary<double, double>> books,
+        int slot) => books.TryGetValue(slot, out SortedDictionary<double, double>? book)
+            ? book
+            : books[slot] = [];
+
+    private static bool TryReadLevels(JsonElement root, string property, out IReadOnlyList<BookLevel> levels)
+    {
+        levels = [];
+        if (!root.TryGetProperty(property, out JsonElement payload) || payload.ValueKind != JsonValueKind.Array)
+            return false;
+        var parsed = new List<BookLevel>();
+        foreach (JsonElement level in payload.EnumerateArray())
+        {
+            if (!TryGetPositive(level, "p", out double price) ||
+                !level.TryGetProperty("s", out JsonElement sizeElement) ||
+                !sizeElement.TryGetDouble(out double size) || !double.IsFinite(size) || size < 0)
+                return false;
+            parsed.Add(new BookLevel(price, size));
+        }
+        levels = parsed;
+        return true;
+    }
+
+    private static void ApplyUpdates(IDictionary<double, double> book, IReadOnlyList<BookLevel> updates)
+    {
+        foreach (BookLevel update in updates)
+        {
+            if (update.Size == 0) book.Remove(update.Price);
+            else book[update.Price] = update.Size;
+        }
     }
 
     public IReadOnlyList<NormalizedMarketEvent> ParseMany(string json, long receiveMonotonicTicks)
@@ -89,4 +166,6 @@ public sealed class AlpacaMarketDataParser(IReadOnlyDictionary<string, int> symb
 
     private static double TryGetNonNegative(JsonElement root, string name) =>
         root.TryGetProperty(name, out JsonElement element) && element.TryGetDouble(out double value) && double.IsFinite(value) && value >= 0 ? value : 0;
+
+    private readonly record struct BookLevel(double Price, double Size);
 }

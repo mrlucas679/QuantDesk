@@ -10,11 +10,15 @@ public sealed class AlpacaMarketDataStream(
     Uri endpoint,
     string apiKey,
     string secretKey,
-    IAlpacaMarketDataParser parser)
+    IAlpacaMarketDataParser parser,
+    Action<string, Exception?>? diagnostic = null)
 {
     private readonly Uri _validatedEndpoint = ValidateEndpoint(endpoint);
     private readonly string _validatedApiKey = ValidateCredential(apiKey, nameof(apiKey));
     private readonly string _validatedSecretKey = ValidateCredential(secretKey, nameof(secretKey));
+
+    /// <summary>Reports whether the authenticated market-data subscription is live.</summary>
+    public event Action<bool>? ConnectivityChanged;
 
     public async IAsyncEnumerable<NormalizedMarketEvent> ReadAsync(
         IReadOnlyCollection<string> symbols,
@@ -25,6 +29,7 @@ public sealed class AlpacaMarketDataStream(
         {
             await foreach (NormalizedMarketEvent value in ReadConnectionAsync(symbols, cancellationToken))
                 yield return value;
+            ConnectivityChanged?.Invoke(false);
             if (cancellationToken.IsCancellationRequested)
                 yield break;
             await Task.Delay(retryDelay, cancellationToken);
@@ -37,18 +42,48 @@ public sealed class AlpacaMarketDataStream(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using ClientWebSocket socket = new();
+        using CancellationTokenSource handshakeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        handshakeTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+        CancellationToken handshakeToken = handshakeTimeout.Token;
         try
         {
-            await socket.ConnectAsync(_validatedEndpoint, cancellationToken);
-            string? welcome = await ReceiveMessageAsync(socket, cancellationToken);
-            if (!AlpacaStreamHandshake.IsSuccess(welcome, "connected")) yield break;
-            await SendAsync(socket, new { action = "auth", key = _validatedApiKey, secret = _validatedSecretKey }, cancellationToken);
-            string? authentication = await ReceiveMessageAsync(socket, cancellationToken);
-            if (!AlpacaStreamHandshake.IsSuccess(authentication, "authenticated")) yield break;
-            await SendAsync(socket, new { action = "subscribe", quotes = symbols, trades = symbols }, cancellationToken);
+            diagnostic?.Invoke("Alpaca market-data stream opening connection.", null);
+            await ConnectWithTimeoutAsync(socket, cancellationToken);
+            string? welcome = await ReceiveMessageAsync(socket, handshakeToken);
+            if (!AlpacaStreamHandshake.IsSuccess(welcome, "connected"))
+            {
+                diagnostic?.Invoke("Alpaca market-data stream did not acknowledge connection.", null);
+                yield break;
+            }
+            await SendAsync(socket, new { action = "auth", key = _validatedApiKey, secret = _validatedSecretKey }, handshakeToken);
+            string? authentication = await ReceiveMessageAsync(socket, handshakeToken);
+            if (!AlpacaStreamHandshake.IsSuccess(authentication, "authenticated"))
+            {
+                diagnostic?.Invoke("Alpaca market-data stream did not acknowledge authentication.", null);
+                yield break;
+            }
+            await SendAsync(socket, new { action = "subscribe", quotes = symbols, trades = symbols, orderbooks = symbols }, handshakeToken);
+            if (!AlpacaStreamHandshake.IsSubscriptionAccepted(
+                    await ReceiveMessageAsync(socket, handshakeToken), symbols))
+            {
+                diagnostic?.Invoke("Alpaca market-data stream did not acknowledge every requested channel.", null);
+                yield break;
+            }
+            ConnectivityChanged?.Invoke(true);
         }
-        catch (WebSocketException)
+        catch (WebSocketException exception)
         {
+            diagnostic?.Invoke("Alpaca market-data stream connection failed.", exception);
+            yield break;
+        }
+        catch (TimeoutException)
+        {
+            diagnostic?.Invoke("Alpaca market-data stream connection timed out.", null);
+            yield break;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            diagnostic?.Invoke("Alpaca market-data stream handshake timed out.", null);
             yield break;
         }
         byte[] buffer = new byte[64 * 1024];
@@ -81,6 +116,28 @@ public sealed class AlpacaMarketDataStream(
     {
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
         await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+    }
+
+    /// <summary>
+    /// Connects with a deadline that remains effective when the platform WebSocket implementation
+    /// does not promptly observe cancellation during DNS or TLS setup.
+    /// </summary>
+    private async Task ConnectWithTimeoutAsync(ClientWebSocket socket, CancellationToken cancellationToken)
+    {
+        Task connection = socket.ConnectAsync(_validatedEndpoint, cancellationToken);
+        Task timeout = Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+        if (await Task.WhenAny(connection, timeout) != connection)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = connection.ContinueWith(
+                static task => _ = task.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw new TimeoutException("The Alpaca market-data connection did not complete before its deadline.");
+        }
+
+        await connection;
     }
 
     private static async Task<string?> ReceiveMessageAsync(ClientWebSocket socket, CancellationToken cancellationToken)
@@ -132,5 +189,45 @@ public static class AlpacaStreamHandshake
         {
             return false;
         }
+    }
+
+    /// <summary>Requires Alpaca to acknowledge every requested quote, trade, and order-book subscription.</summary>
+    public static bool IsSubscriptionAccepted(string? payload, IReadOnlyCollection<string> symbols)
+    {
+        if (string.IsNullOrWhiteSpace(payload) || symbols.Count == 0) return false;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            JsonElement subscription = root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0
+                ? root[0]
+                : root;
+            if (subscription.ValueKind != JsonValueKind.Object ||
+                !subscription.TryGetProperty("T", out JsonElement type) ||
+                !string.Equals(type.GetString(), "subscription", StringComparison.Ordinal))
+                return false;
+
+            HashSet<string> expected = new(symbols, StringComparer.Ordinal);
+            return ContainsAll(subscription, "quotes", expected) &&
+                ContainsAll(subscription, "trades", expected) &&
+                ContainsAll(subscription, "orderbooks", expected);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsAll(JsonElement subscription, string property, IReadOnlySet<string> expected)
+    {
+        if (!subscription.TryGetProperty(property, out JsonElement values) || values.ValueKind != JsonValueKind.Array)
+            return false;
+        HashSet<string> actual = values.EnumerateArray()
+            .Where(value => value.ValueKind == JsonValueKind.String)
+            .Select(value => value.GetString())
+            .Where(value => value is not null)
+            .Select(value => value!)
+            .ToHashSet(StringComparer.Ordinal);
+        return expected.IsSubsetOf(actual);
     }
 }

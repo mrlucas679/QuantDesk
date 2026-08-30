@@ -7,12 +7,15 @@ public sealed record AutonomousTradingSnapshot(
     string? ExitOrderId,
     decimal FilledQuantity,
     string? Reason,
+    decimal? GrossEdgeBps,
+    decimal? EstimatedCostBps,
+    decimal? NetEdgeBps,
     DateTimeOffset UpdatedAt);
 
 public sealed class AutonomousTradingState
 {
     private readonly object _gate = new();
-    private AutonomousTradingSnapshot _snapshot = new("disabled", null, null, null, 0, null, DateTimeOffset.UtcNow);
+    private AutonomousTradingSnapshot _snapshot = new("disabled", null, null, null, 0, null, null, null, null, DateTimeOffset.UtcNow);
 
     public AutonomousTradingSnapshot Snapshot()
     {
@@ -20,11 +23,13 @@ public sealed class AutonomousTradingState
     }
 
     public void Update(string state, string? symbol = null, string? entryOrderId = null,
-        string? exitOrderId = null, decimal filledQuantity = 0, string? reason = null)
+        string? exitOrderId = null, decimal filledQuantity = 0, string? reason = null,
+        decimal? grossEdgeBps = null, decimal? estimatedCostBps = null)
     {
         lock (_gate)
         {
-            _snapshot = new(state, symbol, entryOrderId, exitOrderId, filledQuantity, reason, DateTimeOffset.UtcNow);
+            _snapshot = new(state, symbol, entryOrderId, exitOrderId, filledQuantity, reason,
+                grossEdgeBps, estimatedCostBps, grossEdgeBps - estimatedCostBps, DateTimeOffset.UtcNow);
         }
     }
 }
