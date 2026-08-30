@@ -25,3 +25,12 @@ research/python/.pytest_cache/
 research/python/.mypy_cache/
 research/python/.ruff_cache/
 research/python/artifacts/
+research/python/data/
+experiments.db
+
+# Local autonomous-research state and generated evidence.
+research.md
+research_log.md
+autoresearch-results.tsv
+progress.png
+final_report.md

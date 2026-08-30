@@ -23,26 +23,29 @@ dotnet build QuantDesk.slnx --no-restore
 dotnet test QuantDesk.slnx --no-build
 ```
 
-Build the C# API container without starting it:
+Build the complete containerized runtime without starting it:
 
 ```powershell
-docker compose build quantdesk-api
+docker compose build
 ```
 
-Run it only when explicitly needed, with paper credentials injected by the shell:
+Run the C# execution API, Python research MCP, and research-validation worker.
+Datasets, the SQLite experiment ledger, and artifacts persist only in named Docker
+volumes; none are mounted from the host:
 
 ```powershell
-docker compose up quantdesk-api
+docker compose up -d --build
+docker compose ps
 ```
 
-Private specifications and Python research dependencies are excluded from the production Docker image.
+Private specifications and credentials are excluded from every production image.
 
 ## First paper trade
 
-Start the API with Docker Compose, then wait until broker reconciliation has completed:
+Start the complete Compose runtime, then wait until broker reconciliation has completed:
 
 ```powershell
-docker compose up -d --build quantdesk-api
+docker compose up -d --build
 Invoke-RestMethod http://localhost:8080/ready
 ```
 
@@ -79,12 +82,12 @@ Invoke-RestMethod `
 
 The API accepts paper limit orders only, restricts symbols through `QUANTDESK_SYMBOLS`, rejects orders above `QUANTDESK_MAX_PAPER_ORDER_NOTIONAL`, checks paper-account status and buying power, and requires the operator key. It will not become ready when Alpaca reconciliation fails.
 
-## Autonomous paper execution canary
+## Autonomous paper execution
 
-The API can run a bounded, one-cycle autonomous paper trade without an operator
-submitting an order. It reads Alpaca's latest BTC/USD quote, buys approximately
-$20 of paper BTC, reconciles the actual fee-adjusted position quantity, closes
-that exact quantity, and verifies that the account is flat.
+The API can evaluate paper opportunities without an operator submitting an
+order. It will remain entry-halted until the research plane has a validated
+model, fresh features/experts, broker reconciliation, market data, risk, and
+execution gates. A timer alone never authorizes a trade.
 
 Enable it only in the paper environment:
 
@@ -99,9 +102,9 @@ docker compose up -d --build quantdesk-api
 ```
 
 Its observable state is available at `GET /api/autonomous/status`. Every
-successful cycle ends in `completed_flat`, waits for the configured interval,
-then repeats while the container remains healthy. The feature is disabled by
-default and must be explicitly enabled for paper-only autonomous testing.
+approved paper trade is reconciled against the actual fill and must satisfy
+the research edge, spread, slippage, and fee gates. The feature is disabled by
+default and is paper-only.
 
 ## MCP Servers
 
