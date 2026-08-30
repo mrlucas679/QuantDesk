@@ -76,7 +76,12 @@ builder.Services.AddSingleton(services =>
     return new CryptoDirectionalStrategyCompiler(
         new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration);
 });
-builder.Services.AddSingleton(new CryptoCostModel(new BasisPoints(50), new BasisPoints(10)));
+builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
+builder.Services.AddSingleton(services =>
+{
+    CryptoFeeSchedule fees = services.GetRequiredService<CryptoFeeSchedule>();
+    return new CryptoCostModel(new BasisPoints((double)(fees.TakerBps * 2m)), new BasisPoints(10));
+});
 builder.Services.AddSingleton(new ActionabilityGate(0.01, new Usd(0.01m)));
 builder.Services.AddSingleton(new RiskGovernor(new RiskLimits(
     new Usd(5), new Usd(25), new Usd(100), new Usd(250), 1,
