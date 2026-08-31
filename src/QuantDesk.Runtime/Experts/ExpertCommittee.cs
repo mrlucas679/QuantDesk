@@ -15,6 +15,8 @@ public sealed class ExpertCommittee(double minimumAgreementScore, double minimum
         double totalWeight = 0;
         double weightedReturn = 0;
         double agreement = 0;
+        bool hasPositiveMechanism = false;
+        bool hasNegativeMechanism = false;
         List<int> supporting = [];
         for (int index = 0; index < votes.Length; index++)
         {
@@ -26,16 +28,29 @@ public sealed class ExpertCommittee(double minimumAgreementScore, double minimum
                 continue;
             totalWeight += vote.Weight;
             weightedReturn += vote.Weight * vote.Forecast.ExpectedReturnBps;
+            hasPositiveMechanism |= vote.Forecast.ExpectedReturnBps > 0;
+            hasNegativeMechanism |= vote.Forecast.ExpectedReturnBps < 0;
             agreement += vote.Weight * Math.Clamp(vote.Forecast.CalibrationScore, 0, 1);
             supporting.Add(vote.ExpertId);
         }
         if (totalWeight <= 0) return Abstain(instrumentSlot, "insufficient_valid_evidence");
+        if (hasPositiveMechanism && hasNegativeMechanism)
+        {
+            // Contradiction is evidence of uncertainty, not a weak direction that can be
+            // averaged into an entry signal.
+            return new CommitteeDecision(instrumentSlot, 0, 0, false,
+                "mechanism_conflict", supporting) { Verdict = CommitteeVerdict.Uncertain };
+        }
         weightedReturn /= totalWeight;
         agreement /= totalWeight;
         bool actionable = agreement >= minimumAgreementScore && weightedReturn >= minimumExpectedReturnBps;
         return new CommitteeDecision(instrumentSlot, weightedReturn, agreement, actionable,
-            actionable ? "consensus" : "committee_disagreement", supporting);
+            actionable ? "consensus" : "committee_disagreement", supporting)
+        {
+            Verdict = actionable ? CommitteeVerdict.Consensus : CommitteeVerdict.Abstain
+        };
     }
 
-    private static CommitteeDecision Abstain(int slot, string reason) => new(slot, 0, 0, false, reason, []);
+    private static CommitteeDecision Abstain(int slot, string reason) =>
+        new(slot, 0, 0, false, reason, []) { Verdict = CommitteeVerdict.Abstain };
 }

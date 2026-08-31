@@ -15,7 +15,7 @@ public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, Alpac
 {
     private const int MaximumSymbolsPerRequest = 100;
     private const int MaximumPages = 10_000;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<HistoricalOptionBar>> EmptyBars =
         new Dictionary<string, IReadOnlyList<HistoricalOptionBar>>(StringComparer.Ordinal);

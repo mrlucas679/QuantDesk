@@ -12,7 +12,11 @@ public sealed record OptionOpportunityOutcome(
     VerticalCompilation? Compilation,
     string Reason,
     int ContractsConsidered,
-    int ContractsPriced)
+    int ContractsPriced,
+    // The compiled candidate identifies its legs by instrument slot. Execution needs OCC symbols,
+    // and only this service knows the mapping, so it travels with the outcome rather than being
+    // reconstructed downstream where a mismatch would go unnoticed.
+    IReadOnlyDictionary<int, string>? SymbolsBySlot = null)
 {
     public bool Admitted => Compilation is { Admitted: true };
 }
@@ -113,6 +117,7 @@ public sealed class OptionVerticalOpportunityService(
             compilation,
             compilation.Admitted ? "Admitted" : compilation.Rejection.ToString(),
             discovered.Contracts.Count,
-            slotsBySymbol.Count);
+            slotsBySymbol.Count,
+            slotsBySymbol.ToDictionary(entry => entry.Value, entry => entry.Key));
     }
 }

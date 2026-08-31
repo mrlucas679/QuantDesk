@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Diagnostics.Metrics;
 using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Persistence;
@@ -15,6 +16,12 @@ public sealed class MultiLegExecutionLifecycle(
     IRuntimeClock clock,
     TimeSpan brokerSubmitTimeout)
 {
+    private static readonly Meter Meter = new("QuantDesk.MultiLegExecution", "1.0");
+    private static readonly Counter<long> StateTransitions = Meter.CreateCounter<long>(
+        "quantdesk_mleg_state_transitions", unit: "transitions",
+        description: "Durable multi-leg lifecycle transitions, without broker payloads or credentials.");
+    public sealed record EmergencyFlattenResult(bool Complete, bool Pending, string Reason);
+
     public bool TryReserve(
         string executionId,
         string strategyId,
@@ -95,8 +102,17 @@ public sealed class MultiLegExecutionLifecycle(
             case MultiLegExecutionState.SubmissionUnknown:
                 await RecoverUnknownAsync(record, record.MaximumHoldingPeriod, cancellationToken);
                 break;
+            case MultiLegExecutionState.EmergencyFlattening:
+                await EmergencyFlattenAsync(record.ExecutionId, cancellationToken);
+                break;
         }
-        return store.Find(executionId)!;
+        MultiLegExecutionRecord advanced = store.Find(executionId)!;
+        if (advanced.State != record.State)
+            StateTransitions.Add(1,
+                new KeyValuePair<string, object?>("from_state", record.State.ToString()),
+                new KeyValuePair<string, object?>("to_state", advanced.State.ToString()),
+                new KeyValuePair<string, object?>("terminal", IsTerminal(advanced.State)));
+        return advanced;
     }
 
     public async Task RecoverAllAsync(CancellationToken cancellationToken)
@@ -109,6 +125,91 @@ public sealed class MultiLegExecutionLifecycle(
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{executionId}:{leg}"));
         return $"qd-opt-{Convert.ToHexString(hash)[..24].ToLowerInvariant()}-{leg}";
+    }
+
+    /// <summary>
+    /// Flattens only broker-truth exposure owned by this execution. Every leg close has a stable
+    /// client identity and is looked up before POST, so a restart or lost response cannot submit
+    /// a second closing order. Unknown parent submission state is intentionally left for bounded
+    /// recovery; declaring it flat would be unsafe.
+    /// </summary>
+    public async Task<EmergencyFlattenResult> EmergencyFlattenAsync(
+        string executionId,
+        CancellationToken cancellationToken)
+    {
+        MultiLegExecutionRecord record = store.Find(executionId) ??
+            throw new KeyNotFoundException($"MLeg execution '{executionId}' was not found.");
+        if (!broker.IsPaperEnvironment || !multiLegBroker.IsPaperEnvironment || !store.IsAvailable())
+            return new EmergencyFlattenResult(false, false, "PAPER_OR_STORE_UNAVAILABLE");
+        if (record.State == MultiLegExecutionState.SubmissionUnknown)
+            return new EmergencyFlattenResult(false, true, "SUBMISSION_LOOKUP_REQUIRED");
+        if (record.State == MultiLegExecutionState.EmergencyFlattened)
+            return new EmergencyFlattenResult(true, false, "ALREADY_FLAT");
+
+        store.Update(executionId, item => item with { State = MultiLegExecutionState.EmergencyFlattening });
+        HashSet<string> ownedClientIds = [record.EntryCommand.ClientOrderId, record.ExitCommand.ClientOrderId];
+        IReadOnlyList<BrokerOrderSnapshot> openOrders = await broker.ListOpenOrdersAsync(cancellationToken);
+        foreach (BrokerOrderSnapshot order in openOrders.Where(order => ownedClientIds.Contains(order.ClientOrderId)))
+        {
+            BrokerSubmitResult cancelled = await broker.CancelAsync(order.BrokerOrderId, cancellationToken);
+            if (cancelled.State != BrokerSubmitState.Acknowledged)
+                return HaltEmergency(executionId, "EMERGENCY_CANCEL_REJECTED");
+        }
+        openOrders = await broker.ListOpenOrdersAsync(cancellationToken);
+        if (openOrders.Any(order => ownedClientIds.Contains(order.ClientOrderId)))
+            return new EmergencyFlattenResult(false, true, "EMERGENCY_CANCEL_PENDING");
+
+        HashSet<string> ownedSymbols = record.EntryCommand.Legs.Select(leg => leg.Symbol)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
+        BrokerPositionSnapshot[] exposure = positions.Where(position =>
+            ownedSymbols.Contains(position.Symbol) && position.Quantity != 0).ToArray();
+        if (exposure.Length == 0)
+        {
+            store.Update(executionId, item => item with
+            {
+                State = MultiLegExecutionState.EmergencyFlattened,
+                ReconciledAt = clock.UtcNow,
+                CompletedAt = clock.UtcNow,
+                FailureReason = "EMERGENCY_FLATTEN_VERIFIED"
+            });
+            return new EmergencyFlattenResult(true, false, "EMERGENCY_FLATTEN_VERIFIED");
+        }
+
+        foreach (BrokerPositionSnapshot position in exposure)
+        {
+            string clientOrderId = DeterministicClientOrderId(executionId, $"flatten:{position.Symbol}");
+            BrokerOrderSnapshot? prior = await broker.FindByClientOrderIdAsync(clientOrderId, cancellationToken);
+            if (prior is not null)
+            {
+                if (prior.Status.Equals("rejected", StringComparison.OrdinalIgnoreCase) ||
+                    prior.Status.Equals("canceled", StringComparison.OrdinalIgnoreCase))
+                    return HaltEmergency(executionId, "EMERGENCY_CLOSE_TERMINAL_FAILURE");
+                continue;
+            }
+            long now = clock.UtcNow.ToUnixTimeMilliseconds();
+            var close = new ExecutionCommand(now, ExecutionPriority.EmergencyExit, 0, 0, clientOrderId,
+                position.InstrumentSlot, position.Quantity > 0 ? OrderSide.Sell : OrderSide.Buy,
+                position.Quantity > 0 ? PositionIntent.SellToClose : PositionIntent.BuyToClose,
+                ExecutionOrderType.Market, ExecutionTimeInForce.Day, Math.Abs(position.Quantity), null,
+                now, now + (long)brokerSubmitTimeout.TotalMilliseconds, record.StrategyId);
+            BrokerSubmitResult submitted = await broker.SubmitAsync(close, cancellationToken);
+            if (submitted.State == BrokerSubmitState.Rejected)
+                return HaltEmergency(executionId, "EMERGENCY_CLOSE_REJECTED");
+            if (submitted.State == BrokerSubmitState.Unknown)
+                return new EmergencyFlattenResult(false, true, "EMERGENCY_CLOSE_LOOKUP_REQUIRED");
+        }
+        return new EmergencyFlattenResult(false, true, "EMERGENCY_CLOSES_SUBMITTED");
+    }
+
+    private EmergencyFlattenResult HaltEmergency(string executionId, string reason)
+    {
+        store.Update(executionId, item => item with
+        {
+            State = MultiLegExecutionState.ReconciliationFailed,
+            FailureReason = reason
+        });
+        return new EmergencyFlattenResult(false, false, reason);
     }
 
     private async Task SubmitOrRecoverAsync(
@@ -218,8 +319,26 @@ public sealed class MultiLegExecutionLifecycle(
         BrokerOrderSnapshot? order = await multiLegBroker.FindByClientOrderIdAsync(
             clientOrderId, cancellationToken);
         if (order is null) return;
+        DateTimeOffset? acknowledgedAt = entry ? record.EntryAcknowledgedAt : record.ExitAcknowledgedAt;
+        if (IsStaleUnfilled(order, acknowledgedAt))
+        {
+            BrokerSubmitResult cancelled = await broker.CancelAsync(order.BrokerOrderId, cancellationToken);
+            if (cancelled.State == BrokerSubmitState.Acknowledged)
+            {
+                store.Update(record.ExecutionId, item => item with
+                {
+                    State = entry ? MultiLegExecutionState.EntryRejected : MultiLegExecutionState.ExitRejected,
+                    FailureReason = entry ? "ENTRY_FILL_TIMEOUT_CANCELED" : "EXIT_FILL_TIMEOUT_CANCELED"
+                });
+                return;
+            }
+        }
         ApplyOrder(record.ExecutionId, order, entry, maximumHoldingPeriod);
     }
+
+    private bool IsStaleUnfilled(BrokerOrderSnapshot order, DateTimeOffset? acknowledgedAt) =>
+        acknowledgedAt is not null && clock.UtcNow - acknowledgedAt >= brokerSubmitTimeout &&
+        order.FilledQuantity == 0 && order.Status is "accepted" or "new" or "pending_new";
 
     private void ApplySubmission(string executionId, BrokerSubmitResult result, bool entry)
     {
@@ -253,7 +372,9 @@ public sealed class MultiLegExecutionLifecycle(
         bool entry,
         TimeSpan maximumHoldingPeriod)
     {
-        if (!HasExpectedLegFills(order, entry ? record.EntryCommand : record.ExitCommand))
+        MultiLegExecutionRecord tracked = store.Find(executionId) ??
+            throw new KeyNotFoundException($"MLeg execution '{executionId}' was not found.");
+        if (!HasExpectedLegFills(order, entry ? tracked.EntryCommand : tracked.ExitCommand))
         {
             store.Update(executionId, item => item with
             {
@@ -334,8 +455,11 @@ public sealed class MultiLegExecutionLifecycle(
     private static bool HasExpectedLegFills(BrokerOrderSnapshot order, MultiLegExecutionCommand command)
     {
         // Some broker order views omit nested legs before any fill. Once legs are present, each
-        // reported leg must map exactly to a requested OCC symbol and preserve its ratio.
-        if (order.Legs.Count == 0) return true;
+        // reported leg must map exactly to a requested OCC symbol and preserve its ratio. A
+        // final fill without nested legs cannot establish individual contract ownership, so it
+        // is not permitted to enter the reconciliation path.
+        if (order.Legs.Count == 0)
+            return !string.Equals(order.Status, "filled", StringComparison.OrdinalIgnoreCase);
         if (order.Legs.Count != command.Legs.Count) return false;
         foreach (MultiLegExecutionLeg expected in command.Legs)
         {
@@ -361,15 +485,22 @@ public sealed class MultiLegExecutionLifecycle(
             .Select(leg => leg.Symbol)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         bool unresolvedOrder = openOrders.Any(order => ownedClientIds.Contains(order.ClientOrderId));
-        bool brokerExposure = positions.Any(position =>
-            ownedSymbols.Contains(position.Symbol) && position.Quantity != 0);
-        bool internalExposure = record.InternalOpenQuantity != 0;
-        store.Update(record.ExecutionId, item => unresolvedOrder || brokerExposure || internalExposure
+        bool internalLegsKnown = record.TryGetInternalOpenLegQuantities(out IReadOnlyDictionary<string, decimal> internalLegs);
+        bool brokerLegMismatch = !internalLegsKnown || ownedSymbols.Any(symbol =>
+        {
+            decimal brokerQuantity = positions.Where(position =>
+                    string.Equals(position.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
+                .Sum(position => position.Quantity);
+            return !internalLegsKnown || brokerQuantity != internalLegs.GetValueOrDefault(symbol);
+        });
+        bool internalExposure = record.InternalOpenQuantity != 0 ||
+            (internalLegsKnown && internalLegs.Values.Any(quantity => quantity != 0));
+        store.Update(record.ExecutionId, item => unresolvedOrder || brokerLegMismatch || internalExposure
             ? item with
             {
                 State = MultiLegExecutionState.ReconciliationFailed,
                 ReconciledAt = clock.UtcNow,
-                FailureReason = $"RECONCILIATION_MISMATCH:orders={unresolvedOrder};broker={brokerExposure};internal={internalExposure}"
+                FailureReason = $"RECONCILIATION_MISMATCH:orders={unresolvedOrder};legs={brokerLegMismatch};internal={internalExposure}"
             }
             : item with
             {
@@ -399,4 +530,9 @@ public sealed class MultiLegExecutionLifecycle(
             _ => throw new ArgumentException("Entry MLeg must use opening position intents.")
         }
     };
+
+    private static bool IsTerminal(MultiLegExecutionState state) => state is
+        MultiLegExecutionState.Complete or MultiLegExecutionState.EntryRejected or
+        MultiLegExecutionState.ExitRejected or MultiLegExecutionState.ReconciliationFailed or
+        MultiLegExecutionState.SubmissionUnresolved or MultiLegExecutionState.EmergencyFlattened;
 }

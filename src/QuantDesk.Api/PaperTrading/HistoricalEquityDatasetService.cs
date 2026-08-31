@@ -20,10 +20,7 @@ public sealed class HistoricalEquityDatasetService(
 {
     private static readonly string[] DefaultSymbols = ["SPY", "QQQ", "IWM", "DIA"];
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true
-    };
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Indented;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

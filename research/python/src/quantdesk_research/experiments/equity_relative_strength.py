@@ -112,13 +112,13 @@ def load_daily_panel(data_root: Path) -> tuple[pd.DataFrame, tuple[str, ...]]:
         manifest = cast(JsonObject, json.loads(manifest_path.read_text(encoding="utf-8")))
         if manifest.get("feed") != "sip" or manifest.get("adjustment") != "all":
             raise ValueError(f"Relative-strength research requires SIP/all: {manifest_path.name}.")
-        data_path = data_root / str(manifest["data_file"])
+        data_path = data_root / str(manifest["dataFile"])
         payload = data_path.read_bytes()
         digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
         if digest != manifest.get("sha256"):
             raise ValueError(f"Immutable dataset hash mismatch: {data_path.name}.")
         bars = json.loads(payload)
-        if not isinstance(bars, list) or len(bars) != manifest.get("row_count"):
+        if not isinstance(bars, list) or len(bars) != manifest.get("rowCount"):
             raise ValueError(f"Immutable dataset row-count mismatch: {data_path.name}.")
         frame = pd.DataFrame(cast(list[JsonObject], bars))
         frame["date"] = pd.to_datetime(frame["t"], utc=True).dt.date

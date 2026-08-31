@@ -23,7 +23,7 @@ namespace QuantDesk.Alpaca.MarketData;
 public sealed class AlpacaLatestOptionQuoteClient(HttpClient httpClient, AlpacaOptions options)
 {
     private const int MaximumSymbolsPerRequest = 100;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     /// <summary>
     /// Returns one snapshot per requested contract, keyed by the caller's instrument slot.
@@ -105,13 +105,12 @@ public sealed class AlpacaLatestOptionQuoteClient(HttpClient httpClient, AlpacaO
 
         return new OptionQuoteSnapshot(
             slot, bid, ask, mid, relativeSpread,
-            ImpliedVolatility: null, Delta: null, Gamma: null, Vega: null, Theta: null,
             EventNs: timestamp.ToUnixTimeMilliseconds() * 1_000_000L,
             Quality: usable && fresh ? DataQuality.Healthy : DataQuality.Stale);
     }
 
     private static OptionQuoteSnapshot Unusable(int slot) =>
-        new(slot, 0d, 0d, 0d, double.PositiveInfinity, null, null, null, null, null, 0L, DataQuality.Stale);
+        new(slot, 0d, 0d, 0d, double.PositiveInfinity, 0L, DataQuality.Stale);
 
     private static bool TryReadDouble(JsonElement element, out double value)
     {

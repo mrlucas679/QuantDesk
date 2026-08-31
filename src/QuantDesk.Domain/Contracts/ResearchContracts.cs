@@ -57,6 +57,21 @@ public sealed record ModelArtifactContract(
     };
 }
 
+public enum StrategyExecutionKind { Spot, DefinedRiskVertical }
+
+/// <summary>Exact research-approved constraints for a debit vertical lifecycle.</summary>
+public sealed record OptionVerticalExecutionPolicyContract(
+    int MinimumDaysToExpiry,
+    int MaximumDaysToExpiry,
+    decimal StrikeBandFraction,
+    decimal MaximumDefinedLoss,
+    decimal ExitLimitFraction)
+{
+    public bool IsValid() => MinimumDaysToExpiry > 0 && MaximumDaysToExpiry >= MinimumDaysToExpiry &&
+        StrikeBandFraction is > 0 and <= 1 && MaximumDefinedLoss > 0 &&
+        ExitLimitFraction is > 0 and <= 1;
+}
+
 public sealed record StrategyDefinitionContract(
     string Symbol,
     int BarDurationMinutes,
@@ -73,7 +88,13 @@ public sealed record StrategyDefinitionContract(
         && !string.IsNullOrWhiteSpace(EntryRuleVersion)
         && SignalType is "Event" or "State"
         && !string.IsNullOrWhiteSpace(Parameters)
-        && ExitPolicy.IsValid();
+        && ExitPolicy.IsValid()
+        && (ExecutionKind == StrategyExecutionKind.Spot
+            ? OptionVertical is null
+            : ExecutionKind == StrategyExecutionKind.DefinedRiskVertical && OptionVertical?.IsValid() == true);
+
+    public StrategyExecutionKind ExecutionKind { get; init; } = StrategyExecutionKind.Spot;
+    public OptionVerticalExecutionPolicyContract? OptionVertical { get; init; }
 }
 
 public sealed record ExitPolicyDefinitionContract(

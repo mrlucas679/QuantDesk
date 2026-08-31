@@ -9,6 +9,7 @@ from quantdesk_research.contracts.model_artifact import (
     EvidenceProfile,
     ExitPolicyDefinition,
     ModelArtifact,
+    OptionVerticalExecutionPolicy,
     StrategyDefinition,
     ValidationGateEvidence,
 )
@@ -218,3 +219,35 @@ def test_rejects_unknown_strategy_family() -> None:
 
     with pytest.raises(ValueError, match="strategy_family is not registered"):
         ModelArtifact(**(artifact.model_dump() | {"strategy_family": "current-candle-winner"}))
+
+
+def test_defined_risk_vertical_requires_complete_explicit_policy() -> None:
+    _, artifact, _ = _contracts()
+    payload = artifact.model_dump()
+    payload["strategy_definition"] = payload["strategy_definition"] | {
+        "execution_kind": "defined_risk_vertical",
+        "option_vertical": OptionVerticalExecutionPolicy(
+            minimum_days_to_expiry=7,
+            maximum_days_to_expiry=60,
+            strike_band_fraction=0.05,
+            maximum_defined_loss=20.0,
+            exit_limit_fraction=0.5,
+        ).model_dump(),
+    }
+
+    parsed = ModelArtifact(**payload)
+
+    assert parsed.strategy_definition.execution_kind == "defined_risk_vertical"
+    assert parsed.strategy_definition.option_vertical is not None
+
+
+def test_defined_risk_vertical_without_policy_is_rejected() -> None:
+    _, artifact, _ = _contracts()
+    payload = artifact.model_dump()
+    payload["strategy_definition"] = payload["strategy_definition"] | {
+        "execution_kind": "defined_risk_vertical",
+        "option_vertical": None,
+    }
+
+    with pytest.raises(ValueError, match="requires option_vertical"):
+        ModelArtifact(**payload)

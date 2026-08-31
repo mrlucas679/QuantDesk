@@ -7,9 +7,12 @@ import pytest
 from quantdesk_research.backtest.portfolio import PortfolioPerformance
 from quantdesk_research.experiments.equity_portfolio_strategies import (
     FAMILIES,
+    MECHANISM_CATALOGUE,
     SHARPE_GATE,
     build_weights,
     gate_reasons,
+    persist_mechanism_catalogue,
+    persist_rejected_families,
     phase_slice,
     rank_by_edge_per_risk,
 )
@@ -152,3 +155,36 @@ def test_ranking_puts_passing_families_first_then_highest_edge_per_risk() -> Non
     ])
 
     assert [item.name for item in ranked] == ["strong-pass", "weak-pass", "strong-fail"]
+
+
+def test_failed_family_is_persisted_as_typed_rejected_hypothesis(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from quantdesk_research.evaluation.hypothesis_memory import HypothesisMemory
+    from quantdesk_research.experiments.equity_portfolio_strategies import FamilyEvaluation
+
+    failed = FamilyEvaluation(
+        name="xs-momentum-21d", mechanism="cross-sectional-momentum", phase="discovery",
+        passed=False, lookback_days=21, holding_days=5, market_neutral=True,
+        comparison_count=26, selection_alpha=0.05,
+        base={"sharpe": 0.1}, stress_mean_daily_bps=-1.0,
+        data_hashes=("dataset-a",), gate_reasons=("sharpe_not_above_0_5",),
+    )
+
+    persist_rejected_families(tmp_path, [failed])
+
+    rejections = HypothesisMemory(tmp_path / "experiments.db").list_rejections()
+    assert len(rejections) == 1
+    assert rejections[0]["hypothesis_id"] == "equity-portfolio:discovery:xs-momentum-21d"
+    assert rejections[0]["reason"] == "ParameterFragility"
+
+
+def test_mechanism_catalogue_is_immutable_and_contains_falsifiable_fields(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import json
+
+    persist_mechanism_catalogue(tmp_path)
+    document = json.loads((tmp_path / "mechanism-catalogue.json").read_text(encoding="utf-8"))
+
+    assert document["version"] == 1
+    assert len(document["entries"]) == len(MECHANISM_CATALOGUE)
+    assert all(entry["falsification_rule"] for entry in document["entries"])
+    # Repeated publication accepts exactly the same pre-registered catalogue.
+    persist_mechanism_catalogue(tmp_path)

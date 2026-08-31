@@ -333,13 +333,13 @@ def _load_dataset(data_root: Path, symbol: str, timeframe_slug: str) -> tuple[li
     manifest = cast(JsonObject, json.loads(manifest_path.read_text(encoding="utf-8")))
     if manifest.get("feed") != "sip" or manifest.get("adjustment") != "all":
         raise ValueError(f"Research requires SIP/all data: {manifest_path.name}.")
-    data_path = data_root / str(manifest["data_file"])
+    data_path = data_root / str(manifest["dataFile"])
     payload = data_path.read_bytes()
     actual_hash = f"sha256:{hashlib.sha256(payload).hexdigest()}"
     if actual_hash != manifest.get("sha256"):
         raise ValueError(f"Immutable dataset hash mismatch: {data_path.name}.")
     bars = json.loads(payload)
-    if not isinstance(bars, list) or len(bars) != manifest.get("row_count"):
+    if not isinstance(bars, list) or len(bars) != manifest.get("rowCount"):
         raise ValueError(f"Immutable dataset row-count mismatch: {data_path.name}.")
     return cast(list[JsonObject], bars), actual_hash
 

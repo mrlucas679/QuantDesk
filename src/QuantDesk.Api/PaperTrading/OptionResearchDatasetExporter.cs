@@ -38,10 +38,7 @@ public sealed class OptionResearchDatasetExporter(
     /// <summary>Alpaca accepts at most 100 contract symbols per option-bar request.</summary>
     public const int MaximumSymbolsPerBarRequest = 100;
 
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true
-    };
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Indented;
 
     /// <summary>Discovers a contract universe and writes it as an immutable, hashed snapshot.</summary>
     public async Task<OptionDatasetManifest> ExportContractSnapshotAsync(

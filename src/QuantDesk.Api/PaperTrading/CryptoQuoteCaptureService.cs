@@ -13,7 +13,7 @@ public sealed class CryptoQuoteCaptureService(
     ILogger<CryptoQuoteCaptureService> logger) : BackgroundService
 {
     private static readonly TimeSpan MinimumCaptureInterval = TimeSpan.FromSeconds(5);
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

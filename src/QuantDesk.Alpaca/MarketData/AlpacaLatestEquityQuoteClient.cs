@@ -18,7 +18,7 @@ namespace QuantDesk.Alpaca.MarketData;
 public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaOptions options)
 {
     private const int RequiredCloses = 13;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     /// <summary>Gets the current NBBO quote and the recent 5-minute closes for one symbol.</summary>
     public async Task<DirectionalMarketEvidence> GetEvidenceAsync(

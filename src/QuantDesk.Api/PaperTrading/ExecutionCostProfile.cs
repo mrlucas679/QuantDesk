@@ -41,6 +41,28 @@ public sealed record ExecutionCostProfile(
         new("spot-crypto-maker", 30m, 5m, 10m);
 
     /// <summary>
+    /// Conservative qualification scenario. It deliberately exceeds the expected taker cost and
+    /// is the only crypto profile that can qualify a strategy; maker and realised profiles are
+    /// execution observations, never substitutes for this stress evidence.
+    /// </summary>
+    public static readonly ExecutionCostProfile SpotCryptoConservativeStress =
+        new("spot-crypto-conservative-stress", 50m, 20m, 15m);
+
+    /// <summary>
+    /// Builds a separately labelled realised-cost observation from completed PAPER fills. The
+    /// caller must retain the evidence identifier; this profile is reporting evidence only and
+    /// must not be used to relax conservative strategy qualification.
+    /// </summary>
+    public static ExecutionCostProfile ObservedRealisedCrypto(
+        decimal roundTripFeeBps, decimal realisedSlippageBps, string evidenceId)
+    {
+        if (roundTripFeeBps < 0 || realisedSlippageBps < 0 || string.IsNullOrWhiteSpace(evidenceId))
+            throw new ArgumentException("Observed crypto costs require non-negative values and evidence identity.");
+        return new($"spot-crypto-observed-realised:{evidenceId.Trim()}",
+            roundTripFeeBps, realisedSlippageBps, 0m);
+    }
+
+    /// <summary>
     /// US equities and ETFs on Alpaca: commission-free, with SEC and FINRA pass-through fees on
     /// sells only totalling well under a basis point. Verified against
     /// https://alpaca.markets/support/commission-clearing-fees and .../regulatory-fees. The

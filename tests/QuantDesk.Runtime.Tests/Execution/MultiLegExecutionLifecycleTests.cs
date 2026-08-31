@@ -164,6 +164,54 @@ public sealed class MultiLegExecutionLifecycleTests
     }
 
     [Fact]
+    public async Task StaleUnfilledEntryIsCancelledWithoutAReplacementPost()
+    {
+        using var fixture = CreateFixture();
+        Assert.True(fixture.Lifecycle.TryReserve(
+            "OPTIONS-STALE", "spy-vertical", 1, 1.25m, 1.50m, 125m,
+            TimeSpan.FromHours(1), EntryLegs()));
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-STALE", CancellationToken.None);
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-STALE", CancellationToken.None);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(2));
+
+        MultiLegExecutionRecord cancelled = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-STALE", CancellationToken.None);
+
+        Assert.Equal(MultiLegExecutionState.EntryRejected, cancelled.State);
+        Assert.Equal("ENTRY_FILL_TIMEOUT_CANCELED", cancelled.FailureReason);
+        Assert.Equal(1, fixture.Broker.SubmitCalls);
+    }
+
+    [Fact]
+    public async Task ReconciliationFailsWhenBrokerRetainsOneSignedOptionLeg()
+    {
+        using var fixture = CreateFixture();
+        Assert.True(fixture.Lifecycle.TryReserve(
+            "OPTIONS-LEG-RECONCILE", "spy-vertical", 1, 1.25m, 1.50m, 125m,
+            TimeSpan.FromHours(1), EntryLegs()));
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        string entryId = fixture.Store.Find("OPTIONS-LEG-RECONCILE")!.EntryCommand.ClientOrderId;
+        fixture.Broker.Orders[entryId] = Snapshot("broker-1", entryId, "filled", 1m, 1.25m);
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        fixture.Clock.Advance(TimeSpan.FromHours(2));
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        string exitId = fixture.Store.Find("OPTIONS-LEG-RECONCILE")!.ExitCommand.ClientOrderId;
+        fixture.Broker.Orders[exitId] = Snapshot("broker-2", exitId, "filled", 1m, 1.50m);
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-LEG-RECONCILE", CancellationToken.None);
+        fixture.Broker.Positions = [new BrokerPositionSnapshot("SPY260904C00650000", 0, 1m, 1.25m)];
+
+        MultiLegExecutionRecord failed = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-LEG-RECONCILE", CancellationToken.None);
+
+        Assert.Equal(MultiLegExecutionState.ReconciliationFailed, failed.State);
+        Assert.Contains("legs=True", failed.FailureReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void StoreReconstructionPreservesCommandsHoldPolicyAndDuplicateFence()
     {
         using var fixture = CreateFixture();
@@ -177,6 +225,34 @@ public sealed class MultiLegExecutionLifecycleTests
         Assert.Equal(MultiLegExecutionLifecycle.DeterministicClientOrderId("OPTIONS-STORE", "entry"),
             record.EntryCommand.ClientOrderId);
         Assert.False(restarted.TryCreate(record with { ExecutionId = "OPTIONS-DUPLICATE" }));
+    }
+
+    [Fact]
+    public async Task EmergencyFlattenUsesStableLegCloseIdentityAndVerifiesBrokerFlatness()
+    {
+        using var fixture = CreateFixture();
+        Assert.True(fixture.Lifecycle.TryReserve(
+            "OPTIONS-EMERGENCY", "spy-vertical", 1, 1.25m, 1.50m, 125m,
+            TimeSpan.FromHours(1), EntryLegs()));
+        fixture.Broker.Positions = [new BrokerPositionSnapshot("SPY260904C00650000", 7, 1m, 1.25m)];
+
+        MultiLegExecutionLifecycle.EmergencyFlattenResult first = await fixture.Lifecycle.EmergencyFlattenAsync(
+            "OPTIONS-EMERGENCY", CancellationToken.None);
+        string expectedId = MultiLegExecutionLifecycle.DeterministicClientOrderId(
+            "OPTIONS-EMERGENCY", "flatten:SPY260904C00650000");
+        MultiLegExecutionLifecycle.EmergencyFlattenResult repeat = await fixture.Lifecycle.EmergencyFlattenAsync(
+            "OPTIONS-EMERGENCY", CancellationToken.None);
+        fixture.Broker.Positions = [];
+        MultiLegExecutionLifecycle.EmergencyFlattenResult complete = await fixture.Lifecycle.EmergencyFlattenAsync(
+            "OPTIONS-EMERGENCY", CancellationToken.None);
+
+        Assert.True(first.Pending);
+        Assert.True(repeat.Pending);
+        Assert.Equal(1, fixture.Broker.DirectSubmitCalls);
+        Assert.Equal(expectedId, fixture.Broker.DirectCommands.Single().ClientOrderId);
+        Assert.True(complete.Complete);
+        Assert.Equal(MultiLegExecutionState.EmergencyFlattened,
+            fixture.Store.Find("OPTIONS-EMERGENCY")!.State);
     }
 
     private static Fixture CreateFixture()
@@ -197,7 +273,16 @@ public sealed class MultiLegExecutionLifecycleTests
 
     private static BrokerOrderSnapshot Snapshot(
         string brokerId, string clientId, string status, decimal quantity, decimal price) =>
-        new(brokerId, clientId, status, quantity, price) { SubmittedAt = Start };
+        new(brokerId, clientId, status, quantity, price)
+        {
+            SubmittedAt = Start,
+            Legs = string.Equals(status, "filled", StringComparison.OrdinalIgnoreCase)
+                ? [
+                    new BrokerOrderLegSnapshot($"{brokerId}-1", "SPY260904C00650000", "filled", quantity, price),
+                    new BrokerOrderLegSnapshot($"{brokerId}-2", "SPY260904C00655000", "filled", quantity, price)
+                ]
+                : []
+        };
 
     private sealed record Fixture(
         string Path,
@@ -217,11 +302,14 @@ public sealed class MultiLegExecutionLifecycleTests
     {
         public bool IsPaperEnvironment => true;
         public int SubmitCalls { get; private set; }
+        public int DirectSubmitCalls { get; private set; }
         public bool ThrowAfterAcceptance { get; set; }
         public bool ReturnUnknownAfterAcceptance { get; set; }
         public bool ReturnUnknownWithoutOrder { get; set; }
         public Action<MultiLegExecutionCommand>? BeforeSubmit { get; set; }
         public Dictionary<string, BrokerOrderSnapshot> Orders { get; } = [];
+        public List<ExecutionCommand> DirectCommands { get; } = [];
+        public IReadOnlyList<BrokerPositionSnapshot> Positions { get; set; } = [];
 
         public Task<BrokerSubmitResult> SubmitMultiLegAsync(
             MultiLegExecutionCommand command,
@@ -263,11 +351,21 @@ public sealed class MultiLegExecutionLifecycleTests
                 Orders.Values.Where(order => order.Status is "accepted" or "partially_filled").ToArray());
 
         public Task<IReadOnlyList<BrokerPositionSnapshot>> ListPositionsAsync(
-            CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<BrokerPositionSnapshot>>([]);
+            CancellationToken cancellationToken) => Task.FromResult(Positions);
 
         public Task<BrokerSubmitResult> SubmitAsync(
             ExecutionCommand command,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            DirectSubmitCalls++;
+            DirectCommands.Add(command);
+            Orders[command.ClientOrderId] = new BrokerOrderSnapshot(
+                $"close-{DirectSubmitCalls}", command.ClientOrderId, "accepted", 0, null);
+            return Task.FromResult(new BrokerSubmitResult(BrokerSubmitState.Acknowledged,
+                $"close-{DirectSubmitCalls}", null, null));
+        }
+
+        public Task<BrokerSubmitResult> CancelAsync(string brokerOrderId, CancellationToken cancellationToken) =>
+            Task.FromResult(new BrokerSubmitResult(BrokerSubmitState.Acknowledged, brokerOrderId, null, null));
     }
 }

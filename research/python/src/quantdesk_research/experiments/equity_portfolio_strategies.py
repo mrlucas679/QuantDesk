@@ -64,6 +64,11 @@ from quantdesk_research.backtest.portfolio import (
     PortfolioPerformance,
     evaluate_weight_schedule,
 )
+from quantdesk_research.evaluation.hypothesis_memory import (
+    FailureReason,
+    HypothesisMemory,
+    RejectedHypothesis,
+)
 
 # The four ETFs below carry a mean pairwise daily-return correlation of 0.859, so they behave
 # as one asset with noise. That is why every cross-sectional family in this module is negative:
@@ -115,6 +120,21 @@ class FamilyEvaluation:
     gate_reasons: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class MechanismCatalogueEntry:
+    """Preregistered economic claim and its failure conditions for one research family."""
+
+    mechanism: str
+    cause: str
+    actor: str
+    expected_regime: str
+    disappearance_condition: str
+    falsification_rule: str
+    dataset: str
+    cost_scenario: str
+    comparison_budget: int
+
+
 FAMILIES: tuple[StrategyFamily, ...] = (
     StrategyFamily("xs-momentum-21d", "cross-sectional-momentum", 21, 5, True),
     StrategyFamily("xs-momentum-63d", "cross-sectional-momentum", 63, 10, True),
@@ -130,6 +150,14 @@ FAMILIES: tuple[StrategyFamily, ...] = (
     StrategyFamily("vol-scaled-trend-252d", "volatility-scaled-trend", 252, 21, False),
     StrategyFamily("defensive-low-vol-63d", "defensive-low-volatility", 63, 21, False),
     StrategyFamily("equal-weight-benchmark", "equal-weight-benchmark", 1, 1, False),
+)
+
+MECHANISM_CATALOGUE: tuple[MechanismCatalogueEntry, ...] = (
+    MechanismCatalogueEntry("cross-sectional-momentum", "slow institutional reallocation", "benchmark-aware allocators", "persistent sector dispersion", "cross-sectional correlation removes dispersion", "net spread drift is non-positive after costs", "immutable SIP daily ETF panel", "base-and-stress", PRIOR_EQUITY_COMPARISONS),
+    MechanismCatalogueEntry("cross-sectional-reversal", "temporary liquidity dislocation", "market makers and forced sellers", "idiosyncratic liquidity shocks", "turnover costs exceed reversal", "net reversal expectancy is non-positive after costs", "immutable SIP daily ETF panel", "base-and-stress", PRIOR_EQUITY_COMPARISONS),
+    MechanismCatalogueEntry("time-series-trend", "under-reaction to macro information", "slow-moving institutional investors", "persistent directional regime", "rapid mean reversion dominates", "per-asset trend fails to beat passive equal weight", "immutable SIP daily ETF panel", "base-and-stress", PRIOR_EQUITY_COMPARISONS),
+    MechanismCatalogueEntry("volatility-scaled-trend", "risk-normalised under-reaction", "volatility-targeting allocators", "heterogeneous asset volatility", "volatility estimates become unstable", "does not improve edge per risk over trend", "immutable SIP daily ETF panel", "base-and-stress", PRIOR_EQUITY_COMPARISONS),
+    MechanismCatalogueEntry("defensive-low-volatility", "leverage constraints", "return-seeking constrained investors", "high-beta demand", "beta premium disappears", "fails to beat passive equal weight after costs", "immutable SIP daily ETF panel", "base-and-stress", PRIOR_EQUITY_COMPARISONS),
 )
 
 COMPARISON_COUNT = PRIOR_EQUITY_COMPARISONS + len(FAMILIES)
@@ -231,13 +259,13 @@ def load_close_panel(
         manifest = cast(JsonObject, json.loads(manifest_path.read_text(encoding="utf-8")))
         if manifest.get("feed") != "sip" or manifest.get("adjustment") != "all":
             raise ValueError(f"Portfolio research requires SIP/all bars: {manifest_path.name}.")
-        data_path = data_root / str(manifest["data_file"])
+        data_path = data_root / str(manifest["dataFile"])
         payload = data_path.read_bytes()
         digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
         if digest != manifest.get("sha256"):
             raise ValueError(f"Immutable dataset hash mismatch: {data_path.name}.")
         bars = json.loads(payload)
-        if not isinstance(bars, list) or len(bars) != manifest.get("row_count"):
+        if not isinstance(bars, list) or len(bars) != manifest.get("rowCount"):
             raise ValueError(f"Immutable dataset row-count mismatch: {data_path.name}.")
         frame = pd.DataFrame(cast(list[JsonObject], bars))
         frame["date"] = pd.to_datetime(frame["t"], utc=True).dt.date
@@ -389,6 +417,68 @@ def rank_by_edge_per_risk(results: list[FamilyEvaluation]) -> list[FamilyEvaluat
     )
 
 
+def persist_rejected_families(
+    data_root: Path,
+    results: list[FamilyEvaluation],
+) -> None:
+    """Persist each failed mechanism family so later campaigns cannot silently repeat it."""
+    memory = HypothesisMemory(data_root / "experiments.db")
+    for result in results:
+        if result.passed or result.name == BENCHMARK_NAME:
+            continue
+        reasons = set(result.gate_reasons)
+        reason = (
+            FailureReason.INSUFFICIENT_TRADES
+            if any(item.startswith("observation_count_below") for item in reasons)
+            else FailureReason.NO_RAW_EDGE
+            if "base_expectancy_not_positive" in reasons
+            else FailureReason.REGIME_INSTABILITY
+            if "holdout_subwindow_instability" in reasons
+            else FailureReason.PARAMETER_FRAGILITY
+            if "sharpe_not_above_0_5" in reasons
+            else FailureReason.REJECTED_COSTS
+            if "stress_expectancy_not_positive" in reasons
+            else FailureReason.TRANSFER_FAILURE
+        )
+        memory.record(
+            RejectedHypothesis(
+                hypothesis_id=f"equity-portfolio:{result.phase}:{result.name}",
+                mechanism=result.mechanism,
+                reason=reason,
+                dataset_hash=hashlib.sha256("|".join(result.data_hashes).encode()).hexdigest(),
+                parameters={
+                    "lookback_days": result.lookback_days,
+                    "holding_days": result.holding_days,
+                    "market_neutral": result.market_neutral,
+                    "comparison_count": result.comparison_count,
+                },
+                evidence={"base": result.base, "gate_reasons": list(result.gate_reasons)},
+                regime="all",
+                cost_scenario="base-and-stress",
+            )
+        )
+
+
+def persist_mechanism_catalogue(data_root: Path) -> None:
+    """Publish the fixed catalogue before evaluating a family, replacing no prior artefact."""
+    path = data_root / "mechanism-catalogue.json"
+    document = {"version": 1, "entries": [asdict(item) for item in MECHANISM_CATALOGUE]}
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    if path.exists():
+        if path.read_text(encoding="utf-8") != payload:
+            raise ValueError("MECHANISM_CATALOGUE_ALREADY_EXISTS_WITH_DIFFERENT_CONTENT")
+        return
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(payload, encoding="utf-8")
+    try:
+        temporary.replace(path)
+    except FileExistsError:
+        if path.read_text(encoding="utf-8") != payload:
+            raise ValueError("MECHANISM_CATALOGUE_ALREADY_EXISTS_WITH_DIFFERENT_CONTENT")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
@@ -405,6 +495,7 @@ def main() -> int:
     arguments = parser.parse_args()
 
     universe = tuple(item.strip().upper() for item in arguments.symbols.split(",") if item.strip())
+    persist_mechanism_catalogue(arguments.data_root)
     closes, hashes = load_close_panel(arguments.data_root, universe)
     families = (
         FAMILIES
@@ -418,6 +509,7 @@ def main() -> int:
             for item in families
         ]
     )
+    persist_rejected_families(arguments.data_root, results)
     if arguments.summary:
         _print_summary(results, len(closes))
     else:

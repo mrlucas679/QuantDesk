@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 EXECUTABLE_STRATEGY_FAMILIES = frozenset(
     {
@@ -69,6 +69,27 @@ class ExitPolicyDefinition(BaseModel):
         return value
 
 
+class OptionVerticalExecutionPolicy(BaseModel):
+    """Research-approved limits required to create one defined-risk debit vertical."""
+
+    minimum_days_to_expiry: int
+    maximum_days_to_expiry: int
+    strike_band_fraction: float
+    maximum_defined_loss: float
+    exit_limit_fraction: float
+
+    @model_validator(mode="after")
+    def limits_are_safe(self) -> OptionVerticalExecutionPolicy:
+        """Reject an option policy that leaves selection, downside, or exit economics implicit."""
+        if self.minimum_days_to_expiry <= 0 or self.maximum_days_to_expiry < self.minimum_days_to_expiry:
+            raise ValueError("option expiry window is invalid")
+        if not 0 < self.strike_band_fraction <= 1:
+            raise ValueError("option strike_band_fraction must be within (0, 1]")
+        if self.maximum_defined_loss <= 0 or not 0 < self.exit_limit_fraction <= 1:
+            raise ValueError("option loss and exit limits must be positive bounded fractions")
+        return self
+
+
 class StrategyDefinition(BaseModel):
     """Resolution-independent executable definition owned by the artifact."""
 
@@ -79,6 +100,8 @@ class StrategyDefinition(BaseModel):
     signal_type: str
     parameters: dict[str, Any]
     exit_policy: ExitPolicyDefinition
+    execution_kind: Literal["spot", "defined_risk_vertical"] = "spot"
+    option_vertical: OptionVerticalExecutionPolicy | None = None
 
     @field_validator("signal_type")
     @classmethod
@@ -95,6 +118,15 @@ class StrategyDefinition(BaseModel):
         if value <= 0:
             raise ValueError("strategy durations must be positive")
         return value
+
+    @model_validator(mode="after")
+    def execution_policy_matches_kind(self) -> StrategyDefinition:
+        """Ensure an options artifact cannot reach runtime without complete vertical semantics."""
+        if self.execution_kind == "spot" and self.option_vertical is not None:
+            raise ValueError("spot strategy must not carry an option vertical policy")
+        if self.execution_kind == "defined_risk_vertical" and self.option_vertical is None:
+            raise ValueError("defined-risk vertical strategy requires option_vertical policy")
+        return self
 
 
 class ModelArtifact(BaseModel):

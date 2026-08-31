@@ -6,6 +6,8 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed record DiagnosticExecutionOptions(decimal MaximumNotional)
 {
     public const string RequiredSymbol = "BTC/USD";
+    /// <summary>Alpaca BTC/USD's minimum representable base-unit increment (one satoshi).</summary>
+    public const decimal MinimumCryptoQuantity = 0.00000001m;
     public static readonly TimeSpan HoldingDuration = TimeSpan.FromMinutes(2);
 
     public static DiagnosticExecutionOptions FromEnvironment(PaperTradingOptions paperTrading)

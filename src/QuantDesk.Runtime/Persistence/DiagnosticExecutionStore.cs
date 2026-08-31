@@ -5,7 +5,7 @@ namespace QuantDesk.Runtime.Persistence;
 /// <summary>Durably records one diagnostic lifecycle and reserves its client IDs.</summary>
 public sealed class DiagnosticExecutionStore(string path)
 {
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Options = QuantDesk.Domain.Serialization.ContractJson.Web;
     private readonly Lock gate = new();
 
     /// <summary>Verifies that the configured store can be read and durably replaced.</summary>

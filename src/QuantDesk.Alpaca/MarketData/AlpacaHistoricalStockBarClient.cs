@@ -9,7 +9,7 @@ namespace QuantDesk.Alpaca.MarketData;
 public sealed class AlpacaHistoricalStockBarClient(HttpClient httpClient, AlpacaOptions options)
 {
     private const int MaximumPages = 10_000;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     /// <summary>
     /// Fetches adjusted bars for one symbol.
@@ -34,13 +34,14 @@ public sealed class AlpacaHistoricalStockBarClient(HttpClient httpClient, Alpaca
             throw new ArgumentException("Feed must be iex or sip.", nameof(feed));
         if (adjustment is not ("raw" or "split" or "dividend" or "all"))
             throw new ArgumentException("Adjustment must be raw, split, dividend, or all.", nameof(adjustment));
+        string requestedSymbol = symbol.Trim().ToUpperInvariant();
 
         List<HistoricalStockBar> result = [];
         var cursor = new AlpacaPageCursor(MaximumPages, "stock-bar");
         while (cursor.HasMorePages)
         {
             string requestUri = options.DataUri("v2/stocks/bars") +
-                $"?symbols={Uri.EscapeDataString(symbol)}&timeframe={Uri.EscapeDataString(timeframe)}" +
+                $"?symbols={Uri.EscapeDataString(requestedSymbol)}&timeframe={Uri.EscapeDataString(timeframe)}" +
                 $"&start={Uri.EscapeDataString(start.ToString("O"))}&end={Uri.EscapeDataString(end.ToString("O"))}" +
                 $"&feed={feed}&adjustment={adjustment}&limit=10000&sort=asc" +
                 cursor.PageTokenQuery;
@@ -50,9 +51,17 @@ public sealed class AlpacaHistoricalStockBarClient(HttpClient httpClient, Alpaca
             using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
             response.EnsureSuccessStatusCode();
             StockBarsResponse? payload = await response.Content.ReadFromJsonAsync<StockBarsResponse>(JsonOptions, cancellationToken);
-            if (payload?.Bars.TryGetValue(symbol, out IReadOnlyList<HistoricalStockBar>? bars) == true)
-                result.AddRange(bars);
-            cursor.Advance(payload?.NextPageToken);
+            if (payload?.Bars is null)
+                throw new InvalidOperationException("Alpaca stock-bars response omitted its bars payload.");
+            string[] unexpected = payload.Bars.Keys
+                .Where(returned => !string.Equals(returned, requestedSymbol, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (unexpected.Length != 0)
+                throw new InvalidOperationException("Alpaca stock-bars response contained an unrequested symbol.");
+            if (!payload.Bars.TryGetValue(requestedSymbol, out IReadOnlyList<HistoricalStockBar>? bars) || bars is null)
+                throw new InvalidOperationException($"Alpaca stock-bars response omitted '{requestedSymbol}'.");
+            result.AddRange(bars);
+            cursor.Advance(payload.NextPageToken);
         }
 
         return result.OrderBy(bar => bar.Timestamp).DistinctBy(bar => bar.Timestamp).ToArray();

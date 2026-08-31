@@ -4,10 +4,18 @@ namespace QuantDesk.Domain.Experts;
 
 public readonly record struct ExpertVote(int ExpertId, DirectionalForecast Forecast, double Weight);
 
+/// <summary>Explicitly distinguishes missing evidence from contradictory valid evidence.</summary>
+public enum CommitteeVerdict { Consensus, Abstain, Uncertain }
+
 public readonly record struct CommitteeDecision(
     int InstrumentSlot,
     double ExpectedReturnBps,
     double AgreementScore,
     bool Actionable,
     string ReasonCode,
-    IReadOnlyList<int> SupportingExperts);
+    IReadOnlyList<int> SupportingExperts)
+{
+    public CommitteeVerdict Verdict { get; init; } = Actionable
+        ? CommitteeVerdict.Consensus
+        : CommitteeVerdict.Abstain;
+}

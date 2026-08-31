@@ -42,10 +42,7 @@ public sealed class HistoricalCryptoDatasetService(
     // no slower than half that horizon prevents a valid forecast becoming stale while
     // the worker is waiting on an unchanged dataset.
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(30);
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true
-    };
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Indented;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

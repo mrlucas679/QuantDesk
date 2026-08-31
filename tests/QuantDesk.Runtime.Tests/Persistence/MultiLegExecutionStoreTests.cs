@@ -48,6 +48,33 @@ public sealed class MultiLegExecutionStoreTests
         }
     }
 
+    [Fact]
+    public async Task ConcurrentStoreInstancesAllowOnlyOneReservation()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"qd-mleg-race-{Guid.NewGuid():N}.json");
+        try
+        {
+            var start = new ManualResetEventSlim(false);
+            Task<bool>[] attempts =
+            [
+                Task.Run(() => { start.Wait(); return new MultiLegExecutionStore(path).TryCreate(
+                    Record("OPTIONS-RACE-A", "qd-opt-race-entry", "qd-opt-race-exit")); }),
+                Task.Run(() => { start.Wait(); return new MultiLegExecutionStore(path).TryCreate(
+                    Record("OPTIONS-RACE-B", "qd-opt-race-entry", "qd-opt-race-exit")); })
+            ];
+            start.Set();
+
+            bool[] outcomes = await Task.WhenAll(attempts);
+
+            Assert.Equal(1, outcomes.Count(result => result));
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path + ".tmp")) File.Delete(path + ".tmp");
+        }
+    }
+
     private static MultiLegExecutionRecord Record(string executionId, string entryId, string exitId) => new(
         executionId, "spy-vertical", MultiLegExecutionState.EntryReserved,
         new MultiLegExecutionCommand(entryId, 1, ExecutionOrderType.Limit, ExecutionTimeInForce.Day,

@@ -26,6 +26,20 @@ public sealed class AlpacaHistoricalStockBarClientTests
         Assert.Contains("page_token=next", handler.RequestUris[1].Query);
     }
 
+    [Theory]
+    [InlineData("null")]
+    [InlineData("{\"bars\":{\"QQQ\":[]},\"next_page_token\":null}")]
+    [InlineData("{\"bars\":{},\"next_page_token\":null}")]
+    public async Task GetBarsAsync_RejectsMissingOrUnrequestedPayload(string payload)
+    {
+        using var httpClient = new HttpClient(new PagedHandler(payload));
+        var client = new AlpacaHistoricalStockBarClient(httpClient, TestOptions());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetBarsAsync(
+            "SPY", DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+            DateTimeOffset.Parse("2026-01-03T00:00:00Z"), "5Min", CancellationToken.None));
+    }
+
     private static AlpacaOptions TestOptions() => new()
     {
         BaseUrl = new Uri("https://paper-api.alpaca.markets"),

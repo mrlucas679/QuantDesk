@@ -126,4 +126,16 @@ public sealed class OpportunityRouterTests
         Assert.True(
             ExecutionCostProfile.SpotCryptoMaker.HurdleBps(1m) <
             ExecutionCostProfile.SpotCryptoTaker.HurdleBps(1m));
+
+    [Fact]
+    public void CryptoCostScenariosRemainExplicitAndDoNotConflateObservedWithQualification()
+    {
+        ExecutionCostProfile observed = ExecutionCostProfile.ObservedRealisedCrypto(50m, 7m, "run-42");
+
+        Assert.Equal("spot-crypto-observed-realised:run-42", observed.AssetClass);
+        Assert.True(ExecutionCostProfile.SpotCryptoConservativeStress.HurdleBps(1m) >
+            ExecutionCostProfile.SpotCryptoTaker.HurdleBps(1m));
+        Assert.True(observed.HurdleBps(1m) <
+            ExecutionCostProfile.SpotCryptoConservativeStress.HurdleBps(1m));
+    }
 }

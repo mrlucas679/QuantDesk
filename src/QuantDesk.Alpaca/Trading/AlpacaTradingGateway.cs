@@ -16,7 +16,7 @@ public sealed class AlpacaTradingGateway(
     IInstrumentSymbolResolver symbols) : IBrokerExecutionGateway, IMultiLegBrokerExecutionGateway
 {
     private readonly Uri _paperBaseUrl = ValidatePaperBaseUrl(options.BaseUrl);
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     public bool IsPaperEnvironment => true;
 

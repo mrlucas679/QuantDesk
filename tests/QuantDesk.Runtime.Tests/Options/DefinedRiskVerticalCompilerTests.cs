@@ -188,6 +188,5 @@ public sealed class DefinedRiskVerticalCompilerTests
 
     private static OptionQuoteSnapshot Quote(
         int slot, double bid, double ask, double relativeSpread = 0.02) =>
-        new(slot, bid, ask, (bid + ask) / 2, relativeSpread,
-            0.3, 0.5, 0.01, 0.1, -0.05, 1_000, DataQuality.Healthy);
+        new(slot, bid, ask, (bid + ask) / 2, relativeSpread, 1_000, DataQuality.Healthy);
 }

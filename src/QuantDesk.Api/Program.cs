@@ -56,6 +56,12 @@ builder.Services.AddSingleton(services =>
         ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "mleg-executions.json");
     return new MultiLegExecutionStore(Path.GetFullPath(configured));
 });
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_AUTONOMOUS_STORE_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "autonomous-executions.json");
+    return new AutonomousExecutionStore(Path.GetFullPath(configured));
+});
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 builder.Services.AddSingleton<PaperOrderApplicationService>();
@@ -171,6 +177,10 @@ builder.Services.AddHttpClient<AlpacaLatestOptionQuoteClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddHttpClient<AlpacaOptionRiskSnapshotClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
 builder.Services.AddHttpClient<AlpacaLatestEquityQuoteClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
@@ -191,6 +201,8 @@ builder.Services.AddSingleton(services =>
         maximumDaysToExpiry: 60);
 });
 builder.Services.AddSingleton<OptionVerticalOpportunityService>();
+builder.Services.AddSingleton<OptionExecutionCoordinator>();
+builder.Services.AddSingleton<DefinedRiskVerticalLifecycleService>();
 
 WebApplication app = builder.Build();
 app.Services.GetRequiredService<FullSystemReadinessState>().RecordDeterministicRuntime(
@@ -254,6 +266,41 @@ app.MapGet("/api/diagnostics/recovery", (
         recovery.LastError
     });
 });
+app.MapGet("/api/options/recovery", (
+    HttpRequest request,
+    MultiLegExecutionRecoveryService recovery,
+    MultiLegExecutionStore store,
+    OperatorKeyAuthorizer authorizer) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+    return Results.Ok(new
+    {
+        active = recovery.StartedAt is not null && recovery.LastError is null,
+        recovery.StartedAt,
+        recovery.LastCycleAt,
+        recovery.LastError,
+        nonterminalCount = store.ListNonterminal().Count
+    });
+});
+app.MapPost("/api/options/{executionId}/emergency-flatten", async (
+    HttpRequest request,
+    string executionId,
+    MultiLegExecutionLifecycle lifecycle,
+    MultiLegExecutionStore store,
+    OperatorKeyAuthorizer authorizer,
+    CancellationToken cancellationToken) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+    if (store.Find(executionId) is null)
+        return Results.NotFound();
+    MultiLegExecutionLifecycle.EmergencyFlattenResult result = await lifecycle.EmergencyFlattenAsync(
+        executionId, cancellationToken);
+    return Results.Json(result, statusCode: result.Complete
+        ? StatusCodes.Status200OK
+        : result.Pending ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+});
 app.MapGet("/api/diagnostics/{experimentId}", (
     HttpRequest request,
     string experimentId,
@@ -308,7 +355,8 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
         reserved = store.Find(experimentId)!;
     }
     if (reserved.State == "EntryReserved" && reserved.EntrySubmissionAttemptedAt is null)
-        result = await diagnostics.AdvanceAsync(experimentId, 0, 0.00000001m, cancellationToken);
+        result = await diagnostics.AdvanceAsync(
+            experimentId, 0, DiagnosticExecutionOptions.MinimumCryptoQuantity, cancellationToken);
     else if (reserved.State == "ReconciliationFailed")
     {
         store.Update(experimentId, current => current with

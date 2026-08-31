@@ -5,7 +5,7 @@ namespace QuantDesk.Runtime.Persistence;
 
 public sealed class PortfolioSnapshotStore(string path)
 {
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = false };
+    private static readonly JsonSerializerOptions Options = QuantDesk.Domain.Serialization.ContractJson.Web;
     private readonly Lock gate = new();
 
     public void Save(PortfolioSnapshot snapshot)

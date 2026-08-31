@@ -5,6 +5,7 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 from uuid import uuid4
 
@@ -130,10 +131,14 @@ def rolling_outer_slices(row_count: int, horizon_bars: int) -> tuple[tuple[slice
     return tuple(windows)
 
 
-def conservative_lower_mean(values: NDArray[np.float64]) -> float:
+def conservative_lower_mean(values: NDArray[np.float64], one_sided_alpha: float = 0.025) -> float:
+    """Return a lower confidence bound with an explicit comparison-adjusted alpha."""
     if len(values) < 2:
         return float("-inf")
-    return float(values.mean() - 1.96 * values.std(ddof=1) / math.sqrt(len(values)))
+    if not 0 < one_sided_alpha < 1:
+        raise ValueError("one_sided_alpha must be between zero and one.")
+    critical = NormalDist().inv_cdf(1 - one_sided_alpha)
+    return float(values.mean() - critical * values.std(ddof=1) / math.sqrt(len(values)))
 
 
 def non_overlapping_returns(
@@ -436,6 +441,10 @@ def run_rolling_low_vol_persistence_experiment(
     predictions = frame["return_1"].to_numpy(dtype=float)
     volatility = frame["volatility_48"].to_numpy(dtype=float)
     costs = round_trip_cost_bps / 10_000
+    # Four caps are the complete preregistered regime-search budget. Charge them during
+    # calibration selection and untouched reporting, rather than treating the selected cap free.
+    regime_comparison_count = 4
+    regime_alpha = 0.025 / regime_comparison_count
     selected_windows: list[np.ndarray] = []
     thresholds: list[float] = []
     for _, calibration_slice, test_slice in rolling_outer_slices(len(frame), horizon_bars):
@@ -453,7 +462,7 @@ def run_rolling_low_vol_persistence_experiment(
             returns = non_overlapping_returns(
                 calibration_predictions[eligible], calibration_target[eligible], threshold, horizon_bars
             ) - costs
-            lower = conservative_lower_mean(returns)
+            lower = conservative_lower_mean(returns, regime_alpha)
             if lower > best_lower:
                 best_threshold, best_cap, best_lower = threshold, float(cap), lower
         test_eligible = volatility[test_slice] <= best_cap
@@ -466,7 +475,7 @@ def run_rolling_low_vol_persistence_experiment(
         thresholds.append(best_threshold)
     selected = np.concatenate(selected_windows)
     mean = float(selected.mean()) if len(selected) else float("-inf")
-    lower = conservative_lower_mean(selected)
+    lower = conservative_lower_mean(selected, regime_alpha)
     std = float(selected.std(ddof=1)) if len(selected) > 1 else 0.0
     sharpe = mean / std * math.sqrt(annual_periods(timeframe) / horizon_bars) if std > 0 else 0.0
     cumulative = np.cumsum(selected) if len(selected) else np.array([0.0])
@@ -494,6 +503,8 @@ def run_rolling_low_vol_persistence_experiment(
                 "round_trip_cost_bps": round_trip_cost_bps,
                 "horizon_bars": horizon_bars,
                 "volatility_caps": [0.25, 0.5, 0.75, 1.0],
+                "regime_comparison_count": regime_comparison_count,
+                "one_sided_alpha": regime_alpha,
                 "outer_test_windows": 2,
             },
             "dataset_hash": manifest["sha256"], "sharpe_ratio": evaluation.test_sharpe,

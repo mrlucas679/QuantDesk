@@ -1,5 +1,6 @@
 using System.Text.Json;
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Trading;
 
 namespace QuantDesk.Runtime.Persistence;
 
@@ -23,6 +24,8 @@ public enum MultiLegExecutionState
     ExitRejected,
     ReconciliationFailed,
     SubmissionUnknown,
+    EmergencyFlattening,
+    EmergencyFlattened,
     /// <summary>
     /// The broker never exposed an order for an ambiguous submission within the bounded recovery
     /// period. This is deliberately terminal: submitting again could duplicate exposure.
@@ -67,13 +70,55 @@ public sealed record MultiLegExecutionRecord(
     public string? FailureReason { get; init; }
 
     public decimal InternalOpenQuantity => Math.Max(0, EntryFilledQuantity - ExitFilledQuantity);
+
+    /// <summary>
+    /// Reconstructs the signed option inventory owned by this lifecycle from broker-supplied leg
+    /// fills. A missing, duplicate, or directionally inconsistent leg is deliberately not
+    /// represented as zero inventory: reconciliation must halt rather than hide exposure.
+    /// </summary>
+    public bool TryGetInternalOpenLegQuantities(out IReadOnlyDictionary<string, decimal> quantities)
+    {
+        quantities = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        if (EntryLegs.Count != EntryCommand.Legs.Count || ExitLegs.Count != ExitCommand.Legs.Count)
+            return false;
+
+        var reconstructed = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        foreach (MultiLegExecutionLeg entry in EntryCommand.Legs)
+        {
+            BrokerOrderLegSnapshot? entryFill = FindSingle(EntryLegs, entry.Symbol);
+            BrokerOrderLegSnapshot? exitFill = FindSingle(ExitLegs, entry.Symbol);
+            if (entryFill is null || exitFill is null || entryFill.FilledQuantity < 0 ||
+                exitFill.FilledQuantity < 0 || entryFill.FilledQuantity < exitFill.FilledQuantity)
+                return false;
+
+            decimal sign = entry.Side == OrderSide.Buy ? 1m : -1m;
+            reconstructed[entry.Symbol] = sign * (entryFill.FilledQuantity - exitFill.FilledQuantity);
+        }
+
+        quantities = reconstructed;
+        return true;
+    }
+
+    private static BrokerOrderLegSnapshot? FindSingle(
+        IReadOnlyList<BrokerOrderLegSnapshot> legs,
+        string symbol)
+    {
+        BrokerOrderLegSnapshot[] matches = legs.Where(leg =>
+            string.Equals(leg.Symbol, symbol, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
 }
 
 /// <summary>Atomically persists MLeg records and submission claims across process restarts.</summary>
 public sealed class MultiLegExecutionStore(string path)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly Lock _gate = new();
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
+    // Lifecycles are constructed independently during recovery and tests. The lock must therefore
+    // outlive a store object, or two owners can both observe an empty state and submit the same
+    // opportunity. MLeg persistence is low-volume, so a process-wide gate is preferable to a
+    // racy per-object lock; separate processes are still fenced by deterministic client IDs.
+    private static readonly Lock ProcessGate = new();
+    private readonly Lock _gate = ProcessGate;
 
     public bool IsAvailable()
     {
@@ -124,6 +169,7 @@ public sealed class MultiLegExecutionStore(string path)
                 .Where(item => item.State is not (MultiLegExecutionState.Complete or
                     MultiLegExecutionState.EntryRejected or MultiLegExecutionState.ExitRejected or
                     MultiLegExecutionState.ReconciliationFailed or
+                    MultiLegExecutionState.EmergencyFlattened or
                     MultiLegExecutionState.SubmissionUnresolved))
                 .ToArray();
         }

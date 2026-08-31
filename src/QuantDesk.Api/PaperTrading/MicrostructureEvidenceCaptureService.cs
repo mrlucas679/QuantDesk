@@ -13,7 +13,7 @@ public sealed class MicrostructureEvidenceCaptureService(
     PaperTradingOptions options,
     ILogger<MicrostructureEvidenceCaptureService> logger) : BackgroundService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
     private long _recordedGapCount;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

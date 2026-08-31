@@ -8,7 +8,7 @@ namespace QuantDesk.Alpaca.MarketData;
 
 public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaOptions options)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     public async Task<decimal> GetAskAsync(string symbol, CancellationToken cancellationToken)
     {

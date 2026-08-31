@@ -18,7 +18,7 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
     private const int ContractsPerPage = 1000;
     private const int MaximumPages = 1000;
     private const int StandardMultiplier = 100;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     public async Task<OptionContractQuery> ListAsync(
         string underlying,

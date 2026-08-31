@@ -1,4 +1,6 @@
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Domain.Serialization;
+using System.Text.Json;
 
 namespace QuantDesk.Api.Tests;
 
@@ -71,5 +73,21 @@ public sealed class HistoricalEquityDatasetServiceTests
         };
 
         Assert.Equal(4, names.Count);
+    }
+
+    [Fact]
+    public void CSharpManifestUsesTheExactCamelCaseFieldsConsumedByPython()
+    {
+        var manifest = new HistoricalDatasetManifest(
+            "spy-1day-sip-test", "SPY", "1Day", DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.AddDays(1), 2, "sha256:test", DateTimeOffset.UnixEpoch,
+            "spy-1day-sip-test.json", "sip", "all");
+
+        using JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(manifest, ContractJson.Web));
+
+        Assert.Equal("spy-1day-sip-test.json", document.RootElement.GetProperty("dataFile").GetString());
+        Assert.Equal(2, document.RootElement.GetProperty("rowCount").GetInt32());
+        Assert.False(document.RootElement.TryGetProperty("data_file", out _));
+        Assert.False(document.RootElement.TryGetProperty("row_count", out _));
     }
 }
