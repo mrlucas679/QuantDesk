@@ -1,6 +1,5 @@
 import numpy as np
 from numpy.typing import NDArray
-from statsmodels.regression.linear_model import OLS  # type: ignore[import-untyped]
 
 
 class HARModel:
@@ -35,8 +34,10 @@ class HARModel:
             raise ValueError("Insufficient history for HAR model")
 
         X, y = self._prepare_features(rv)
-        model = OLS(y, X).fit()
-        self.coefficients = np.asarray(model.params, dtype=np.float64)
+        # The lagged HAR features can be collinear for legitimate low-variation
+        # windows. Use the deterministic minimum-norm least-squares solution.
+        coefficients, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+        self.coefficients = np.asarray(coefficients, dtype=np.float64)
         self.is_fitted = True
 
     def predict(self, rv_d: float, rv_w: float, rv_m: float) -> float:

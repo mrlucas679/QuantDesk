@@ -1,0 +1,23 @@
+{
+  "campaign_id": "CRYPTO-LITERATURE-MOMENTUM-2026-08-31-001",
+  "instrument": "BTC/USD",
+  "timeframe": "5Min",
+  "registered_at": "2026-08-31T09:00:00+00:00",
+  "validation_start_inclusive": "2022-01-01T00:00:00+00:00",
+  "validation_end_exclusive": "2024-01-01T00:00:00+00:00",
+  "prior_search_data_start": "2024-08-29T07:45:00+00:00",
+  "minimum_validation_bars": 150000,
+  "round_trip_cost_bps": 60.0,
+  "minimum_trades": 60,
+  "minimum_sharpe": 0.5,
+  "required_lower_confidence_bps": 0.0,
+  "prior_comparisons": 32,
+  "strategy_families": [
+    "weekly_time_series_momentum",
+    "four_week_time_series_momentum",
+    "dual_horizon_momentum",
+    "four_week_breakout"
+  ],
+  "holding_horizons_bars": [864, 2016],
+  "primary_evidence_ids": ["NBER-w24877", "NBER-w26816"]
+}

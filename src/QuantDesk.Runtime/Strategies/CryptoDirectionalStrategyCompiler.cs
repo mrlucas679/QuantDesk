@@ -22,9 +22,21 @@ public sealed class CryptoDirectionalStrategyCompiler(
         PortfolioSnapshot portfolio,
         AccountCapabilities capabilities,
         long nowMonotonicTicks,
+        Span<TradeCandidate> destination) => Compile(
+            forecasts, market, portfolio, capabilities, nowMonotonicTicks,
+            "crypto-long-momentum-v1", destination);
+
+    public int Compile(
+        in ForecastBundle forecasts,
+        in InstrumentSnapshot market,
+        PortfolioSnapshot portfolio,
+        AccountCapabilities capabilities,
+        long nowMonotonicTicks,
+        string strategyFamily,
         Span<TradeCandidate> destination)
     {
-        if (destination.IsEmpty || !capabilities.PaperEnvironment || !capabilities.CryptoTrading)
+        if (destination.IsEmpty || string.IsNullOrWhiteSpace(strategyFamily) ||
+            !capabilities.PaperEnvironment || !capabilities.CryptoTrading)
             return 0;
         if (forecasts.Direction is not DirectionalForecast direction ||
             !ForecastValidity.IsFresh(direction.Metadata, nowMonotonicTicks) ||
@@ -40,7 +52,7 @@ public sealed class CryptoDirectionalStrategyCompiler(
         destination[0] = new TradeCandidate(
             CandidateId: direction.Metadata.GeneratedEventNs,
             InstrumentSlot: forecasts.InstrumentSlot,
-            StrategyId: "crypto-long-momentum-v1",
+            StrategyId: strategyFamily,
             RiskBasis: RiskBasis.StressLoss,
             SourceStateVersion: forecasts.SourceStateVersion,
             GeneratedMonotonicTicks: nowMonotonicTicks,

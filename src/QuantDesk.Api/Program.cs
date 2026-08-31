@@ -170,8 +170,15 @@ app.MapGet("/api/system/readiness", (FullSystemReadinessState readiness) =>
 });
 app.MapGet("/api/system/capabilities", async (
     IAlpacaCapabilityProbe probe,
+    FullSystemReadinessState readiness,
     CancellationToken cancellationToken) =>
-    Results.Ok(await probe.ProbeAsync(cancellationToken)));
+{
+    var capabilities = await probe.ProbeAsync(cancellationToken);
+    return Results.Ok(capabilities with
+    {
+        TradeUpdateStream = readiness.Snapshot().TradeUpdatesHealthy
+    });
+});
 app.MapGet("/api/autonomous/status", (AutonomousTradingState autonomous) =>
     Results.Ok(autonomous.Snapshot()));
 app.MapGet("/api/research/status", (ResearchArtifactState artifacts) =>
@@ -258,6 +265,8 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
         });
         result = await diagnostics.AdvanceAsync(experimentId, 0, 0, cancellationToken);
     }
+    else if (reserved.State == "Complete" && reserved.GrossPaperPnl is null)
+        result = await diagnostics.AdvanceAsync(experimentId, 0, 0, cancellationToken);
     return Results.Json(new { result, record = store.Find(experimentId) }, statusCode:
         result.Allowed ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
 });

@@ -1,7 +1,25 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+EXECUTABLE_STRATEGY_FAMILIES = frozenset(
+    {
+        "price_volume_directional",
+        "weekly_time_series_momentum",
+        "four_week_time_series_momentum",
+        "dual_horizon_momentum",
+        "four_week_breakout",
+        "donchian_breakout",
+        "moving_average_trend",
+        "bollinger_reversion",
+        "rsi_reversion",
+        "volatility_breakout",
+        "regime_ensemble",
+        "volume_confirmed_breakout",
+        "compression_breakout",
+    }
+)
 
 
 class EvidenceProfile(BaseModel):
@@ -20,6 +38,15 @@ class ModelArtifact(BaseModel):
     model_id: str
     model_type: str
     model_version: str
+    strategy_family: str
+
+    @field_validator("strategy_family")
+    @classmethod
+    def strategy_family_must_be_executable(cls, value: str) -> str:
+        """Reject artifacts that cannot map to an application-owned strategy family."""
+        if value not in EXECUTABLE_STRATEGY_FAMILIES:
+            raise ValueError("strategy_family is not registered for execution")
+        return value
 
     feature_schema_hash: str
     dataset_hash: str

@@ -25,48 +25,82 @@ class OrderBookEvidence:
     ask_depth: float
 
 
+@dataclass(frozen=True)
+class MicrostructureEvidenceStatus:
+    """Counts immutable evidence and the usable segment after the latest declared gap."""
+
+    total_records: int
+    usable_records: int
+    gap_events: int
+    latest_gap_at: datetime | None
+
+
 def load_orderbook_evidence(
     data_root: Path, symbol: str, minimum_records: int = 100_000
 ) -> list[OrderBookEvidence]:
     """Load gap-free raw order-book evidence suitable for future point-in-time research."""
     if minimum_records < 1:
         raise ValueError("minimum_records must be positive.")
-    _require_no_capture_gaps(data_root)
-    safe_symbol = "".join(character for character in symbol if character.isalnum()).lower()
-    directory = data_root / "orderbook-events"
-    records = [
-        _parse_orderbook_record(line, symbol)
-        for path in sorted(directory.glob(f"{safe_symbol}-*.jsonl"))
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    records = _load_orderbook_records(data_root, symbol)
+    latest_gap_at, _ = _latest_capture_gap(data_root)
+    if latest_gap_at is not None:
+        records = [record for record in records if record.captured_at > latest_gap_at]
     records.sort(key=lambda record: record.captured_at)
     if len(records) < minimum_records:
+        segment = " since latest capture gap" if latest_gap_at is not None else ""
         raise ValueError(
             f"Insufficient raw order-book history for {symbol}: "
-            f"{len(records)} records, need {minimum_records}."
+            f"{len(records)} records{segment}, need {minimum_records}."
         )
     if any(current.captured_at <= previous.captured_at for previous, current in pairwise(records)):
         raise ValueError("Order-book evidence timestamps must be strictly increasing.")
     return records
 
 
-def _require_no_capture_gaps(data_root: Path) -> None:
-    """Reject a study when the capture runtime declared evidence discontinuity."""
+def summarize_orderbook_evidence(data_root: Path, symbol: str) -> MicrostructureEvidenceStatus:
+    """Summarize total evidence and the continuous segment after the latest gap."""
+    records = _load_orderbook_records(data_root, symbol)
+    latest_gap_at, gap_events = _latest_capture_gap(data_root)
+    usable = records if latest_gap_at is None else [
+        record for record in records if record.captured_at > latest_gap_at
+    ]
+    return MicrostructureEvidenceStatus(len(records), len(usable), gap_events, latest_gap_at)
+
+
+def _load_orderbook_records(data_root: Path, symbol: str) -> list[OrderBookEvidence]:
+    """Load immutable order-book rows for one symbol without crossing evidence segments."""
+    safe_symbol = "".join(character for character in symbol if character.isalnum()).lower()
+    directory = data_root / "orderbook-events"
+    return [
+        _parse_orderbook_record(line, symbol)
+        for path in sorted(directory.glob(f"{safe_symbol}-*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _latest_capture_gap(data_root: Path) -> tuple[datetime | None, int]:
+    """Return the latest valid gap boundary and total number of durable gap declarations."""
     directory = data_root / "microstructure-gaps"
     gap_files = sorted(directory.glob("capture-gaps-*.jsonl"))
+    latest_gap_at: datetime | None = None
+    gap_events = 0
     for path in gap_files:
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
                 payload = json.loads(line)
+                captured_at = datetime.fromisoformat(str(payload["capturedAt"]))
                 reason = str(payload["reasonCode"])
                 gap_count = int(payload["gapCount"])
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError("Malformed microstructure capture-gap record.") from error
-            if gap_count > 0:
-                raise ValueError(f"Microstructure evidence contains capture gap: {reason}.")
+            if captured_at.tzinfo is None or gap_count <= 0 or not reason:
+                raise ValueError("Malformed microstructure capture-gap record.")
+            latest_gap_at = max(latest_gap_at, captured_at) if latest_gap_at else captured_at
+            gap_events += 1
+    return latest_gap_at, gap_events
 
 
 def _parse_orderbook_record(line: str, expected_symbol: str) -> OrderBookEvidence:

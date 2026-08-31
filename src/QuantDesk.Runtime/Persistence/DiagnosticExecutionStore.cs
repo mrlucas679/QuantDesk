@@ -265,7 +265,19 @@ public enum DiagnosticExecutionFailure
     AssetNotTradable, RiskEnvelopeExceeded, ReconciliationMismatch, SubmissionUnknown,
     EntryCanceled, EntryRejected, EntryExpired, FillTimeout, ExitFailed,
     ExitCanceled, ExitRejected, ExitExpired, ReconciliationFailed, EmergencyFlattenFailed,
-    PersistenceFailed
+    PersistenceFailed, BlockedPaperVerification, BlockedRisk, BlockedReconciliation
+}
+
+/// <summary>Durable lifecycle states understood by a diagnostic execution record.</summary>
+public enum DiagnosticExecutionState
+{
+    Created, AdmissionChecking, AdmissionPassed,
+    EntryReserved, EntrySubmitting, EntrySubmitted, EntryAccepted, EntryPartiallyFilled, EntryFilled,
+    Holding, ExitDue,
+    ExitReserved, ExitSubmitting, ExitSubmitted, ExitAccepted, ExitPartiallyFilled, ExitFilled,
+    Reconciling, Complete,
+    BlockedPaperVerification, BlockedRisk, BlockedReconciliation,
+    EntryRejected, ExitRejected, ReconciliationFailed
 }
 
 public sealed record DiagnosticExecutionRecord(
@@ -279,11 +291,13 @@ public sealed record DiagnosticExecutionRecord(
     string? EntryClientOrderId,
     string? ExitClientOrderId)
 {
+    public string ExecutionMode { get; init; } = "PAPER";
     public decimal RequestedQuantity { get; init; }
     public string? EntryBrokerOrderId { get; init; }
     public DateTimeOffset? EntryReservedAt { get; init; }
     public DateTimeOffset? EntrySubmissionAttemptedAt { get; init; }
     public DateTimeOffset? EntrySubmittedAt { get; init; }
+    public DateTimeOffset? EntryAcknowledgedAt { get; init; }
     public DateTimeOffset? EntryBrokerCreatedAt { get; init; }
     public DateTimeOffset? EntryBrokerUpdatedAt { get; init; }
     public DateTimeOffset? EntryBrokerCanceledAt { get; init; }
@@ -293,12 +307,14 @@ public sealed record DiagnosticExecutionRecord(
     public DateTimeOffset? FinalEntryFillAt { get; init; }
     public decimal EntryFilledQuantity { get; init; }
     public decimal? EntryAverageFillPrice { get; init; }
+    public decimal? EntryReferencePrice { get; init; }
     public DateTimeOffset? HoldStartedAt { get; init; }
     public DateTimeOffset? ScheduledExitAt { get; init; }
     public string? ExitBrokerOrderId { get; init; }
     public DateTimeOffset? ExitReservedAt { get; init; }
     public DateTimeOffset? ExitSubmissionAttemptedAt { get; init; }
     public DateTimeOffset? ExitSubmittedAt { get; init; }
+    public DateTimeOffset? ExitAcknowledgedAt { get; init; }
     public DateTimeOffset? ExitBrokerCreatedAt { get; init; }
     public DateTimeOffset? ExitBrokerUpdatedAt { get; init; }
     public DateTimeOffset? ExitBrokerCanceledAt { get; init; }
@@ -309,9 +325,11 @@ public sealed record DiagnosticExecutionRecord(
     public decimal ExitQuantity { get; init; }
     public decimal ExitFilledQuantity { get; init; }
     public decimal? ExitAverageFillPrice { get; init; }
+    public decimal? ExitReferencePrice { get; init; }
     public decimal FinalBrokerQuantity { get; init; }
     public decimal FinalInternalQuantity { get; init; }
     public string? ReconciliationResult { get; init; }
+    public decimal? GrossPaperPnl { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public string? EmergencyClientOrderId { get; init; }
     public string? EmergencyBrokerOrderId { get; init; }

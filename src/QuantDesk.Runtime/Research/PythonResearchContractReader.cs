@@ -33,6 +33,7 @@ public static class PythonResearchContractReader
             RequirePropertyString(root, "artifact_id"),
             RequirePropertyString(root, "model_id"),
             RequirePropertyString(root, "model_version"),
+            RequirePropertyString(root, "strategy_family"),
             RequirePropertyString(root, "feature_schema_hash"),
             RequirePropertyString(root, "artifact_hash"),
             RequirePropertyString(root, "evidence_grade"),

@@ -1,0 +1,24 @@
+{
+  "campaign_id": "CRYPTO-MULTI-STRATEGY-2026-08-31-001",
+  "instrument": "BTC/USD",
+  "timeframe": "5Min",
+  "registered_at": "2026-08-31T03:40:00Z",
+  "holdout_start_exclusive": "2026-08-31T03:30:00Z",
+  "source_dataset_hash": "sha256:c9c9697e7444786817027603f9b50ce88bebae8b1cd629d6c86eca1a5e199230",
+  "minimum_unseen_bars": 8640,
+  "round_trip_cost_bps": 60.0,
+  "minimum_trades": 60,
+  "minimum_sharpe": 0.5,
+  "required_lower_confidence_bps": 0.0,
+  "strategy_families": [
+    "donchian_breakout",
+    "moving_average_trend",
+    "bollinger_reversion",
+    "rsi_reversion",
+    "volatility_breakout",
+    "regime_ensemble",
+    "volume_confirmed_breakout",
+    "compression_breakout"
+  ],
+  "holding_horizons_bars": [12, 48, 144, 288]
+}

@@ -11,7 +11,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from quantdesk_research.config import get_research_config
+from quantdesk_research.data.orderbook_evidence import summarize_orderbook_evidence
 from quantdesk_research.evaluation.trial_ledger import TrialLedger
+from quantdesk_research.experiments.prospective_campaign import ProspectiveCampaign
 from quantdesk_research.mcp.alpaca import FORBIDDEN_PATTERNS, validate_alpaca_config
 from quantdesk_research.models.model_registry import ModelRegistry
 from quantdesk_research.shadow.auditor import ShadowAuditor
@@ -38,20 +40,45 @@ def _validated_models() -> list[dict[str, Any]]:
 def _microstructure_status() -> dict[str, int | str]:
     """Summarize raw order-book evidence without treating it as a validated model."""
     root = get_research_config().data_root
-    records = _count_jsonl(root / "orderbook-events")
-    gaps = _count_jsonl(root / "microstructure-gaps")
-    status = "SHADOW_ONLY" if records < 100_000 or gaps > 0 else "EVIDENCE_READY"
-    return {"records": records, "gaps": gaps, "status": status}
+    evidence = summarize_orderbook_evidence(root, "BTC/USD")
+    status = "EVIDENCE_READY" if evidence.usable_records >= 100_000 else "SHADOW_ONLY"
+    return {
+        "records": evidence.total_records,
+        "usable_records": evidence.usable_records,
+        "gaps": evidence.gap_events,
+        "status": status,
+    }
 
 
-def _count_jsonl(directory: Path) -> int:
-    """Count non-empty JSONL rows in a data directory without mutating evidence."""
-    return sum(
-        1
-        for path in directory.glob("*.jsonl")
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ) if directory.exists() else 0
+def _prospective_campaign_status() -> dict[str, Any]:
+    """Report immutable campaign progress without treating incomplete evidence as readiness."""
+    config = get_research_config()
+    campaign_path = Path("configs/prospective_strategy_campaign.json")
+    try:
+        campaign = ProspectiveCampaign.load(campaign_path)
+        manifest = _read_json(config.data_root / "latest-manifest.json")
+        bars = _read_json(config.data_root / str(manifest["dataFile"]))
+        unseen_bars = campaign.unseen_bar_count(bars)
+        return {
+            "campaign_id": campaign.campaign_id,
+            "fingerprint": campaign.fingerprint(),
+            "unseen_bars": unseen_bars,
+            "required_unseen_bars": campaign.minimum_unseen_bars,
+            "evidence_ready": unseen_bars >= campaign.minimum_unseen_bars,
+            "status": "EVIDENCE_READY"
+            if unseen_bars >= campaign.minimum_unseen_bars
+            else "COLLECTING_UNSEEN_EVIDENCE",
+        }
+    except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+        logger.error(f"Prospective campaign status failed closed: {error}")
+        return {"evidence_ready": False, "status": "UNAVAILABLE"}
+
+
+def _read_json(path: Path) -> Any:
+    """Read one JSON evidence file while keeping readiness calculation side-effect free."""
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -71,6 +98,7 @@ async def readiness_endpoint(_request: Request) -> JSONResponse:
         "experts_ready": bool(models),
         "reason": "validated_models_available" if models else "no_validated_models",
         "microstructure": _microstructure_status(),
+        "prospective_campaign": _prospective_campaign_status(),
     }
     return JSONResponse(payload, status_code=200 if models else 503)
 

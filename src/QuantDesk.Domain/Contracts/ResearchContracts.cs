@@ -16,6 +16,7 @@ public sealed record ModelArtifactContract(
     string ArtifactId,
     string ModelId,
     string ModelVersion,
+    string StrategyFamily,
     string FeatureSchemaHash,
     string ArtifactHash,
     string EvidenceGrade,
@@ -27,6 +28,7 @@ public sealed record ModelArtifactContract(
     public bool IsValid() => !string.IsNullOrWhiteSpace(ArtifactId)
         && !string.IsNullOrWhiteSpace(ModelId)
         && !string.IsNullOrWhiteSpace(ModelVersion)
+        && ExecutableStrategyFamilies.Contains(StrategyFamily)
         && !string.IsNullOrWhiteSpace(FeatureSchemaHash)
         && !string.IsNullOrWhiteSpace(ArtifactHash)
         && !string.IsNullOrWhiteSpace(EvidenceGrade)
@@ -38,6 +40,14 @@ public sealed record ModelArtifactContract(
         RequiredExecutionGates.All(gate => ValidationGates.Contains(gate, StringComparer.Ordinal));
 
     private static readonly string[] RequiredExecutionGates = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R11", "R12"];
+    private static readonly HashSet<string> ExecutableStrategyFamilies = new(StringComparer.Ordinal)
+    {
+        "price_volume_directional",
+        "weekly_time_series_momentum", "four_week_time_series_momentum",
+        "dual_horizon_momentum", "four_week_breakout",
+        "donchian_breakout", "moving_average_trend", "bollinger_reversion", "rsi_reversion",
+        "volatility_breakout", "regime_ensemble", "volume_confirmed_breakout", "compression_breakout"
+    };
 }
 
 public sealed record EvidenceProfileContract(

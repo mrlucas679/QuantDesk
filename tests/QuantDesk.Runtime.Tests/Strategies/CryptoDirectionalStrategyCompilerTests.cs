@@ -47,4 +47,24 @@ public sealed class CryptoDirectionalStrategyCompilerTests
 
         Assert.Equal(0, count);
     }
+
+    [Fact]
+    public void QualifiedStrategyFamilyIsPreservedForExecutionAttribution()
+    {
+        var forecast = new DirectionalForecast(
+            new ForecastMetadata(14, 0, ForecastType.DirectionalReturn, TimeSpan.FromMinutes(5),
+                1, 10, 100, 1, 1, ForecastStatus.Valid),
+            100, 1, new Probability(0.8), new Probability(0.1), new Probability(0.1), 0.8);
+        var destination = new QuantDesk.Domain.Strategies.TradeCandidate[1];
+        var compiler = new CryptoDirectionalStrategyCompiler(
+            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+
+        int count = compiler.Compile(new ForecastBundle(0, 1, forecast),
+            FinancialTestData.HealthyMarket(), FinancialTestData.Portfolio(),
+            new AccountCapabilities(true, false, true, false, null), 10,
+            "volatility_breakout", destination);
+
+        Assert.Equal(1, count);
+        Assert.Equal("volatility_breakout", destination[0].StrategyId);
+    }
 }

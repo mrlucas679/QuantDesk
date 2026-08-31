@@ -97,7 +97,8 @@ public sealed class AutonomousPaperTradingService(
         CryptoMarketEvidence evidence = await quoteClient.GetEvidenceAsync(options.Symbol, cancellationToken);
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, evidence, initial, true, true,
-            experimental ? null : (double)forecast!.PointForecast);
+            experimental ? null : (double)forecast!.PointForecast,
+            experimental ? null : research.StrategyFamily);
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {

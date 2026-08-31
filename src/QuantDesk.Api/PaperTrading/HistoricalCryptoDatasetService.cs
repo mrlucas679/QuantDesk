@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using QuantDesk.Alpaca.MarketData;
@@ -21,6 +22,11 @@ public sealed class HistoricalCryptoDatasetService(
     AutonomousPaperTradingOptions trading,
     ILogger<HistoricalCryptoDatasetService> logger) : BackgroundService
 {
+    private static readonly DateTimeOffset IndependentValidationStart =
+        DateTimeOffset.Parse("2022-01-01T00:00:00Z", CultureInfo.InvariantCulture);
+    private static readonly DateTimeOffset IndependentValidationEnd =
+        DateTimeOffset.Parse("2024-01-01T00:00:00Z", CultureInfo.InvariantCulture);
+    private const string IndependentValidationManifest = "independent-validation-manifest.json";
     // The shortest production forecast is one hour (12 five-minute bars).  Refreshing
     // no slower than half that horizon prevents a valid forecast becoming stale while
     // the worker is waiting on an unchanged dataset.
@@ -50,11 +56,30 @@ public sealed class HistoricalCryptoDatasetService(
             await PublishDatasetAsync(outputRoot, trading.Symbol, end.AddDays(-lookbackDays), end, "5Min", "latest-manifest.json", stoppingToken);
             await PublishDatasetAsync(outputRoot, "ETH/USD", end.AddDays(-lookbackDays), end, "5Min", "latest-eth-manifest.json", stoppingToken);
             await PublishDatasetAsync(outputRoot, trading.Symbol, end.AddDays(-3_000), end, "1Day", "latest-daily-manifest.json", stoppingToken);
+            await PublishIndependentValidationDatasetAsync(outputRoot, stoppingToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "Historical research dataset publication failed closed.");
         }
+    }
+
+    private async Task PublishIndependentValidationDatasetAsync(
+        string outputRoot,
+        CancellationToken cancellationToken)
+    {
+        string manifestPath = Path.Combine(outputRoot, IndependentValidationManifest);
+        if (File.Exists(manifestPath))
+            return;
+
+        await PublishDatasetAsync(
+            outputRoot,
+            trading.Symbol,
+            IndependentValidationStart,
+            IndependentValidationEnd,
+            "5Min",
+            IndependentValidationManifest,
+            cancellationToken);
     }
 
     private async Task PublishDatasetAsync(

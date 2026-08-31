@@ -200,7 +200,8 @@ def run_experiment(
     model.fit(
         features[train_slice],
         target[train_slice],
-        eval_set=[(features[calibration_slice], target[calibration_slice])],
+        eval_X=features[calibration_slice],
+        eval_y=target[calibration_slice],
         callbacks=[lgb.early_stopping(50, verbose=False)],
     )
     calibration_predictions = np.asarray(
@@ -285,7 +286,8 @@ def run_rolling_experiment(
         )
         model.fit(
             features[train_slice], target[train_slice],
-            eval_set=[(features[calibration_slice], target[calibration_slice])],
+            eval_X=features[calibration_slice],
+            eval_y=target[calibration_slice],
             callbacks=[lgb.early_stopping(50, verbose=False)],
         )
         calibration_predictions = np.asarray(
@@ -687,6 +689,7 @@ def publish_validated_directional_forecast(
     horizon_bars: int,
     evaluation: DirectionEvaluation,
     evidence_profile: EvidenceProfile,
+    strategy_family: str,
 ) -> None:
     """Fit and publish only a rolling-validation-passed directional model contract bundle."""
     if not evaluation.passed:
@@ -737,6 +740,7 @@ def publish_validated_directional_forecast(
     horizon_minutes = horizon_bars * (5 if timeframe == "5Min" else 24 * 60)
     artifact = ModelArtifact(
         artifact_id=artifact_id, model_id=f"{experiment_name}-lgbm", model_type="lightgbm_huber",
+        strategy_family=strategy_family,
         model_version="rolling-v1", feature_schema_hash=feature_hash, dataset_hash=manifest["sha256"],
         training_window={"end": manifest["end"]}, parameters={"horizon_bars": horizon_bars},
         random_seed=42, metrics=asdict(evaluation), evidence_grade=evidence_profile.transfer_grade,

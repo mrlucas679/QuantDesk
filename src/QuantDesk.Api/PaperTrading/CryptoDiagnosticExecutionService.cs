@@ -119,7 +119,11 @@ public sealed class CryptoDiagnosticExecutionService(
         if (record is null) return DiagnosticExecutionResult.Blocked("DIAGNOSTIC_NOT_FOUND");
         if (!symbols.TryResolveBySymbol(DiagnosticExecutionOptions.RequiredSymbol, out instrumentSlot))
             return DiagnosticExecutionResult.Blocked("BTC_USD_INSTRUMENT_UNAVAILABLE");
-        if (record.State == "Complete") return Ready(record);
+        if (record.State == "Complete")
+        {
+            BackfillCompletedMetrics(record);
+            return Ready(store.Find(record.ExperimentId)!);
+        }
         if (record.State is "EmergencyFlattenReserved" or "EmergencyFlattenAccepted")
             return await EmergencyFlattenAsync(record.ExperimentId, instrumentSlot, cancellationToken);
         if (record.State is "Holding" or "EntryFilled") return AdvanceHolding(record);
@@ -164,6 +168,12 @@ public sealed class CryptoDiagnosticExecutionService(
         decimal quantity,
         CancellationToken cancellationToken)
     {
+        // Once the deterministic entry order exists, broker exposure created by that
+        // order is explained. Attach its latest state before comparing persisted
+        // fills with the position; crypto fees can make those quantities differ.
+        if (context.ExistingOrder is not null)
+            return PersistBrokerOrder(record, context.ExistingOrder);
+
         if (!IsReconciled(record, context, instrumentSlot))
         {
             PersistReconciliationMismatch(record.ExperimentId);
@@ -171,9 +181,6 @@ public sealed class CryptoDiagnosticExecutionService(
         }
 
         store.Update(record.ExperimentId, current => current with { ReconciliationResult = "Clean" });
-        if (context.ExistingOrder is not null)
-            return PersistBrokerOrder(record, context.ExistingOrder);
-
         if (record.EntrySubmissionAttemptedAt is not null)
             return DiagnosticExecutionResult.Blocked("ENTRY_SUBMISSION_UNKNOWN");
         if (quantity <= 0) return Ready(record);
@@ -334,6 +341,7 @@ public sealed class CryptoDiagnosticExecutionService(
             State = "ExitAccepted",
             ExitBrokerOrderId = submitted.BrokerOrderId,
             ExitSubmittedAt = current.ExitSubmittedAt ?? clock.UtcNow,
+            ExitAcknowledgedAt = current.ExitAcknowledgedAt ?? clock.UtcNow,
             Failure = DiagnosticExecutionFailure.None,
             FailureReason = null
         });
@@ -427,6 +435,7 @@ public sealed class CryptoDiagnosticExecutionService(
                 FinalBrokerQuantity = brokerQuantity,
                 FinalInternalQuantity = internalQuantity,
                 ReconciliationResult = reconciled ? "Flat" : "Mismatch",
+                GrossPaperPnl = reconciled ? ComputeGrossPaperPnl(current) : current.GrossPaperPnl,
                 CompletedAt = reconciled ? clock.UtcNow : null,
                 Failure = reconciled
                     ? DiagnosticExecutionFailure.None
@@ -708,6 +717,7 @@ public sealed class CryptoDiagnosticExecutionService(
             State = "EntryAccepted",
             EntryBrokerOrderId = submitted.BrokerOrderId,
             EntrySubmittedAt = current.EntrySubmittedAt ?? clock.UtcNow,
+            EntryAcknowledgedAt = current.EntryAcknowledgedAt ?? clock.UtcNow,
             Failure = DiagnosticExecutionFailure.None,
             FailureReason = null
         });
@@ -795,6 +805,7 @@ public sealed class CryptoDiagnosticExecutionService(
             EntryAverageFillPrice = order.AverageFillPrice ?? current.EntryAverageFillPrice,
             EntrySubmittedAt = order.SubmittedAt ?? current.EntrySubmittedAt ??
                                current.EntrySubmissionAttemptedAt ?? observedAt,
+            EntryAcknowledgedAt = current.EntryAcknowledgedAt ?? order.SubmittedAt ?? observedAt,
             EntryBrokerCreatedAt = order.CreatedAt ?? current.EntryBrokerCreatedAt,
             EntryBrokerUpdatedAt = order.UpdatedAt ?? current.EntryBrokerUpdatedAt,
             EntryBrokerCanceledAt = order.CanceledAt ?? current.EntryBrokerCanceledAt,
@@ -854,6 +865,7 @@ public sealed class CryptoDiagnosticExecutionService(
             ExitAverageFillPrice = order.AverageFillPrice ?? current.ExitAverageFillPrice,
             ExitSubmittedAt = order.SubmittedAt ?? current.ExitSubmittedAt ??
                               current.ExitSubmissionAttemptedAt ?? observedAt,
+            ExitAcknowledgedAt = current.ExitAcknowledgedAt ?? order.SubmittedAt ?? observedAt,
             ExitBrokerCreatedAt = order.CreatedAt ?? current.ExitBrokerCreatedAt,
             ExitBrokerUpdatedAt = order.UpdatedAt ?? current.ExitBrokerUpdatedAt,
             ExitBrokerCanceledAt = order.CanceledAt ?? current.ExitBrokerCanceledAt,
@@ -976,6 +988,23 @@ public sealed class CryptoDiagnosticExecutionService(
             ? record.ExitQuantity
             : record.EntryFilledQuantity;
         return Math.Max(0, flattenBasis - record.ExitFilledQuantity - record.EmergencyFilledQuantity);
+    }
+
+    private void BackfillCompletedMetrics(DiagnosticExecutionRecord record)
+    {
+        if (record.GrossPaperPnl is not null) return;
+        decimal? grossPaperPnl = ComputeGrossPaperPnl(record);
+        if (grossPaperPnl is null) return;
+        store.Update(record.ExperimentId, current => current with { GrossPaperPnl = grossPaperPnl });
+    }
+
+    private static decimal? ComputeGrossPaperPnl(DiagnosticExecutionRecord record)
+    {
+        if (record.EntryAverageFillPrice is not decimal entryPrice ||
+            record.ExitAverageFillPrice is not decimal exitPrice ||
+            record.ExitFilledQuantity <= 0)
+            return null;
+        return (exitPrice - entryPrice) * record.ExitFilledQuantity;
     }
 
     private static bool SymbolsMatch(string left, string right) => string.Equals(

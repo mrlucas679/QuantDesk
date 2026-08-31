@@ -1,0 +1,25 @@
+{
+  "campaign_id": "CRYPTO-INDEPENDENT-VALIDATION-2026-08-31-001",
+  "instrument": "BTC/USD",
+  "timeframe": "5Min",
+  "registered_at": "2026-08-31T08:30:00+00:00",
+  "validation_start_inclusive": "2022-01-01T00:00:00+00:00",
+  "validation_end_exclusive": "2024-01-01T00:00:00+00:00",
+  "prior_search_data_start": "2024-08-29T07:45:00+00:00",
+  "minimum_validation_bars": 150000,
+  "round_trip_cost_bps": 60.0,
+  "minimum_trades": 60,
+  "minimum_sharpe": 0.5,
+  "required_lower_confidence_bps": 0.0,
+  "strategy_families": [
+    "donchian_breakout",
+    "moving_average_trend",
+    "bollinger_reversion",
+    "rsi_reversion",
+    "volatility_breakout",
+    "regime_ensemble",
+    "volume_confirmed_breakout",
+    "compression_breakout"
+  ],
+  "holding_horizons_bars": [12, 48, 144, 288]
+}

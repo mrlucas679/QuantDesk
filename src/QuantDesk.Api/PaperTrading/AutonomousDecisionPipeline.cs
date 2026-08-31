@@ -47,7 +47,8 @@ public sealed class AutonomousDecisionPipeline(
         PortfolioSnapshot portfolio,
         bool brokerHealthy,
         bool portfolioReconciled,
-        double? verifiedForecastBps = null)
+        double? verifiedForecastBps = null,
+        string? verifiedStrategyFamily = null)
     {
         if (verifiedForecastBps is null)
         {
@@ -101,7 +102,7 @@ public sealed class AutonomousDecisionPipeline(
         int count = compiler.Compile(
             bundle, market, portfolio,
             new AccountCapabilities(true, false, true, false, null),
-            nowTicks, candidates);
+            nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1", candidates);
         if (count == 0) return Reject("NoOpportunity", committeeDecision, market);
 
         TradeCandidate candidate = candidates[0];

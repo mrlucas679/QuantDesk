@@ -22,7 +22,8 @@ def train_direction_classifier(
     model.fit(
         X_train,
         y_train,
-        eval_set=[(X_valid, y_valid)],
+        eval_X=X_valid,
+        eval_y=y_valid,
         callbacks=[lgb.early_stopping(50)],
     )
 

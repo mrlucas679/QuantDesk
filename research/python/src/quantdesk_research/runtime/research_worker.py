@@ -13,6 +13,7 @@ from quantdesk_research.experiments.crypto_direction import (
     run_rolling_experiment,
     run_rolling_persistence_baseline,
 )
+from quantdesk_research.experiments.strategy_ensemble import run_prospective_campaign
 
 
 @dataclass(frozen=True)
@@ -22,13 +23,17 @@ class ValidationCandidate:
     manifest_name: str
     experiment_name: str
     horizon_bars: int
+    strategy_family: str
     evidence_profile: EvidenceProfile
     round_trip_cost_bps: float = 60.0
 
 
 VALIDATION_CANDIDATES = (
     ValidationCandidate(
-        "latest-manifest.json", "crypto-btcusd-5min-direction", 12,
+        "latest-manifest.json",
+        "crypto-btcusd-5min-direction",
+        12,
+        "price_volume_directional",
         EvidenceProfile(
             evidence_id="BTC-5MIN-UNSUPPORTED-001",
             economic_hypothesis="Short-horizon BTC price-volume features predict net returns.",
@@ -39,7 +44,10 @@ VALIDATION_CANDIDATES = (
         ),
     ),
     ValidationCandidate(
-        "latest-daily-manifest.json", "crypto-btcusd-daily-trend", 1,
+        "latest-daily-manifest.json",
+        "crypto-btcusd-daily-trend",
+        1,
+        "moving_average_trend",
         EvidenceProfile(
             evidence_id="BTC-DAILY-MOMENTUM-001",
             economic_hypothesis="BTC daily momentum can exceed local round-trip costs.",
@@ -58,7 +66,33 @@ def run_forever(data_root: Path, interval_seconds: int) -> None:
         validate_microstructure_evidence(data_root)
         for candidate in VALIDATION_CANDIDATES:
             validate_candidate(data_root, candidate)
+        validate_prospective_campaign(data_root)
         time.sleep(interval_seconds)
+
+
+def validate_prospective_campaign(data_root: Path) -> None:
+    """Monitor the fixed multi-strategy cohort and fail closed until unseen evidence matures."""
+    campaign_path = Path("/app/configs/prospective_strategy_campaign.json")
+    try:
+        results = run_prospective_campaign(data_root, campaign_path)
+    except ValueError as error:
+        logger.info("Prospective strategy campaign is not eligible: {}", error)
+        return
+    passed = [result for result in results if result.passed]
+    if not passed:
+        best = max(results, key=lambda result: result.score)
+        logger.warning(
+            "Prospective strategy campaign rejected: best={}, adjusted lower bound={} bps, trades={}.",
+            best.name,
+            best.lower_confidence_net_bps,
+            best.trade_count,
+        )
+        return
+    winner = max(passed, key=lambda result: result.score)
+    logger.warning(
+        "Prospective candidate {} passed statistical gates but remains unpromoted until its executable artifact bundle is built.",
+        winner.name,
+    )
 
 
 def validate_microstructure_evidence(data_root: Path) -> None:
@@ -78,7 +112,10 @@ def validate_candidate(data_root: Path, candidate: ValidationCandidate) -> None:
     """Run one hypothesis against its matching baseline and promote only a verified winner."""
     manifest = data_root / candidate.manifest_name
     if not manifest.exists():
-        logger.warning("Research dataset {} is not available; retaining execution halt.", candidate.manifest_name)
+        logger.warning(
+            "Research dataset {} is not available; retaining execution halt.",
+            candidate.manifest_name,
+        )
         return
     try:
         result = run_rolling_experiment(
@@ -95,7 +132,10 @@ def validate_candidate(data_root: Path, candidate: ValidationCandidate) -> None:
             candidate.manifest_name,
             candidate.experiment_name,
         )
-        if result.passed and result.test_lower_confidence_net_bps <= baseline.test_lower_confidence_net_bps:
+        if (
+            result.passed
+            and result.test_lower_confidence_net_bps <= baseline.test_lower_confidence_net_bps
+        ):
             logger.warning("Validation rejected: complex model did not beat the causal baseline.")
             result = replace(result, passed=False)
         if result.passed:
@@ -114,6 +154,7 @@ def validate_candidate(data_root: Path, candidate: ValidationCandidate) -> None:
                 candidate.horizon_bars,
                 result,
                 candidate.evidence_profile,
+                candidate.strategy_family,
             )
             logger.info("Validation passed and the verified contract bundle was promoted.")
         else:

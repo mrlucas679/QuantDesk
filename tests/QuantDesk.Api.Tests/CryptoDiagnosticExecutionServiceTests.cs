@@ -130,6 +130,43 @@ public sealed class CryptoDiagnosticExecutionServiceTests
     }
 
     [Fact]
+    public async Task Known_filled_entry_is_attached_before_fee_adjusted_position_reconciliation()
+    {
+        using var fixture = new DiagnosticFixture();
+        await fixture.PrepareAsync("fee-adjusted-entry");
+        await fixture.Service.AdvanceAsync(
+            "fee-adjusted-entry", 0, 0.0001m, CancellationToken.None);
+        DateTimeOffset filledAt = fixture.Clock.UtcNow.AddSeconds(1);
+        string clientOrderId = fixture.Store.Find("fee-adjusted-entry")!.EntryClientOrderId!;
+        fixture.Broker.LookupBehavior = requestedId => requestedId == clientOrderId
+            ? Order("broker-fee-adjusted", requestedId, "filled", 0.0001m, 100_000m) with
+            {
+                FilledAt = filledAt,
+                UpdatedAt = filledAt
+            }
+            : null;
+        fixture.Broker.Positions =
+        [
+            new BrokerPositionSnapshot(
+                DiagnosticExecutionOptions.RequiredSymbol,
+                0,
+                0.00009975m,
+                100_000m)
+        ];
+
+        DiagnosticExecutionResult result = await fixture.Service.AdvanceAsync(
+            "fee-adjusted-entry", 0, 0.0001m, CancellationToken.None);
+
+        DiagnosticExecutionRecord persisted = fixture.Store.Find("fee-adjusted-entry")!;
+        Assert.True(result.Allowed, result.Reason);
+        Assert.Equal("Holding", persisted.State);
+        Assert.Equal("broker-fee-adjusted", persisted.EntryBrokerOrderId);
+        Assert.Equal(0.0001m, persisted.EntryFilledQuantity);
+        Assert.Equal(DiagnosticExecutionFailure.None, persisted.Failure);
+        Assert.Null(persisted.FailureReason);
+    }
+
+    [Fact]
     public async Task Filled_entry_schedules_exit_exactly_two_minutes_after_final_fill()
     {
         using var fixture = new DiagnosticFixture();
@@ -283,6 +320,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         Assert.Equal(0, completed.FinalBrokerQuantity);
         Assert.Equal(0, completed.FinalInternalQuantity);
         Assert.Equal("Flat", completed.ReconciliationResult);
+        Assert.Equal(0.0125m, completed.GrossPaperPnl);
     }
 
     [Theory]

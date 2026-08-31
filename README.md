@@ -91,10 +91,12 @@ and broker/internal reconciliation passes. Alpaca rejected a $5 BTC/USD order
 as below its $10 minimum on 2026-08-31, so the checked-in diagnostic default is
 $10. Reconfirm broker limits before changing it.
 
-The first end-to-end proof, `CRYPTO-DIAGNOSTIC-2026-08-30-001`, completed on
-2026-08-31 with one PAPER entry and one automatic PAPER exit. This proves the
-broker execution and recovery lane only; it does not authorize autonomous
-strategy entries.
+The current end-to-end proof, `CRYPTO-DIAGNOSTIC-2026-08-31-001`, completed on
+2026-08-31 with one PAPER entry, one worker-owned PAPER exit, and final zero/zero
+reconciliation. The exit was durably scheduled at final entry fill plus exactly
+two minutes; a repair deployment delayed the observed trigger, so this run is
+not evidence of exact wall-clock trigger latency. It proves the broker execution
+and recovery lane only and does not authorize autonomous strategy entries.
 
 ## Autonomous paper execution
 
