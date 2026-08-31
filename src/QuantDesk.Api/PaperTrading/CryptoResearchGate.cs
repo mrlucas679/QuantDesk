@@ -29,7 +29,7 @@ public sealed class CryptoResearchGate(ExecutionCostProfile? costProfile = null)
 {
     private readonly ExecutionCostProfile _costs = costProfile ?? ExecutionCostProfile.SpotCryptoTaker;
 
-    public CryptoResearchDecision Evaluate(CryptoMarketEvidence evidence)
+    public CryptoResearchDecision Evaluate(DirectionalMarketEvidence evidence)
     {
         ArgumentNullException.ThrowIfNull(evidence);
         if (evidence.Closes.Count < 13 || evidence.Bid <= 0 || evidence.Ask < evidence.Bid)

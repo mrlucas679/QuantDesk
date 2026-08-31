@@ -19,7 +19,7 @@ public sealed class MarketEvidenceProvider(
     AlpacaLatestCryptoQuoteClient cryptoQuotes,
     AlpacaLatestEquityQuoteClient equityQuotes)
 {
-    public Task<CryptoMarketEvidence> GetEvidenceAsync(
+    public Task<DirectionalMarketEvidence> GetEvidenceAsync(
         OpportunityRoute route, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(route);

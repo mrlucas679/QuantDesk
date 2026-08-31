@@ -22,7 +22,12 @@ public enum MultiLegExecutionState
     EntryRejected,
     ExitRejected,
     ReconciliationFailed,
-    SubmissionUnknown
+    SubmissionUnknown,
+    /// <summary>
+    /// The broker never exposed an order for an ambiguous submission within the bounded recovery
+    /// period. This is deliberately terminal: submitting again could duplicate exposure.
+    /// </summary>
+    SubmissionUnresolved
 }
 
 /// <summary>Durable parent-order lifecycle for one atomic, defined-risk options position.</summary>
@@ -45,6 +50,7 @@ public sealed record MultiLegExecutionRecord(
     public decimal EntryFilledQuantity { get; init; }
     public decimal? EntryAverageFillPrice { get; init; }
     public DateTimeOffset? EntryFinalFillAt { get; init; }
+    public IReadOnlyList<BrokerOrderLegSnapshot> EntryLegs { get; init; } = [];
     public DateTimeOffset? HoldStartedAt { get; init; }
     public DateTimeOffset? ScheduledExitAt { get; init; }
     public DateTimeOffset? ExitReservedAt { get; init; }
@@ -55,6 +61,7 @@ public sealed record MultiLegExecutionRecord(
     public decimal ExitFilledQuantity { get; init; }
     public decimal? ExitAverageFillPrice { get; init; }
     public DateTimeOffset? ExitFinalFillAt { get; init; }
+    public IReadOnlyList<BrokerOrderLegSnapshot> ExitLegs { get; init; } = [];
     public DateTimeOffset? ReconciledAt { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public string? FailureReason { get; init; }
@@ -116,7 +123,8 @@ public sealed class MultiLegExecutionStore(string path)
             return Load().Records
                 .Where(item => item.State is not (MultiLegExecutionState.Complete or
                     MultiLegExecutionState.EntryRejected or MultiLegExecutionState.ExitRejected or
-                    MultiLegExecutionState.ReconciliationFailed))
+                    MultiLegExecutionState.ReconciliationFailed or
+                    MultiLegExecutionState.SubmissionUnresolved))
                 .ToArray();
         }
     }

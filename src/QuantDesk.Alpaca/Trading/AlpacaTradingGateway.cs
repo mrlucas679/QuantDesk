@@ -333,7 +333,10 @@ public sealed class AlpacaTradingGateway(
         FilledAt = order.FilledAt,
         CanceledAt = order.CanceledAt,
         ExpiredAt = order.ExpiredAt,
-        RejectedAt = order.FailedAt
+        RejectedAt = order.FailedAt,
+        Legs = order.Legs?.Select(leg => new BrokerOrderLegSnapshot(
+            leg.Id, leg.Symbol ?? string.Empty, leg.Status ?? "unknown", ParseDecimal(leg.FilledQuantity),
+            leg.FilledAveragePrice is null ? null : ParseDecimal(leg.FilledAveragePrice))).ToArray() ?? []
     };
 
     private static string NormalizeBrokerSymbol(string symbol) =>
@@ -380,7 +383,8 @@ public sealed class AlpacaTradingGateway(
         [property: JsonPropertyName("filled_at")] DateTimeOffset? FilledAt = null,
         [property: JsonPropertyName("canceled_at")] DateTimeOffset? CanceledAt = null,
         [property: JsonPropertyName("expired_at")] DateTimeOffset? ExpiredAt = null,
-        [property: JsonPropertyName("failed_at")] DateTimeOffset? FailedAt = null);
+        [property: JsonPropertyName("failed_at")] DateTimeOffset? FailedAt = null,
+        [property: JsonPropertyName("legs")] IReadOnlyList<AlpacaOrder>? Legs = null);
 
     private sealed record AlpacaAsset(
         [property: JsonPropertyName("symbol")] string Symbol,

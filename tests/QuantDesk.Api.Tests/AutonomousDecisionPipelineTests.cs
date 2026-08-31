@@ -78,12 +78,12 @@ public sealed class AutonomousDecisionPipelineTests
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AutonomousDecisionPipeline>.Instance);
     }
 
-    private static CryptoMarketEvidence Evidence(
+    private static DirectionalMarketEvidence Evidence(
         decimal bid, decimal ask, decimal first, decimal last)
     {
         decimal step = (last - first) / 12m;
         decimal[] closes = Enumerable.Range(0, 13).Select(index => first + step * index).ToArray();
-        return new CryptoMarketEvidence(bid, ask, closes);
+        return new DirectionalMarketEvidence(bid, ask, closes);
     }
 
     private static PortfolioSnapshot Portfolio() => new(

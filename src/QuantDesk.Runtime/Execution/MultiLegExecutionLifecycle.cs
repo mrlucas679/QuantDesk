@@ -165,7 +165,26 @@ public sealed class MultiLegExecutionLifecycle(
         BrokerOrderSnapshot? recovered = await multiLegBroker.FindByClientOrderIdAsync(
             clientOrderId, cancellationToken);
         if (recovered is not null)
+        {
             ApplyOrder(record.ExecutionId, recovered, entry, maximumHoldingPeriod);
+            return;
+        }
+
+        DateTimeOffset? attemptedAt = entry
+            ? record.EntrySubmissionAttemptedAt
+            : record.ExitSubmissionAttemptedAt;
+        if (attemptedAt is not null && clock.UtcNow - attemptedAt >= brokerSubmitTimeout)
+        {
+            // A retry with a new identifier could duplicate a broker order that is only delayed
+            // in becoming queryable. Preserve the original identity and halt for intervention.
+            store.Update(record.ExecutionId, item => item with
+            {
+                State = MultiLegExecutionState.SubmissionUnresolved,
+                FailureReason = entry
+                    ? "ENTRY_SUBMISSION_LOOKUP_TIMEOUT"
+                    : "EXIT_SUBMISSION_LOOKUP_TIMEOUT"
+            });
+        }
     }
 
     private async Task RecoverAmbiguousAsync(
@@ -234,6 +253,15 @@ public sealed class MultiLegExecutionLifecycle(
         bool entry,
         TimeSpan maximumHoldingPeriod)
     {
+        if (!HasExpectedLegFills(order, entry ? record.EntryCommand : record.ExitCommand))
+        {
+            store.Update(executionId, item => item with
+            {
+                State = MultiLegExecutionState.ReconciliationFailed,
+                FailureReason = entry ? "ENTRY_BROKEN_LEG_FILL_RATIO" : "EXIT_BROKEN_LEG_FILL_RATIO"
+            });
+            return;
+        }
         string status = order.Status.Trim().ToLowerInvariant();
         store.Update(executionId, item => status switch
         {
@@ -294,11 +322,30 @@ public sealed class MultiLegExecutionLifecycle(
             EntryAverageFillPrice = entry ? order.AverageFillPrice : item.EntryAverageFillPrice,
             ExitAverageFillPrice = entry ? item.ExitAverageFillPrice : order.AverageFillPrice,
             EntryFinalFillAt = entry ? filledAt : item.EntryFinalFillAt,
+            EntryLegs = entry ? order.Legs : item.EntryLegs,
             ExitFinalFillAt = entry ? item.ExitFinalFillAt : filledAt,
+            ExitLegs = entry ? item.ExitLegs : order.Legs,
             HoldStartedAt = entry ? filledAt : item.HoldStartedAt,
             ScheduledExitAt = entry ? filledAt.Add(maximumHoldingPeriod) : item.ScheduledExitAt,
             FailureReason = null
         };
+    }
+
+    private static bool HasExpectedLegFills(BrokerOrderSnapshot order, MultiLegExecutionCommand command)
+    {
+        // Some broker order views omit nested legs before any fill. Once legs are present, each
+        // reported leg must map exactly to a requested OCC symbol and preserve its ratio.
+        if (order.Legs.Count == 0) return true;
+        if (order.Legs.Count != command.Legs.Count) return false;
+        foreach (MultiLegExecutionLeg expected in command.Legs)
+        {
+            BrokerOrderLegSnapshot? actual = order.Legs.SingleOrDefault(leg =>
+                string.Equals(leg.Symbol, expected.Symbol, StringComparison.OrdinalIgnoreCase));
+            if (actual is null || actual.FilledQuantity < 0 ||
+                actual.FilledQuantity > order.FilledQuantity * expected.RatioQuantity)
+                return false;
+        }
+        return true;
     }
 
     private async Task ReconcileAsync(MultiLegExecutionRecord record, CancellationToken cancellationToken)

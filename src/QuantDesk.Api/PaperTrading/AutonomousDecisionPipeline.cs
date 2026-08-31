@@ -44,7 +44,7 @@ public sealed class AutonomousDecisionPipeline(
 
     public AutonomousPipelineDecision Evaluate(
         int instrumentSlot,
-        CryptoMarketEvidence evidence,
+        DirectionalMarketEvidence evidence,
         PortfolioSnapshot portfolio,
         bool brokerHealthy,
         bool portfolioReconciled,

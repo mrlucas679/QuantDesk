@@ -84,7 +84,7 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
         table.AppendLine($"  {"move",6}  {"spot-crypto (50bps fees)",-28}  us-equity (commission-free)");
         foreach (decimal movePercent in moves)
         {
-            CryptoMarketEvidence evidence = Evidence(
+            DirectionalMarketEvidence evidence = Evidence(
                 100m, 100.01m, 100m, 100m * (1m + movePercent / 100m));
             LifecycleTrace crypto = RunLifecycle(evidence);
             LifecycleTrace equity = RunLifecycle(evidence, costs: ExecutionCostProfile.UsEquity);
@@ -106,7 +106,7 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
         trace.ReachedBroker ? "SUBMITTED" : trace.StoppedAt;
 
     private static LifecycleTrace RunLifecycle(
-        CryptoMarketEvidence evidence,
+        DirectionalMarketEvidence evidence,
         bool brokerHealthy = true,
         bool portfolioReconciled = true,
         ExecutionCostProfile? costs = null)
@@ -205,11 +205,11 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AutonomousDecisionPipeline>.Instance);
     }
 
-    private static CryptoMarketEvidence Evidence(decimal bid, decimal ask, decimal first, decimal last)
+    private static DirectionalMarketEvidence Evidence(decimal bid, decimal ask, decimal first, decimal last)
     {
         decimal step = (last - first) / 12m;
         decimal[] closes = Enumerable.Range(0, 13).Select(index => first + step * index).ToArray();
-        return new CryptoMarketEvidence(bid, ask, closes);
+        return new DirectionalMarketEvidence(bid, ask, closes);
     }
 
     private static PortfolioSnapshot Portfolio() => new(

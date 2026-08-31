@@ -23,12 +23,12 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         return new CryptoQuoteSnapshot(bid, ask, bidSize, askSize);
     }
 
-    public async Task<CryptoMarketEvidence> GetEvidenceAsync(
+    public async Task<DirectionalMarketEvidence> GetEvidenceAsync(
         string symbol, CancellationToken cancellationToken)
     {
         (decimal bid, decimal ask, decimal _, decimal _) = await GetQuoteAsync(symbol, cancellationToken);
         IReadOnlyList<decimal> closes = await GetRecentClosesAsync(symbol, cancellationToken);
-        return new CryptoMarketEvidence(bid, ask, closes);
+        return new DirectionalMarketEvidence(bid, ask, closes);
     }
 
     public async Task<IReadOnlyList<HistoricalCryptoBar>> GetHistoricalBarsAsync(
@@ -151,8 +151,6 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
 
     private sealed record CryptoBar([property: JsonPropertyName("c")] JsonElement Close);
 }
-
-public sealed record CryptoMarketEvidence(decimal Bid, decimal Ask, IReadOnlyList<decimal> Closes);
 
 public sealed record CryptoQuoteSnapshot(decimal Bid, decimal Ask, decimal BidSize, decimal AskSize);
 

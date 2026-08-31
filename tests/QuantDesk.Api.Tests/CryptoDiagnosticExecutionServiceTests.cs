@@ -573,7 +573,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
             101.4m, 101.6m, 102m, 101.8m, 101.6m, 101.4m
         ];
         CryptoResearchDecision research = new CryptoResearchGate().Evaluate(
-            new CryptoMarketEvidence(101.39m, 101.41m, closes));
+            new DirectionalMarketEvidence(101.39m, 101.41m, closes));
 
         DiagnosticExecutionResult result = await fixture.PrepareAsync("momentum-independent");
 

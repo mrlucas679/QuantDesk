@@ -110,7 +110,17 @@ public sealed record BrokerOrderSnapshot(
     public DateTimeOffset? CanceledAt { get; init; }
     public DateTimeOffset? ExpiredAt { get; init; }
     public DateTimeOffset? RejectedAt { get; init; }
+    /// <summary>Nested broker legs for an atomic multi-leg order, when the broker supplies them.</summary>
+    public IReadOnlyList<BrokerOrderLegSnapshot> Legs { get; init; } = [];
 }
+
+/// <summary>Broker-truth identity and fill state for one leg of a parent multi-leg order.</summary>
+public sealed record BrokerOrderLegSnapshot(
+    string BrokerOrderId,
+    string Symbol,
+    string Status,
+    decimal FilledQuantity,
+    decimal? AverageFillPrice);
 
 public interface IBrokerExecutionGateway
 {

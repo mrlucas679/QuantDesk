@@ -21,13 +21,13 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     /// <summary>Gets the current NBBO quote and the recent 5-minute closes for one symbol.</summary>
-    public async Task<CryptoMarketEvidence> GetEvidenceAsync(
+    public async Task<DirectionalMarketEvidence> GetEvidenceAsync(
         string symbol, CancellationToken cancellationToken)
     {
         string normalized = Validate(symbol);
         (decimal bid, decimal ask) = await GetQuoteAsync(normalized, cancellationToken);
         IReadOnlyList<decimal> closes = await GetRecentClosesAsync(normalized, cancellationToken);
-        return new CryptoMarketEvidence(bid, ask, closes);
+        return new DirectionalMarketEvidence(bid, ask, closes);
     }
 
     /// <summary>Gets the current executable NBBO quote without fetching bar history.</summary>

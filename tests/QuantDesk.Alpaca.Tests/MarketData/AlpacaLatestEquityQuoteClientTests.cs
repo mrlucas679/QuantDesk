@@ -16,7 +16,7 @@ public sealed class AlpacaLatestEquityQuoteClientTests
         using var httpClient = new HttpClient(handler);
         var client = new AlpacaLatestEquityQuoteClient(httpClient, Options());
 
-        CryptoMarketEvidence evidence = await client.GetEvidenceAsync("SPY", CancellationToken.None);
+        DirectionalMarketEvidence evidence = await client.GetEvidenceAsync("SPY", CancellationToken.None);
 
         Assert.Equal(601.23m, evidence.Bid);
         Assert.Equal(601.25m, evidence.Ask);
@@ -37,7 +37,7 @@ public sealed class AlpacaLatestEquityQuoteClientTests
         using var httpClient = new HttpClient(handler);
         var client = new AlpacaLatestEquityQuoteClient(httpClient, Options());
 
-        CryptoMarketEvidence evidence = await client.GetEvidenceAsync("SPY", CancellationToken.None);
+        DirectionalMarketEvidence evidence = await client.GetEvidenceAsync("SPY", CancellationToken.None);
 
         // Padding a short series would fabricate momentum. The client hands the gate what exists.
         Assert.Equal(4, evidence.Closes.Count);

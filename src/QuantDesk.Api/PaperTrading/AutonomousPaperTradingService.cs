@@ -120,7 +120,7 @@ public sealed class AutonomousPaperTradingService(
         }
 
         PortfolioSnapshot initial = EmptyPortfolio(account);
-        CryptoMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
+        DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, evidence, initial, true, true,
             experimental ? null : (double)forecast!.PointForecast,
@@ -195,7 +195,7 @@ public sealed class AutonomousPaperTradingService(
         long openedTicks = clock.MonotonicTimestamp;
         while (!cancellationToken.IsCancellationRequested)
         {
-            CryptoMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
+            DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
             portfolio.MarkToMarket(new Dictionary<int, decimal> { [slot] = (evidence.Bid + evidence.Ask) / 2m });
             PositionSnapshot position = portfolio.Snapshot().Positions.Single(item => item.InstrumentSlot == slot);
             bool thesisValid = HasCurrentVerifiedForecast();

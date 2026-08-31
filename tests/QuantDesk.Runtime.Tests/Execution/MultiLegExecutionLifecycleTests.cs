@@ -74,6 +74,28 @@ public sealed class MultiLegExecutionLifecycleTests
     }
 
     [Fact]
+    public async Task AmbiguousSubmissionThatNeverAppearsStopsWithoutASecondPost()
+    {
+        using var fixture = CreateFixture();
+        Assert.True(fixture.Lifecycle.TryReserve(
+            "OPTIONS-NOT-FOUND", "spy-vertical", 1, 1.25m, 1.50m, 125m,
+            TimeSpan.FromHours(1), EntryLegs()));
+        fixture.Broker.ReturnUnknownWithoutOrder = true;
+
+        MultiLegExecutionRecord unknown = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-NOT-FOUND", CancellationToken.None);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
+        MultiLegExecutionRecord unresolved = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-NOT-FOUND", CancellationToken.None);
+
+        Assert.Equal(MultiLegExecutionState.SubmissionUnknown, unknown.State);
+        Assert.Equal(MultiLegExecutionState.SubmissionUnresolved, unresolved.State);
+        Assert.Equal("ENTRY_SUBMISSION_LOOKUP_TIMEOUT", unresolved.FailureReason);
+        Assert.Equal(1, fixture.Broker.SubmitCalls);
+        Assert.Empty(fixture.Store.ListNonterminal());
+    }
+
+    [Fact]
     public async Task AcceptedPartialFilledHoldExitAndZeroReconciliationPersist()
     {
         using var fixture = CreateFixture();
@@ -115,6 +137,30 @@ public sealed class MultiLegExecutionLifecycleTests
         Assert.Equal(MultiLegExecutionState.Complete, complete.State);
         Assert.Equal(0m, complete.InternalOpenQuantity);
         Assert.NotNull(complete.CompletedAt);
+    }
+
+    [Fact]
+    public async Task BrokenNestedLegFillRatioFailsClosed()
+    {
+        using var fixture = CreateFixture();
+        Assert.True(fixture.Lifecycle.TryReserve(
+            "OPTIONS-BROKEN-LEGS", "spy-vertical", 1, 1.25m, 1.50m, 125m,
+            TimeSpan.FromHours(1), EntryLegs()));
+        await fixture.Lifecycle.AdvanceAsync("OPTIONS-BROKEN-LEGS", CancellationToken.None);
+        string entryId = fixture.Store.Find("OPTIONS-BROKEN-LEGS")!.EntryCommand.ClientOrderId;
+        fixture.Broker.Orders[entryId] = Snapshot("broker-1", entryId, "partially_filled", 1m, 1.25m) with
+        {
+            Legs =
+            [
+                new BrokerOrderLegSnapshot("leg-1", "SPY260904C00650000", "filled", 1m, 1m)
+            ]
+        };
+
+        MultiLegExecutionRecord record = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-BROKEN-LEGS", CancellationToken.None);
+
+        Assert.Equal(MultiLegExecutionState.ReconciliationFailed, record.State);
+        Assert.Equal("ENTRY_BROKEN_LEG_FILL_RATIO", record.FailureReason);
     }
 
     [Fact]
@@ -173,6 +219,7 @@ public sealed class MultiLegExecutionLifecycleTests
         public int SubmitCalls { get; private set; }
         public bool ThrowAfterAcceptance { get; set; }
         public bool ReturnUnknownAfterAcceptance { get; set; }
+        public bool ReturnUnknownWithoutOrder { get; set; }
         public Action<MultiLegExecutionCommand>? BeforeSubmit { get; set; }
         public Dictionary<string, BrokerOrderSnapshot> Orders { get; } = [];
 
@@ -183,6 +230,12 @@ public sealed class MultiLegExecutionLifecycleTests
             SubmitCalls++;
             BeforeSubmit?.Invoke(command);
             string brokerId = $"broker-{SubmitCalls}";
+            if (ReturnUnknownWithoutOrder)
+            {
+                ReturnUnknownWithoutOrder = false;
+                return Task.FromResult(new BrokerSubmitResult(
+                    BrokerSubmitState.Unknown, null, "BROKER_RESPONSE_LOST", $"request-{SubmitCalls}"));
+            }
             Orders[command.ClientOrderId] = Snapshot(
                 brokerId, command.ClientOrderId, "accepted", 0, 0);
             if (ThrowAfterAcceptance)
