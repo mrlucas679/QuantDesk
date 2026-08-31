@@ -34,9 +34,9 @@ The goal is **not complete**. No strategy currently qualifies, no autonomous str
 
 ## Current uncommitted files
 
-All files previously listed here were committed in `1800e89`. The 2026-08-31 continuation below then
-changed the option-data acquisition layer; run `git status --short` for the live list rather than
-trusting this one.
+None. All work described in this handoff is committed on
+`codex/asset-class-routing-and-debt-audit`, branched from `build/csharp-foundation`. Run
+`git status --short` for the live state rather than trusting this line.
 
 ## Work completed and verified in this continuation
 
@@ -805,118 +805,14 @@ Persist the newest equity family failure in the typed hypothesis memory. Do not 
 
 ## Everything still not done
 
-### Immediate verification debt
+Superseded. Every item that was listed here is now in
+**"EVERYTHING NOT DONE — consolidated register"** below, which is the single authoritative list.
+The MLeg admission items became section E, the lifecycle items section D, the evidence and
+publication items section F, and the runtime and final-trade items section H. Nothing was dropped
+in the merge.
 
-Cleared on 2026-08-31. All ten items were executed and passed; see
-"Verification completed 2026-08-31" above for the exact counts. Nothing in this subsection is
-outstanding. Re-open it only if a later change invalidates those results.
-
-Method caveat for future continuations: run `dotnet restore`, `dotnet build`, and `dotnet test` inside
-**one** `docker run` invocation. A throwaway container starts with an empty NuGet cache, so a
-`--no-build` test run against a `bin/` produced by an earlier container can silently enumerate only a
-subset of the test projects and still exit 0. That is a measurement artifact, not a repository defect;
-restore + build + test in a single container ran all five suites deterministically. CI now asserts that
-the number of reported test assemblies equals the number of test projects in the solution, so this
-class of silent omission fails instead of passing.
-
-### MLeg admission and risk work
-
-1. Connect MLeg execution to a validated opportunity; it currently has no application-owned creation route.
-2. Require actual account health and options permission at admission, including an adequate options level for the requested strategy.
-3. Query and verify every selected option contract as active/tradable before reservation.
-4. Query relevant open parent/leg orders and all selected-contract positions before entry.
-5. Block unexplained orders or exposure before entry.
-6. Integrate the common `RiskGovernor`, capital reservation, and leg-aware defined maximum loss before lifecycle reservation.
-7. Include option spread, slippage, per-contract fees, assignment/exercise, and buying-power effects in admission economics.
-8. Persist the evidence/artifact identity that authorized the MLeg execution.
-9. Prevent an execution record from being created unless the exact artifact, option candidate, risk decision, and broker contract set match.
-
-### MLeg lifecycle gaps
-
-1. Track Alpaca nested parent and leg order identities, not only the parent snapshot.
-2. Verify actual leg fill ratios and reject/repair broken or imbalanced partial fills safely.
-3. Attribute internal position quantity per OCC leg rather than only parent spread quantity.
-4. Reconcile parent orders, child orders, every leg position, and internal leg inventory.
-5. Add cancellation and bounded repricing rules for stale unfilled entry and exit orders.
-6. Add an idempotent, PAPER-protected emergency options flatten path that cancels owned unresolved orders, derives broker-truth leg exposure, closes it without duplicate orders, and verifies flat afterward.
-7. Define recovery behavior when `SubmissionUnknown` never appears at the broker; it currently remains recoverable/nonterminal indefinitely.
-8. Add typed timeout, broker-unavailable, permission, contract-expired, broken-leg, and reconciliation failure states.
-9. Prove duplicate prevention with two store/lifecycle instances racing, not only sequential restart.
-10. Prove atomic store behavior under interrupted writes and corrupted JSON.
-11. Expose safe lifecycle/recovery status through application readiness/status endpoints.
-12. Add structured, secret-free lifecycle metrics and logs.
-13. Verify the recovery hosted service starts in the production container and advances a seeded nonterminal record without submitting any unauthorized order.
-
-### Autonomous spot and shared execution gaps
-
-1. The existing autonomous spot-crypto service still uses generated IDs and in-memory reservation/portfolio ownership. It is not diagnostic-grade restart recovery.
-2. Move spot autonomous execution to durable deterministic identity, reservation, fill tracking, exit ownership, restart recovery, and reconciliation.
-3. Add one shared opportunity envelope and asset-class router for crypto, equity, and options.
-4. Reuse common evidence, risk, capital, execution identity, failure, recovery, and reconciliation contracts instead of three disconnected systems.
-5. Route only exact supported artifact semantics; fail closed on unsupported strategy families or versions.
-6. Add typed mechanism disagreement resulting in `UNCERTAIN`/`ABSTAIN` rather than averaging contradiction into direction.
-7. Rank admitted opportunities by expected net edge divided by risk consumed, with frequency secondary.
-
-### Option data and reproducibility gaps
-
-Done (see "Option data acquisition work completed 2026-08-31"):
-
-1. ~~Verify `AlpacaOptionContractClient` against its unit tests~~ — done, and hardened against the
-   official documented schema. **Still open:** it has never been run against an actual authenticated
-   PAPER response. Every guard is proven only against synthetic payloads.
-2. ~~Immutable option-contract snapshot exporter~~ — done, with source URIs, request window, page
-   count, generation time, row count, and SHA-256.
-3. ~~Immutable option-bar dataset exporter over the exact selected contract universe~~ — done.
-4. Partially done: option bars are bound to contract metadata, timestamps, the contract-snapshot hash,
-   and an underlying dataset hash **passed in by the caller**. Nothing yet produces that underlying
-   hash for the option exporter, and no scheduled worker calls the exporter — it is registered in DI
-   but has no trigger. Wiring it to `HistoricalEquityDatasetService`'s SPY manifest is the next step.
-
-Still open:
-
-5. Define missing-bar, illiquidity, quote staleness, corporate action, adjusted-underlying, expiration, exercise, and assignment policies. (The client now *rejects* adjusted contracts rather than defining a policy for them.)
-6. Ensure historical expired-contract discovery works with Alpaca; fail explicitly if the subscription/API does not supply the necessary history. Unproven — no authenticated call has been made.
-7. Add option quote/spread snapshots needed for executable selection; bars alone are insufficient for spread execution economics.
-8. Mark the option feed verified only after an actual authenticated read and freshness/schema checks. It remains `UNVERIFIED` in runtime capability output.
-
-### Strategy research still missing
-
-1. Persist a formal mechanism catalogue for trend persistence, liquidity-shock mean reversion, volatility risk premium, cross-asset information, and microstructure pressure.
-2. For each hypothesis, record cause/actor, expected regime, disappearance condition, falsification rule, dataset, costs, and comparison budget before evaluation.
-3. Implement regime-conditioned expectancy with independently validated regime filters and charged multiplicity.
-4. Implement mechanism-disagreement abstention.
-5. Implement edge-per-risk opportunity ranking.
-6. Add execution-mode-aware crypto cost scenarios: conservative stress, aggressive/taker, passive/maker, and observed-realized. Observed PAPER costs must never silently replace conservative qualification.
-7. Persist the latest relative-strength failure in rejected-hypothesis memory with its hashes, parameters, costs, and reason.
-8. Build one SPY directional defined-risk debit-vertical research family only after an independently validated SPY underlying signal exists.
-9. Build a separate SPY volatility-risk-premium family using actual implied prices/volatility versus causal expected realized volatility, defined maximum loss, realistic spread/fee/assignment costs, and untouched validation.
-10. Do not infer an options edge from a directional equity edge.
-11. Do not allow the LLM to perform parameter fishing. It proposes economic hypotheses and falsification tests; deterministic evaluators decide pass/fail.
-12. If no new family qualifies, preserve abstention and record the lowest-level failure instead of forcing activity.
-
-### Evidence publication/runtime gaps
-
-1. Prove every required gate `R0 R1 R2 R3 R4 R5 R6 R7 R11 R12` is produced by a real evaluator for a qualifying candidate.
-2. Prove the worker publishes a complete rule-based bundle atomically after one-time independent validation.
-3. Extend the common artifact semantics for equity and multi-leg options where the current directional contract is insufficient.
-4. Carry exact option selection, leg ratios, entry/exit policy, maximum loss, cost model, and contract snapshot identity into the artifact.
-5. Make C# reject any mismatch among forecast, artifact, selected contracts, runtime strategy, and risk reservation.
-6. Prove restart does not rerun or retune an opened independent validation campaign.
-7. Build the final `current-contracts.json` pointer only after all evidence is complete and valid.
-
-### Runtime and final trade work
-
-1. Rebuild and restart the production containers with autonomous execution still disabled.
-2. Verify actual API, research worker, execution/recovery workers, persistence stores, and readiness endpoints.
-3. Verify exact PAPER endpoint, authenticated account health, options/crypto permission, selected assets/contracts, and fresh market data.
-4. Query broker open orders and positions and prove there is no unexplained exposure.
-5. Prove broker/internal reconciliation passes before enabling a run.
-6. Verify the chosen lane has durable automatic exit and restart recovery active.
-7. Obtain a genuinely qualified, freshly published artifact under unchanged safeguards.
-8. Enable/resume exactly one bounded opportunity through the QuantDesk application—not through a direct broker call.
-9. Observe reservation, submission, fills, holding/management, exit, recovery if exercised, and final reconciliation from persisted application and broker truth.
-10. Report all entry/exit IDs, timestamps, prices, quantities, costs, latency, P&L, final broker/internal exposure, and reconciliation.
-11. Disable or return the system to its intended safe post-run state.
+The immediate verification debt that used to head this section was cleared on 2026-08-31; see
+"Verification completed 2026-08-31" above for the counts.
 
 ## Exact next commands
 
@@ -950,6 +846,142 @@ Suggested next work, in order:
 3. Add option quote/spread snapshots — bars cannot price a spread's execution economics.
 
 Do not start by opening validation/holdout or enabling autonomous execution.
+
+## EVERYTHING NOT DONE — consolidated register
+
+The single authoritative list of outstanding work. Sections above give the reasoning and evidence
+behind each entry; this is the checklist. Nothing here is complete. Items are grouped by what they
+block, and ordered within each group by risk removed per unit of effort.
+
+Status as of 2026-08-31: **no strategy qualifies, no autonomous strategy order has ever been
+submitted, autonomous execution is disabled, and no session has ever held Alpaca credentials — so
+nothing in this repository has yet contacted the live venue or placed a trade.**
+
+---
+
+### A. Blocking a first trade
+
+| # | Item | Why it blocks |
+| --- | --- | --- |
+| A1 | **No Alpaca credentials in any session.** Every result recorded here is against stubbed responses. | Nothing can reach the venue. This is the single hard blocker. |
+| A2 | **Options candidates are not routed into `MultiLegExecutionLifecycle`.** The lifecycle exists and is tested; the compiler exists and is tested; nothing connects them to submission. | An options order cannot be submitted, and the hackathon requires options in every strategy. |
+| A3 | **The autonomous service still compiles and submits only a spot candidate.** | The equity and options lanes stop short of execution. |
+| A4 | **No strategy qualifies.** Four families clear discovery; none beat passive equal-weight out-of-sample. | `NO_TRADE` is currently correct. Forcing a trade would be worse than not trading. |
+| A5 | **Autonomous lane has no durable store**, so restart recovery is not equivalent to the diagnostic lane even with deterministic client IDs. | A restart mid-flight cannot recover the opportunity. |
+
+### B. Untested money path
+
+| # | Item |
+| --- | --- |
+| B1 | **`AutonomousPaperTradingService` has zero tests.** It decides whether to trade, halts on unreconciled state, reserves capital, submits, manages, and exits. The single most important untested class. |
+| B2 | `ExecutionAdmissionPolicy` has zero tests — it is an admission gate. |
+| B3 | `CryptoFeeSchedule` has zero tests — it is the provenance of the numbers that decide admissibility. |
+| B4 | `MarketEvidenceProvider` has zero tests. |
+| B5 | `BlackScholes`, `OptionChainValidator`, `ExecutionJournalReplay`, and `PythonResearchContractReader` are each referenced by exactly one test file. |
+| B6 | Duplicate-prevention is proven only across sequential restart, never with two store/lifecycle instances racing. |
+| B7 | Atomic store behaviour under interrupted writes and corrupted JSON is unproven for the MLeg store. |
+
+### C. Research — the binding constraint is universe breadth
+
+| # | Item |
+| --- | --- |
+| C1 | **Widen the research universe.** SPY/QQQ/IWM/DIA carry a 0.859 mean pairwise correlation and contain no tradable cross-sectional edge. Sector and factor ETFs decorrelate the cross-section. Needs credentials; the downloader and the `--symbols` parameter are already in place. |
+| C2 | **1,104 lines of dead Python across 19 modules** — including the entire overfitting-control toolkit (deflated Sharpe, PBO, purged CV, walk-forward). Wire them into the experiments or delete them; leaving them dead misrepresents the system's rigour. |
+| C3 | Add option quote/spread snapshots for research. Bars alone cannot price a spread's execution economics. |
+| C4 | Regime-conditioned expectancy with independently validated regime filters and charged multiplicity. |
+| C5 | Mechanism-disagreement abstention returning typed `UNCERTAIN`/`ABSTAIN` rather than averaging contradiction into a weak direction. |
+| C6 | A persisted formal mechanism catalogue: cause, actor, expected regime, disappearance condition, falsification rule, dataset, costs, and comparison budget recorded before evaluation. |
+| C7 | A SPY volatility-risk-premium family using implied versus causal expected realised volatility — separately validated, never inferred from a directional edge. |
+| C8 | A SPY directional debit-vertical research family, only after an underlying signal independently qualifies. |
+| C9 | Persist the relative-strength and portfolio-family failures in typed rejected-hypothesis memory with hashes, parameters, costs, and reason. |
+| C10 | Execution-mode-aware crypto cost scenarios (conservative stress, taker, maker, observed-realised) kept distinct in provenance and qualification meaning. |
+| C11 | Historical expired-contract discovery is unproven against Alpaca; fail explicitly if the subscription does not supply the history. |
+| C12 | The option feed remains `UNVERIFIED` in runtime capability output and can only be marked verified after an authenticated read with freshness and schema checks. |
+
+### D. Multi-leg options lifecycle
+
+| # | Item |
+| --- | --- |
+| D1 | Track Alpaca nested parent and leg order identities, not only the parent snapshot. |
+| D2 | Verify actual leg fill ratios; reject or repair broken and imbalanced partial fills safely. |
+| D3 | Attribute internal position quantity per OCC leg rather than only parent spread quantity. |
+| D4 | Reconcile parent orders, child orders, every leg position, and internal leg inventory. |
+| D5 | Cancellation and bounded repricing rules for stale unfilled entry and exit orders. |
+| D6 | Idempotent, PAPER-protected emergency options flatten that derives broker-truth leg exposure, closes it without duplicates, and verifies flat afterwards. |
+| D7 | Define recovery behaviour when `SubmissionUnknown` never appears at the broker; it currently stays nonterminal indefinitely. |
+| D8 | Typed timeout, broker-unavailable, permission, contract-expired, broken-leg, and reconciliation-failure states. |
+| D9 | Expose lifecycle and recovery status through readiness and status endpoints. |
+| D10 | Structured, secret-free lifecycle metrics and logs. |
+| D11 | Verify the recovery hosted service starts in the production container and advances a seeded nonterminal record without submitting an unauthorised order. |
+
+### E. Admission and risk for options
+
+| # | Item |
+| --- | --- |
+| E1 | Require live account health and an adequate options level at admission, per requested strategy. |
+| E2 | Query and verify every selected contract as active and tradable before reservation. |
+| E3 | Query open parent/leg orders and all selected-contract positions before entry; block on unexplained exposure. |
+| E4 | Integrate `RiskGovernor`, capital reservation, and leg-aware defined maximum loss before lifecycle reservation. |
+| E5 | Include option spread, slippage, per-contract fees, assignment/exercise, and buying-power effects in admission economics. |
+| E6 | Persist the evidence and artifact identity that authorised the execution, and refuse to create a record unless artifact, option candidate, risk decision, and broker contract set all match. |
+
+### F. Evidence publication and artifact contracts
+
+| # | Item |
+| --- | --- |
+| F1 | Prove every required gate `R0 R1 R2 R3 R4 R5 R6 R7 R11 R12` is produced by a real evaluator for a qualifying candidate. |
+| F2 | Prove the worker publishes a complete rule-based bundle atomically after one-time independent validation. |
+| F3 | Extend artifact semantics for equity and multi-leg options; the current directional contract is insufficient. |
+| F4 | Carry exact option selection, leg ratios, entry/exit policy, maximum loss, cost model, and contract snapshot identity into the artifact. |
+| F5 | Make C# reject any mismatch among forecast, artifact, selected contracts, runtime strategy, and risk reservation. |
+| F6 | Prove a restart does not rerun or retune an opened independent-validation campaign. |
+| F7 | Build `current-contracts.json` only after all evidence is complete and valid. |
+
+### G. Architecture and technical debt
+
+| # | Item |
+| --- | --- |
+| G1 | `CryptoDiagnosticExecutionService` is a 1,072-line god class with 37 methods. Extract its durable lifecycle so the autonomous lane reuses it instead of a third reimplementation — this also closes A5. |
+| G2 | `CryptoMarketEvidence` is the evidence type for equities and options. Rename to `DirectionalMarketEvidence` and move it out of the crypto client's file. |
+| G3 | `AlpacaTradingGateway` (404 lines) owns account, asset, submit, lookup, orders, positions, cancel, replace, close, and multi-leg mapping, and grows with every asset class. |
+| G4 | `Program.cs` (388 lines) mixes registration with inline endpoints and business defaults. |
+| G5 | 16 separate `JsonSerializerOptions` instantiations — each a chance for a reader and writer to disagree. |
+| G6 | The dataset manifest is declared three times across two languages; the C# writer and Python reader can drift with nothing catching it. |
+| G7 | `OptionQuoteSnapshot` carries five always-null greeks. Compute them or drop them. |
+| G8 | Entry halts on any broker position or order, not only the traded symbol. Scoping it safely needs position attribution, which does not exist; deliberately left rather than weakening the invariant. |
+| G9 | `AlpacaHistoricalStockBarClient` silently ignores unrequested symbols and a null payload; the option clients fail closed on both. |
+| G10 | The autonomous symbol defaults to `BTC/USD`, the venue proven structurally unprofitable at short horizons. |
+| G11 | `crypto_direction.py` is 810 lines and serves a lane the cost analysis has ruled out. |
+| G12 | 74 files in `Docs/`; at least `Docs/AUTONOMOUS_TRADING_CONNECTION_AUDIT.md` predates the routing work. Docs drift is caught by no test. |
+| G13 | Test-name-to-source mapping is unreliable, so coverage gaps cannot be checked mechanically. |
+| G14 | `Program.cs` passes an unexplained magic `0.00000001m` into a diagnostic endpoint. |
+
+### H. Runtime verification before any trade
+
+| # | Item |
+| --- | --- |
+| H1 | Rebuild and restart production containers with autonomous execution still disabled. |
+| H2 | Verify API, research worker, execution and recovery workers, persistence stores, and readiness endpoints. |
+| H3 | Verify the exact PAPER endpoint, authenticated account health, options and crypto permission, selected assets and contracts, and fresh market data. |
+| H4 | Query broker open orders and positions; prove no unexplained exposure. |
+| H5 | Prove broker/internal reconciliation passes before enabling a run. |
+| H6 | Verify the chosen lane has durable automatic exit and restart recovery active. |
+| H7 | Obtain a genuinely qualified, freshly published artifact under unchanged safeguards. |
+| H8 | Enable exactly one bounded opportunity through the application — never a direct broker call. |
+| H9 | Observe reservation, submission, fills, holding, exit, any recovery, and final reconciliation from persisted application and broker truth. |
+| H10 | Report all entry/exit IDs, timestamps, prices, quantities, costs, latency, P&L, final exposure, and reconciliation. |
+| H11 | Return the system to its intended safe post-run state. |
+
+---
+
+### Method note that will save the next session an hour
+
+Run `dotnet restore`, `dotnet build`, and `dotnet test` inside **one** `docker run` invocation. A
+throwaway container starts with an empty NuGet cache, so a `--no-build` test run against a `bin/`
+produced by an earlier container silently enumerates only a subset of the test projects and still
+exits 0. That is a measurement artifact, not a repository defect. CI now asserts that the number of
+reported test assemblies equals the number of test projects, so the failure mode is caught rather
+than believed.
 
 ## Completion definition
 
