@@ -12,6 +12,7 @@ using QuantDesk.Domain.Risk;
 using QuantDesk.Domain.Runtime;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
+using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Runtime.Ingestion;
 using QuantDesk.Runtime.Modes;
@@ -48,6 +49,12 @@ builder.Services.AddHostedService(services =>
     services.GetRequiredService<DiagnosticExecutionRecoveryService>());
 builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.FromEnvironment(
     services.GetRequiredService<PaperTradingOptions>()));
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_MLEG_STORE_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "mleg-executions.json");
+    return new MultiLegExecutionStore(Path.GetFullPath(configured));
+});
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 builder.Services.AddSingleton<PaperOrderApplicationService>();
@@ -125,15 +132,36 @@ builder.Services.AddHttpClient<IAlpacaCapabilityProbe, AlpacaCapabilityProbe>(cl
 {
     client.Timeout = TimeSpan.FromSeconds(10);
 });
-builder.Services.AddHttpClient<IBrokerExecutionGateway, AlpacaTradingGateway>(client =>
+builder.Services.AddHttpClient<AlpacaTradingGateway>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(15);
 });
+builder.Services.AddTransient<IBrokerExecutionGateway>(services =>
+    services.GetRequiredService<AlpacaTradingGateway>());
+builder.Services.AddTransient<IMultiLegBrokerExecutionGateway>(services =>
+    services.GetRequiredService<AlpacaTradingGateway>());
+builder.Services.AddSingleton(services => new MultiLegExecutionLifecycle(
+    services.GetRequiredService<IMultiLegBrokerExecutionGateway>(),
+    services.GetRequiredService<IBrokerExecutionGateway>(),
+    services.GetRequiredService<MultiLegExecutionStore>(),
+    services.GetRequiredService<IRuntimeClock>(),
+    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout));
+builder.Services.AddSingleton<MultiLegExecutionRecoveryService>();
+builder.Services.AddHostedService(services =>
+    services.GetRequiredService<MultiLegExecutionRecoveryService>());
 builder.Services.AddHttpClient<QuantDesk.Alpaca.MarketData.AlpacaLatestCryptoQuoteClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 builder.Services.AddHttpClient<AlpacaHistoricalStockBarClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddHttpClient<AlpacaHistoricalOptionBarClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddHttpClient<AlpacaOptionContractClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(15);
 });

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using QuantDesk.Alpaca.Configuration;
 using QuantDesk.Alpaca.Mapping;
 using QuantDesk.Alpaca.Trading;
@@ -66,6 +67,69 @@ public sealed class AlpacaTradingGatewayTests
         Assert.Equal(BrokerSubmitState.Acknowledged, result.State);
         Assert.Contains("\"notional\":\"5\"", handler.RequestBody);
         Assert.DoesNotContain("\"qty\"", handler.RequestBody);
+    }
+
+    [Fact]
+    public async Task SubmitMultiLegAsync_MapsAtomicDefinedRiskOrder()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, """
+            {"id":"mleg-broker-1","client_order_id":"qd-spy-vertical-1","status":"accepted"}
+            """);
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+
+        BrokerSubmitResult result = await gateway.SubmitMultiLegAsync(
+            MultiLegCommand(), CancellationToken.None);
+
+        Assert.Equal(BrokerSubmitState.Acknowledged, result.State);
+        Assert.Equal("mleg-broker-1", result.BrokerOrderId);
+        Assert.Equal("request-1", result.RequestId);
+        Assert.Equal(HttpMethod.Post, handler.Request!.Method);
+        Assert.Equal("/v2/orders", handler.Request.RequestUri!.AbsolutePath);
+        using JsonDocument document = JsonDocument.Parse(handler.RequestBody);
+        JsonElement root = document.RootElement;
+        Assert.Equal("mleg", root.GetProperty("order_class").GetString());
+        Assert.Equal("qd-spy-vertical-1", root.GetProperty("client_order_id").GetString());
+        Assert.Equal("1", root.GetProperty("qty").GetString());
+        Assert.Equal("limit", root.GetProperty("type").GetString());
+        Assert.Equal("day", root.GetProperty("time_in_force").GetString());
+        Assert.Equal("1.25", root.GetProperty("limit_price").GetString());
+        JsonElement.ArrayEnumerator legs = root.GetProperty("legs").EnumerateArray();
+        Assert.Collection(
+            legs.ToArray(),
+            leg => AssertLeg(leg, "SPY260904C00650000", "buy", "buy_to_open"),
+            leg => AssertLeg(leg, "SPY260904C00655000", "sell", "sell_to_open"));
+    }
+
+    [Fact]
+    public async Task SubmitMultiLegAsync_InvalidCommandDoesNotCallBroker()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+        MultiLegExecutionCommand invalid = MultiLegCommand() with { Quantity = 0 };
+
+        BrokerSubmitResult result = await gateway.SubmitMultiLegAsync(
+            invalid, CancellationToken.None);
+
+        Assert.Equal(BrokerSubmitState.Rejected, result.State);
+        Assert.Equal("INVALID_MLEG_COMMAND", result.ReasonCode);
+        Assert.Null(handler.Request);
+    }
+
+    [Fact]
+    public async Task SubmitMultiLegAsync_InvalidSuccessResponseIsAmbiguous()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+
+        BrokerSubmitResult result = await gateway.SubmitMultiLegAsync(
+            MultiLegCommand(), CancellationToken.None);
+
+        Assert.Equal(BrokerSubmitState.Unknown, result.State);
+        Assert.Equal("BROKER_RESPONSE_INVALID", result.ReasonCode);
+        Assert.Equal("request-1", result.RequestId);
     }
 
     [Fact]
@@ -238,6 +302,29 @@ public sealed class AlpacaTradingGatewayTests
         1, ExecutionPriority.ExploitationEntry, 1, 1, "qd-1", 0, OrderSide.Buy,
         PositionIntent.Open, ExecutionOrderType.Limit, ExecutionTimeInForce.Day,
         1, 100, 10, 100, "trend");
+
+    private static MultiLegExecutionCommand MultiLegCommand() => new(
+        "qd-spy-vertical-1",
+        1,
+        ExecutionOrderType.Limit,
+        ExecutionTimeInForce.Day,
+        1.25m,
+        [
+            new("SPY260904C00650000", 1, OrderSide.Buy, PositionIntent.BuyToOpen),
+            new("SPY260904C00655000", 1, OrderSide.Sell, PositionIntent.SellToOpen)
+        ]);
+
+    private static void AssertLeg(
+        JsonElement leg,
+        string symbol,
+        string side,
+        string positionIntent)
+    {
+        Assert.Equal(symbol, leg.GetProperty("symbol").GetString());
+        Assert.Equal("1", leg.GetProperty("ratio_qty").GetString());
+        Assert.Equal(side, leg.GetProperty("side").GetString());
+        Assert.Equal(positionIntent, leg.GetProperty("position_intent").GetString());
+    }
 
     private sealed class CaptureHandler(HttpStatusCode statusCode, string responseBody) : HttpMessageHandler
     {
