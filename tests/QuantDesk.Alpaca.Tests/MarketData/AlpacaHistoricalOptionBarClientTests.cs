@@ -24,14 +24,16 @@ public sealed class AlpacaHistoricalOptionBarClientTests
         using var httpClient = new HttpClient(handler);
         var client = new AlpacaHistoricalOptionBarClient(httpClient, Options());
 
-        IReadOnlyDictionary<string, IReadOnlyList<HistoricalOptionBar>> result = await client.GetBarsAsync(
+        OptionBarQuery query = await client.GetBarsAsync(
             ["SPY260904C00650000"],
             DateTimeOffset.Parse("2026-08-31T14:00:00Z"),
             DateTimeOffset.Parse("2026-08-31T15:00:00Z"),
             "5Min",
             CancellationToken.None);
 
-        Assert.Equal(2, result["SPY260904C00650000"].Count);
+        Assert.Equal(2, query.Bars["SPY260904C00650000"].Count);
+        Assert.Equal(2, query.RequestUris.Count);
+        Assert.All(query.RequestUris, uri => Assert.DoesNotContain("test-secret", uri, StringComparison.Ordinal));
         Assert.Equal(2, handler.Requests.Count);
         Assert.Equal("/v1beta1/options/bars", handler.Requests[0].AbsolutePath);
         Assert.Contains("page_token=next", handler.Requests[1].Query);
@@ -55,9 +57,76 @@ public sealed class AlpacaHistoricalOptionBarClientTests
         Assert.Empty(handler.Requests);
     }
 
+    [Fact]
+    public async Task RejectsBarOutsideTheRequestedWindow() =>
+        await AssertRejectsAsync("""
+            {"bars":{"SPY260904C00650000":[
+              {"t":"2026-08-31T16:30:00Z","o":1,"h":2,"l":1,"c":1.5,"v":10,"n":2,"vw":1.4}]},
+             "next_page_token":null}
+            """);
+
+    [Fact]
+    public async Task RejectsBarWhoseOhlcValuesContradict() =>
+        await AssertRejectsAsync("""
+            {"bars":{"SPY260904C00650000":[
+              {"t":"2026-08-31T14:00:00Z","o":1,"h":2,"l":1,"c":2.5,"v":10,"n":2,"vw":1.4}]},
+             "next_page_token":null}
+            """);
+
+    [Fact]
+    public async Task RejectsBarWithANonPositivePrice() =>
+        await AssertRejectsAsync("""
+            {"bars":{"SPY260904C00650000":[
+              {"t":"2026-08-31T14:00:00Z","o":1,"h":2,"l":0,"c":1.5,"v":10,"n":2,"vw":1.4}]},
+             "next_page_token":null}
+            """);
+
+    [Fact]
+    public async Task RejectsUnrequestedSymbolInTheResponse() =>
+        await AssertRejectsAsync("""
+            {"bars":{"SPY260904P00650000":[
+              {"t":"2026-08-31T14:00:00Z","o":1,"h":2,"l":1,"c":1.5,"v":10,"n":2,"vw":1.4}]},
+             "next_page_token":null}
+            """);
+
+    [Fact]
+    public async Task StopsInsteadOfLoopingWhenAlpacaRepeatsAPageToken()
+    {
+        var handler = new PagedHandler("""
+            {"bars":{"SPY260904C00650000":[
+              {"t":"2026-08-31T14:00:00Z","o":1,"h":2,"l":1,"c":1.5,"v":10,"n":2,"vw":1.4}]},
+             "next_page_token":"same"}
+            """);
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options());
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => client.GetBarsAsync(
+            ["SPY260904C00650000"],
+            DateTimeOffset.Parse("2026-08-31T14:00:00Z"),
+            DateTimeOffset.Parse("2026-08-31T15:00:00Z"),
+            "5Min",
+            CancellationToken.None));
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    private static async Task AssertRejectsAsync(string page)
+    {
+        var handler = new PagedHandler(page);
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options());
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => client.GetBarsAsync(
+            ["SPY260904C00650000"],
+            DateTimeOffset.Parse("2026-08-31T14:00:00Z"),
+            DateTimeOffset.Parse("2026-08-31T15:00:00Z"),
+            "5Min",
+            CancellationToken.None));
+    }
+
     private static AlpacaOptions Options() => new()
     {
         BaseUrl = new Uri("https://paper-api.alpaca.markets"),
+        DataBaseUrl = new Uri("https://data.alpaca.markets/"),
         KeyId = "test-key",
         SecretKey = "test-secret"
     };
@@ -72,9 +141,10 @@ public sealed class AlpacaHistoricalOptionBarClientTests
             CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
+            string page = pages[Math.Min(_index++, pages.Length - 1)];
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(pages[_index++], Encoding.UTF8, "application/json")
+                Content = new StringContent(page, Encoding.UTF8, "application/json")
             });
         }
     }

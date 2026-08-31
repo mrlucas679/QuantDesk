@@ -9,6 +9,8 @@ namespace QuantDesk.Domain.Options;
 
 public enum OptionRight { Call, Put }
 
+public enum OptionExerciseStyle { American, European }
+
 public sealed record OptionContractDefinition(
     InstrumentId Id,
     InstrumentId UnderlyingId,
