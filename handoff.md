@@ -792,6 +792,195 @@ Unchanged and still owed, in the original priority order:
 6. The 16 duplicate `JsonSerializerOptions` instantiations remain.
 7. Docs drift is still untracked.
 
+## Mechanism research — 2026-09-01
+
+Research only; nothing here was implemented. Every measurement uses the **discovery slice only**
+(first 50% of sessions); validation and holdout remain unopened.
+
+The catalogue committed on 2026-08-31 covers five equity-directional mechanisms, all already
+tested and failed. Three of the five domains the original plan named had never been researched at
+all — volatility risk premium, cross-asset information, and microstructure pressure. Those are
+covered here, together with regime conditioning, universe breadth, and the overfitting toolkit.
+
+**Headline: no new tradable mechanism was found. Two candidates looked viable and both turned out
+to be artifacts.** Recording how they failed matters more than the failure, because both would have
+passed a careless screen.
+
+---
+
+### 1. Microstructure pressure — researched, not viable
+
+The 5-minute panel (95,011 bars, 500 sessions, 2024-08-30 to 2026-08-28) had never been used. It
+is now characterised. Discovery slice: 250 sessions, 19,497 regular-session bars.
+
+**Bar-to-bar autocorrelation is absent.** Largest magnitude across lags 1–12 is
+`rho = -0.043` at 10 minutes; per-bar sd is 10.4 bps. The implied per-trade edge is
+`0.043 x 10.4 = 0.45 bps` against a 9 bps equity round trip. Not marginal — two orders of
+magnitude short.
+
+**Time-of-day effects are multiple-testing noise.** The strongest buckets reach `t = +3.40`
+(14:30) and `t = -3.39` (15:35), which looks impressive until you count the comparisons: these are
+the extremes of 78 five-minute buckets, and the expected maximum |t| from 78 draws under the null
+is already about 2.8–3.0. Magnitudes are 1.3–2.1 bps against a 9 bps hurdle regardless.
+
+**Overnight drift is real but not tradable here.** Overnight (close→open) returns +4.01 bps/session
+against intraday (open→close) +2.71 bps — annualised +10.1% versus +6.8%, consistent with the
+documented overnight-drift literature. But `t = 0.86`, and capturing it costs a full round trip per
+day against a 4 bps gross edge.
+
+**The opening-continuation candidate failed on the arithmetic that matters.** Days are positively
+autocorrelated within-session: `corr(first 30 min, rest of day) = +0.222`, and rest-of-day after a
+top-quintile open averages **+32.3 bps** versus −2.4 bps after a bottom-quintile open — a 34.7 bps
+spread that clears 9 bps with room to spare.
+
+That framing is wrong, and it is worth naming precisely because it is the kind of number that gets
+a strategy built. A quintile *spread* is a difference between two groups of days; it is not a
+position anyone can hold. The implementable version — take the sign of the opening 30-minute move,
+hold to the close — gives:
+
+| Measure | Value |
+| --- | --- |
+| gross mean | **+7.94 bps/session** |
+| sd | 92.09 bps |
+| t-statistic | +1.36 |
+| net of 9 bps round trip | **−1.06 bps/session** |
+| net annualised | −2.67% |
+| net Sharpe | −0.18 |
+| edge over always-long | +3.38 bps gross |
+
+Not significant before costs, and negative after them. **Verdict: rejected.**
+
+### 2. Cross-asset information — researched, artifact
+
+Lead-lag across the four ETFs looked strong at first: every one of the 16 ordered pairs is
+negatively autocorrelated, from −0.073 to −0.210, strongest `DIA → QQQ` at −0.210.
+
+Uniform negative lag-1 correlation of that size across *all* pairs, including each asset against
+itself, is far larger than daily US equity data supports (typically −0.02 to −0.05). That
+implausibility is the finding, so the data was verified rather than the signal trusted:
+
+* row count matches the manifest (1,965), hashes verify, timestamps strictly increasing;
+* no duplicate ET dates;
+* SPY closes 243.12 → 769.35, **+216%** over the window, which is correct;
+* the largest daily moves are the real COVID crash days (2020-03-16 −10.78%) and 2025-04-09 +10.50%.
+
+The data is clean. The correlation is a **volatility artifact concentrated in the March 2020 crash**:
+
+| Sample | SPY lag-1 autocorrelation |
+| --- | --- |
+| full history | −0.126 |
+| second half only | −0.051 |
+| excluding the largest 1% of days | **−0.040** |
+
+Two-thirds of the apparent signal lives in about ten days of extreme stress. At the de-crashed
+−0.040 the predicted move for a one-sd prior day is roughly 4.8 bps, below the 9 bps hurdle before
+averaging over ordinary days.
+
+A second correction: the first pass computed an "implied edge" of 35.56 bps by multiplying rho by
+the daily sd. That is the regression-predicted response to a one-sd input, not a per-trade
+expectancy, and it overstates the opportunity substantially. **Verdict: rejected as a crash
+artifact.**
+
+### 3. Volatility risk premium — cannot be researched yet
+
+This is the domain with the strongest prior in the literature and it is completely blocked.
+
+VRP is implied volatility minus causally expected realised volatility. Realised volatility is
+available and characterised — SPY 21-day realised over discovery: mean **18.13%**, range
+5.11%–87.34%, which is a healthy spread of regimes to work with.
+
+Implied volatility is not available. `*option*` in the research data root returns **zero files**.
+`AlpacaOptionContractClient`, `AlpacaHistoricalOptionBarClient`, and
+`AlpacaLatestOptionQuoteClient` all exist and are tested, and `OptionResearchDatasetExporter` can
+publish a hashed dataset — but no export has ever been run, because no session has held
+credentials.
+
+**This is the single highest-value blocked research item.** Unlike the equity families, VRP does
+not depend on finding dispersion in four correlated ETFs; it is a different risk premium with a
+different counterparty. It cannot be assessed at all until an option dataset exists.
+
+### 4. Regime conditioning — researched, not worth its multiplicity
+
+SPY next-day return conditioned on prior 20-day volatility tercile (discovery):
+
+| Regime | Mean | sd | t | n |
+| --- | --- | --- | --- | --- |
+| low-vol | +1.36 bps | 73.0 | +0.33 | 318 |
+| mid-vol | +6.01 bps | 107.2 | +1.00 | 317 |
+| high-vol | +6.81 bps | 200.6 | +0.61 | 327 |
+
+Best-minus-worst spread is 5.45 bps/day, but **no tercile is individually significant** and the
+highest t across three is 1.00. Selecting the best of three regimes triples the effective
+comparison count, so the spread would need to clear both the cost hurdle and that multiplicity.
+It clears neither. **Verdict: volatility-tercile regime conditioning adds nothing here.** A regime
+filter with an independent economic motivation might; a filter chosen by scanning terciles will not.
+
+### 5. Universe breadth — quantified, and it helps less than previously claimed
+
+Earlier notes in this handoff implied widening the universe was close to a silver bullet. It is
+not, and the correction matters for planning.
+
+Effective independent bets from `N` assets at average correlation `rho` is
+`N / (1 + (N-1) x rho)`. Holding the per-asset gross edge fixed, Sharpe scales with the square root
+of that, and required years scale inversely with its square:
+
+| Assets | rho | Effective bets | Relative Sharpe | Years needed @ Sharpe 0.6 |
+| --- | --- | --- | --- | --- |
+| 4 (today) | 0.877 | 1.10 | 1.00x | 7.5 |
+| 11 sector ETFs | 0.60 | 1.57 | 1.19x | 5.3 |
+| 30 names | 0.40 | 2.38 | 1.47x | 3.5 |
+| 30 names | 0.25 | 3.64 | 1.82x | 2.3 |
+
+The four index ETFs supply **1.10 effective bets** — essentially one. Eleven sector ETFs at 0.60
+correlation give 1.57, cutting the requirement from 7.5 years to 5.3. That is a **1.4x improvement,
+not the 3x implied earlier**; only a 30-name universe at 0.25 correlation reaches 3.3x.
+
+The practical reading is still favourable, just for a narrower reason: 7.8 years of history are
+available, so today's universe is *marginally* able to prove a Sharpe-0.6 strategy while sector
+ETFs would prove one *comfortably*. Breadth moves the position from marginal to comfortable; it
+does not manufacture an edge that is not there.
+
+Minimum provable Sharpe given the data that exists: **0.83 on discovery, 0.59 on full history.**
+Any four-ETF result claiming to clear those is more likely overfit than real.
+
+### 6. The dead overfitting toolkit — characterised, and one module corrected
+
+`evaluation/pbo.py` is not a stub. It is a working 58-line implementation of Probability of
+Backtest Overfitting, and its input is exactly the shape this repository already produces: the 14
+families' daily returns over 982 discovery sessions form the `(T, N)` matrix it expects. It answers
+the precise question the equity campaign needs — *is the best of my 14 families genuinely best, or
+is it selection noise?*
+
+A first single-seed test returned an identical 0.25 for pure noise and for a planted edge, which
+looked like a broken discriminator. Testing across 12 seeds shows that was a misleading draw:
+
+| Input | Mean PBO | Correct value |
+| --- | --- | --- |
+| pure noise, 14 families | 0.370 | ~0.50 |
+| one obvious edge planted | 0.099 | ~0.00 |
+
+It **does** discriminate. It is, however, **biased low** — pure noise should return roughly 0.5 and
+returns 0.370, so it under-reports the probability of overfitting. The module's own comments admit
+why: it implements a leave-one-partition-out jackknife rather than full combinatorially symmetric
+cross-validation. Wired in as-is it is usable as a relative ranking signal between families, but its
+absolute value must not be quoted as a probability, and it should not be presented as CSCV.
+
+---
+
+### What this changes about priorities
+
+1. **Volatility risk premium is now the most valuable unexplored direction**, and it is blocked
+   solely on exporting an option dataset. It does not depend on ETF dispersion, which is the
+   constraint that killed everything else.
+2. **Microstructure and cross-asset are closed** for this universe and these costs. Both were
+   measured, both failed, and both are recorded so they are not re-attempted.
+3. **Universe breadth is worth doing but is not transformative** — 1.4x from sector ETFs, not 3x.
+4. **PBO should be wired in before any further family search**, with its low bias stated. It is the
+   cheapest available guard against exactly the failure mode this campaign keeps producing.
+5. Two artifacts nearly became strategies in one session. Both were caught by asking whether the
+   implementable position matched the measured statistic, and whether a correlation survived
+   removing the crash. Those two checks belong in the screen itself.
+
 ## Research failures that must remain knowledge
 
 - Broad frozen BTC validation: all 32 comparisons failed.
@@ -881,38 +1070,50 @@ nothing in this repository has yet contacted the live venue or placed a trade.**
 | B6 | Duplicate-prevention is proven only across sequential restart, never with two store/lifecycle instances racing. |
 | B7 | Atomic store behaviour under interrupted writes and corrupted JSON is unproven for the MLeg store. |
 
-### C. Research — the binding constraint is universe breadth
+### C. Research
 
-| # | Item |
+Items marked **researched** were measured on 2026-09-01; see "Mechanism research — 2026-09-01"
+above for the numbers. Researched does not mean implemented — it means the domain was investigated
+and a verdict recorded, so it is not re-attempted blindly.
+
+| # | Item | Status |
+| --- | --- | --- |
+| C1 | Widen the research universe. Four ETFs at 0.877 correlation supply 1.10 effective bets. | **Researched.** Quantified: 11 sector ETFs give 1.4x, not the 3x implied earlier; 30 names at 0.25 give 3.3x. Still worth doing. Needs credentials. |
+| C2 | 1,104 lines of dead Python, including the overfitting toolkit. | **Partly researched.** `pbo.py` characterised: works, discriminates, but biased low (0.370 on noise vs correct ~0.5) and is a jackknife, not CSCV. Wire it in with that caveat stated. `purged_cv.py` and `walk_forward.py` still uncharacterised. |
+| C3 | Option quote/spread snapshots for research. | Open. Blocked with C7 on the same missing dataset. |
+| C4 | Regime-conditioned expectancy. | **Researched — negative.** Volatility terciles give no significant conditional edge (max t = 1.00) and selecting the best of three triples multiplicity. A filter with independent economic motivation might work; one chosen by scanning terciles will not. |
+| C5 | Mechanism-disagreement abstention. | Open. Lower value than it appeared: with every mechanism now rejected there is nothing left to disagree. Revisit once two mechanisms both survive. |
+| C6 | Formal mechanism catalogue. | **Done** — `MECHANISM_CATALOGUE` with falsification rules, persisted immutably. |
+| C7 | SPY volatility-risk-premium family. | **Researched — blocked, and now the highest-value direction.** Realised vol is available (mean 18.13%, range 5.11–87.34%); implied vol is not. Zero option datasets exist. Unlike every other family it does not depend on ETF dispersion. |
+| C8 | SPY directional debit-vertical family. | Open, and correctly gated: it requires an independently qualified underlying signal, and none exists. |
+| C9 | Persist rejected hypotheses. | **Done** — `persist_rejected_families` writes typed rejections. |
+| C10 | Execution-mode-aware crypto cost scenarios. | **Done** — conservative-stress, taker, maker, and observed-realised kept distinct, with observed costs unable to relax qualification. |
+| C11 | Historical expired-contract discovery against Alpaca. | Open. Blocked on credentials. |
+| C12 | Option feed remains `UNVERIFIED`. | Open. Blocked on credentials. |
+
+**Closed by research, do not re-attempt without new evidence:**
+
+| Domain | Verdict |
 | --- | --- |
-| C1 | **Widen the research universe.** SPY/QQQ/IWM/DIA carry a 0.859 mean pairwise correlation and contain no tradable cross-sectional edge. Sector and factor ETFs decorrelate the cross-section. Needs credentials; the downloader and the `--symbols` parameter are already in place. |
-| C2 | **1,104 lines of dead Python across 19 modules** — including the entire overfitting-control toolkit (deflated Sharpe, PBO, purged CV, walk-forward). Wire them into the experiments or delete them; leaving them dead misrepresents the system's rigour. |
-| C3 | Add option quote/spread snapshots for research. Bars alone cannot price a spread's execution economics. |
-| C4 | Regime-conditioned expectancy with independently validated regime filters and charged multiplicity. |
-| C5 | Mechanism-disagreement abstention returning typed `UNCERTAIN`/`ABSTAIN` rather than averaging contradiction into a weak direction. |
-| C6 | A persisted formal mechanism catalogue: cause, actor, expected regime, disappearance condition, falsification rule, dataset, costs, and comparison budget recorded before evaluation. |
-| C7 | A SPY volatility-risk-premium family using implied versus causal expected realised volatility — separately validated, never inferred from a directional edge. |
-| C8 | A SPY directional debit-vertical research family, only after an underlying signal independently qualifies. |
-| C9 | Persist the relative-strength and portfolio-family failures in typed rejected-hypothesis memory with hashes, parameters, costs, and reason. |
-| C10 | Execution-mode-aware crypto cost scenarios (conservative stress, taker, maker, observed-realised) kept distinct in provenance and qualification meaning. |
-| C11 | Historical expired-contract discovery is unproven against Alpaca; fail explicitly if the subscription does not supply the history. |
-| C12 | The option feed remains `UNVERIFIED` in runtime capability output and can only be marked verified after an authenticated read with freshness and schema checks. |
+| Microstructure pressure | Rejected. 5-min autocorrelation ~0 (implied 0.45 bps vs 9 bps hurdle); time-of-day effects are the extremes of 78 buckets; opening continuation is +7.94 bps gross (t=1.36) and **−1.06 bps net**. |
+| Cross-asset lead-lag | Rejected. Apparent −0.21 correlation collapses to −0.040 once the March 2020 crash is excluded. Data verified clean; the signal was a volatility artifact. |
+| Volatility-tercile regime conditioning | Rejected. No tercile individually significant. |
 
 ### D. Multi-leg options lifecycle
 
 | # | Item |
 | --- | --- |
-| D1 | Track Alpaca nested parent and leg order identities, not only the parent snapshot. |
-| D2 | Verify actual leg fill ratios; reject or repair broken and imbalanced partial fills safely. |
-| D3 | Attribute internal position quantity per OCC leg rather than only parent spread quantity. |
-| D4 | Reconcile parent orders, child orders, every leg position, and internal leg inventory. |
-| D5 | Cancellation and bounded repricing rules for stale unfilled entry and exit orders. |
-| D6 | Idempotent, PAPER-protected emergency options flatten that derives broker-truth leg exposure, closes it without duplicates, and verifies flat afterwards. |
-| D7 | Define recovery behaviour when `SubmissionUnknown` never appears at the broker; it currently stays nonterminal indefinitely. |
+| D1 | **Implemented:** persist nested parent/leg broker snapshots for entry and exit, including per-leg broker identities. |
+| D2 | **Implemented fail-closed:** reported nested legs must map exactly to requested OCC symbols and ratios; broken or incomplete final fills enter reconciliation failure. |
+| D3 | **Implemented:** attribute signed internal position quantity per OCC leg from persisted broker leg fills. |
+| D4 | **Implemented:** reconcile owned parent orders, every persisted leg, broker leg positions, and internal leg inventory; missing final nested-leg truth fails closed. |
+| D5 | **Partial:** stale unfilled acknowledged parent orders are bounded-cancelled after the configured timeout with no replacement post. Repricing remains open pending a validated replacement-price policy. |
+| D6 | **Implemented:** idempotent, PAPER-protected emergency options flatten derives broker-truth leg exposure, uses deterministic close IDs with lookup-before-submit, and verifies flat afterwards. |
+| D7 | **Implemented:** bounded lookup of an ambiguous submission becomes terminal `SubmissionUnresolved`; the original client ID is preserved and no retry POST is allowed. |
 | D8 | Typed timeout, broker-unavailable, permission, contract-expired, broken-leg, and reconciliation-failure states. |
-| D9 | Expose lifecycle and recovery status through readiness and status endpoints. |
-| D10 | Structured, secret-free lifecycle metrics and logs. |
-| D11 | Verify the recovery hosted service starts in the production container and advances a seeded nonterminal record without submitting an unauthorised order. |
+| D9 | **Implemented:** authenticated `GET /api/options/recovery` exposes recovery liveness, last cycle/error, and nonterminal count. Broader readiness remains governed by the existing fail-closed system ledger. |
+| D10 | **Implemented in-process telemetry:** secret-free MLeg transition counter records only source state, target state, and terminal status. Metrics-exporter/runtime collection evidence remains open. |
+| D11 | **Implemented in hosted-service test:** recovery advances a seeded nonterminal record without any parent or single-leg submission. Production-container runtime evidence remains external. |
 
 ### E. Admission and risk for options
 
@@ -942,19 +1143,19 @@ nothing in this repository has yet contacted the live venue or placed a trade.**
 | # | Item |
 | --- | --- |
 | G1 | `CryptoDiagnosticExecutionService` is a 1,072-line god class with 37 methods. Extract its durable lifecycle so the autonomous lane reuses it instead of a third reimplementation — this also closes A5. |
-| G2 | `CryptoMarketEvidence` is the evidence type for equities and options. Rename to `DirectionalMarketEvidence` and move it out of the crypto client's file. |
+| G2 | **Implemented:** the cross-asset contract is `DirectionalMarketEvidence`, decoupled from the crypto market-data client. |
 | G3 | `AlpacaTradingGateway` (404 lines) owns account, asset, submit, lookup, orders, positions, cancel, replace, close, and multi-leg mapping, and grows with every asset class. |
 | G4 | `Program.cs` (388 lines) mixes registration with inline endpoints and business defaults. |
-| G5 | 16 separate `JsonSerializerOptions` instantiations — each a chance for a reader and writer to disagree. |
-| G6 | The dataset manifest is declared three times across two languages; the C# writer and Python reader can drift with nothing catching it. |
-| G7 | `OptionQuoteSnapshot` carries five always-null greeks. Compute them or drop them. |
+| G5 | **Implemented:** production contract readers, writers, stores, and manifests share canonical web/indented JSON options. CLI display formatting remains intentionally local. |
+| G6 | **Implemented for the common bar manifest:** C# and Python pin the same camel-case `dataFile`/`rowCount` contract with tests. Option-specific manifest semantics remain a separate contract. |
+| G7 | **Implemented:** pricing `OptionQuoteSnapshot` carries only quote fields; authenticated `OptionRiskSnapshot` holds IV/Greeks separately and marks missing values stale rather than fabricated. |
 | G8 | Entry halts on any broker position or order, not only the traded symbol. Scoping it safely needs position attribution, which does not exist; deliberately left rather than weakening the invariant. |
-| G9 | `AlpacaHistoricalStockBarClient` silently ignores unrequested symbols and a null payload; the option clients fail closed on both. |
-| G10 | The autonomous symbol defaults to `BTC/USD`, the venue proven structurally unprofitable at short horizons. |
+| G9 | **Implemented:** `AlpacaHistoricalStockBarClient` rejects null/missing payloads, unrequested symbols, malformed bars, and conflicting data rather than silently filtering them. |
+| G10 | **Implemented:** enabled autonomy requires an explicit configured execution symbol; BTC/USD remains only the disabled research-data fallback. |
 | G11 | `crypto_direction.py` is 810 lines and serves a lane the cost analysis has ruled out. |
 | G12 | 74 files in `Docs/`; at least `Docs/AUTONOMOUS_TRADING_CONNECTION_AUDIT.md` predates the routing work. Docs drift is caught by no test. |
 | G13 | Test-name-to-source mapping is unreliable, so coverage gaps cannot be checked mechanically. |
-| G14 | `Program.cs` passes an unexplained magic `0.00000001m` into a diagnostic endpoint. |
+| G14 | **Implemented:** the diagnostic minimum quantity is the named `DiagnosticExecutionOptions.MinimumCryptoQuantity` invariant, not a composition-root magic literal. |
 
 ### H. Runtime verification before any trade
 
