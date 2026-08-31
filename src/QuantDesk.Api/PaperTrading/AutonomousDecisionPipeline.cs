@@ -50,8 +50,17 @@ public sealed class AutonomousDecisionPipeline(
         bool portfolioReconciled,
         double? verifiedForecastBps = null,
         string? verifiedStrategyFamily = null,
-        StrategyDefinitionContract? verifiedStrategyDefinition = null)
+        StrategyDefinitionContract? verifiedStrategyDefinition = null,
+        AccountCapabilities? capabilities = null)
     {
+        // Previously a literal `new AccountCapabilities(true, false, true, false, null)` was
+        // passed to the compiler on every cycle. That asserted the endpoint was PAPER without
+        // checking, and declared equity and options trading unavailable regardless of what the
+        // account actually permits — so no equity or option candidate could ever be compiled,
+        // whatever the research said. Callers now supply the probed capabilities; the fallback
+        // keeps the previous crypto-only behaviour for callers that have not been updated.
+        AccountCapabilities effectiveCapabilities =
+            capabilities ?? new AccountCapabilities(true, false, true, false, null);
         if (verifiedForecastBps is null)
         {
             CryptoResearchDecision research = researchGate.Evaluate(evidence);
@@ -104,11 +113,11 @@ public sealed class AutonomousDecisionPipeline(
         int count = verifiedStrategyDefinition is null
             ? compiler.Compile(
                 bundle, market, portfolio,
-                new AccountCapabilities(true, false, true, false, null),
+                effectiveCapabilities,
                 nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1", candidates)
             : compiler.Compile(
                 bundle, market, portfolio,
-                new AccountCapabilities(true, false, true, false, null),
+                effectiveCapabilities,
                 nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1",
                 verifiedStrategyDefinition, candidates);
         if (count == 0) return Reject("NoOpportunity", committeeDecision, market);

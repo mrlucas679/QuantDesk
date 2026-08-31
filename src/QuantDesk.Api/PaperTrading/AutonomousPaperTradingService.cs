@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using QuantDesk.Alpaca.Capabilities;
+using QuantDesk.Domain.Capabilities;
 using QuantDesk.Alpaca.Mapping;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Domain.Execution;
@@ -22,7 +24,9 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
-    AlpacaLatestCryptoQuoteClient quoteClient,
+    MarketEvidenceProvider evidenceProvider,
+    OpportunityRouter router,
+    IAlpacaCapabilityProbe capabilityProbe,
     AutonomousDecisionPipeline pipeline,
     ResearchArtifactState researchArtifacts,
     ExitEngine exitEngine,
@@ -68,6 +72,26 @@ public sealed class AutonomousPaperTradingService(
         }
         if (!symbols.TryResolveBySymbol(options.Symbol, out int slot))
             throw new InvalidOperationException("Autonomous symbol is not mapped to an instrument slot.");
+        // Route first: an unsupported symbol must never inherit another asset class's cost model,
+        // order policy, or permission check.
+        if (!router.TryRoute(options.Symbol, out OpportunityRoute? route, out string routeReason) ||
+            route is null)
+        {
+            state.Update("abstained", options.Symbol, reason: routeReason);
+            return;
+        }
+
+        CapabilityReport probed = await capabilityProbe.ProbeAsync(cancellationToken);
+        var capabilities = new AccountCapabilities(
+            probed.PaperEnvironment, probed.EquityTrading, probed.CryptoTrading,
+            probed.OptionsTrading, probed.OptionsTradingLevel);
+        if (!route.IsPermittedBy(capabilities))
+        {
+            state.Update("abstained", options.Symbol, reason: "AssetClassNotPermitted");
+            logger.LogWarning(
+                "Autonomous route {AssetClass} is not permitted by the live account.", route.AssetClass);
+            return;
+        }
         ResearchArtifactSnapshot research = researchArtifacts.Snapshot();
         ForecastSnapshotContract? forecast = research.Forecast;
         if (!experimental && (!research.Ready || forecast is null))
@@ -96,12 +120,13 @@ public sealed class AutonomousPaperTradingService(
         }
 
         PortfolioSnapshot initial = EmptyPortfolio(account);
-        CryptoMarketEvidence evidence = await quoteClient.GetEvidenceAsync(options.Symbol, cancellationToken);
+        CryptoMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, evidence, initial, true, true,
             experimental ? null : (double)forecast!.PointForecast,
             experimental ? null : research.StrategyFamily,
-            experimental ? null : research.StrategyDefinition);
+            experimental ? null : research.StrategyDefinition,
+            capabilities);
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {
@@ -125,7 +150,10 @@ public sealed class AutonomousPaperTradingService(
         var portfolio = new PortfolioLedger(initial);
         var updates = new TradeUpdateProcessor(portfolio);
         var execution = new ExecutionWorker(broker, reservations, runtimeMode, options.FillTimeout);
-        string entryClientId = $"qd-auto-entry-{Guid.NewGuid():N}";
+        // Derived from the opportunity, not from a random number, so an ambiguous POST can be
+        // recovered by asking the broker for this exact ID. See DeterministicClientOrderId.
+        string opportunityIdentity = OpportunityIdentity(candidate, slot);
+        string entryClientId = DeterministicClientOrderId.Create("auto", opportunityIdentity, "entry");
         ExecutionIntent entryIntent = CreateReservedIntent(candidate, reservation, entryClientId);
         portfolio.RegisterOrderAttribution(entryClientId,
             new OrderAttribution(candidate.StrategyId, candidate.ManagementPlan.ExitPolicyVersion,
@@ -147,7 +175,7 @@ public sealed class AutonomousPaperTradingService(
 
         try
         {
-            await ManagePositionAsync(candidate, slot, entryFill, portfolio, updates, execution,
+            await ManagePositionAsync(candidate, route, slot, entryFill, portfolio, updates, execution,
                 reservations, reservation, cancellationToken);
         }
         catch
@@ -159,14 +187,15 @@ public sealed class AutonomousPaperTradingService(
     }
 
     private async Task ManagePositionAsync(
-        TradeCandidate candidate, int slot, BrokerOrderSnapshot entryFill, PortfolioLedger portfolio,
-        TradeUpdateProcessor updates, ExecutionWorker execution, ReservationLedger reservations,
-        PortfolioReservation reservation, CancellationToken cancellationToken)
+        TradeCandidate candidate, OpportunityRoute route, int slot, BrokerOrderSnapshot entryFill,
+        PortfolioLedger portfolio, TradeUpdateProcessor updates, ExecutionWorker execution,
+        ReservationLedger reservations, PortfolioReservation reservation,
+        CancellationToken cancellationToken)
     {
         long openedTicks = clock.MonotonicTimestamp;
         while (!cancellationToken.IsCancellationRequested)
         {
-            CryptoMarketEvidence evidence = await quoteClient.GetEvidenceAsync(options.Symbol, cancellationToken);
+            CryptoMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
             portfolio.MarkToMarket(new Dictionary<int, decimal> { [slot] = (evidence.Bid + evidence.Ask) / 2m });
             PositionSnapshot position = portfolio.Snapshot().Positions.Single(item => item.InstrumentSlot == slot);
             bool thesisValid = HasCurrentVerifiedForecast();
@@ -192,12 +221,26 @@ public sealed class AutonomousPaperTradingService(
             forecast.PointForecast > 0;
     }
 
+    /// <summary>
+    /// The reproducible identity of one opportunity. Every component is already persisted with the
+    /// candidate, so the same opportunity yields the same client-order IDs on a later pass.
+    /// </summary>
+    private string OpportunityIdentity(TradeCandidate candidate, int slot) =>
+        string.Join(
+            '|',
+            options.Symbol.Trim().ToUpperInvariant(),
+            slot.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            candidate.StrategyId,
+            candidate.CandidateId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            candidate.SourceStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
     private async Task SubmitManagedExitAsync(
         TradeCandidate candidate, int slot, BrokerOrderSnapshot entryFill, PortfolioLedger portfolio,
         TradeUpdateProcessor updates, ExecutionWorker execution, ReservationLedger reservations,
         PortfolioReservation reservation, ExitEvaluation exit, CancellationToken cancellationToken)
     {
-        string exitClientId = $"qd-auto-exit-{Guid.NewGuid():N}";
+        string exitClientId = DeterministicClientOrderId.Create(
+            "auto", OpportunityIdentity(candidate, slot), "exit");
         ExecutionIntent exitIntent = CreateReservedIntent(candidate, reservation, exitClientId);
         portfolio.RegisterOrderAttribution(exitClientId,
             new OrderAttribution(candidate.StrategyId, candidate.ManagementPlan.ExitPolicyVersion,
