@@ -1,3 +1,4 @@
+using QuantDesk.Runtime.Persistence;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -14,7 +15,11 @@ public sealed record HistoricalDatasetManifest(
     int RowCount,
     string Sha256,
     DateTimeOffset GeneratedAt,
-    string DataFile);
+    string DataFile,
+    // Feed and adjustment are provenance, not decoration: the research plane refuses any dataset
+    // that is not SIP/all, and without these fields a consumer cannot tell the feeds apart.
+    string Feed = "iex",
+    string Adjustment = "all");
 
 /// <summary>Exports immutable, hashed Alpaca bars for the asynchronous Python research plane.</summary>
 public sealed class HistoricalCryptoDatasetService(
@@ -170,24 +175,17 @@ public sealed class HistoricalCryptoDatasetService(
         string hash = Convert.ToHexStringLower(SHA256.HashData(data));
         string datasetId = $"{Normalize(symbol)}-{timeframe.ToLowerInvariant()}-{hash[..16]}";
         string dataFile = $"{datasetId}.json";
-        await AtomicWriteAsync(Path.Combine(outputRoot, dataFile), data, cancellationToken);
+        await AtomicFile.WriteAllBytesAsync(Path.Combine(outputRoot, dataFile), data, cancellationToken);
         var manifest = new HistoricalDatasetManifest(
             datasetId, symbol, timeframe, bars[0].Timestamp, bars[^1].Timestamp,
             bars.Count, $"sha256:{hash}", DateTimeOffset.UtcNow, dataFile);
         byte[] manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
-        await AtomicWriteAsync(Path.Combine(outputRoot, latestManifestName), manifestBytes, cancellationToken);
+        await AtomicFile.WriteAllBytesAsync(Path.Combine(outputRoot, latestManifestName), manifestBytes, cancellationToken);
         logger.LogInformation(
             "Published point-in-time {Timeframe} research dataset {DatasetId} with {RowCount} chronological bars.",
             timeframe,
             datasetId,
             bars.Count);
-    }
-
-    private static async Task AtomicWriteAsync(string path, byte[] content, CancellationToken cancellationToken)
-    {
-        string temporary = path + $".{Guid.NewGuid():N}.tmp";
-        await File.WriteAllBytesAsync(temporary, content, cancellationToken);
-        File.Move(temporary, path, true);
     }
 
     private static int ReadPositiveInt(string name, int fallback) =>

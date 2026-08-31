@@ -28,7 +28,8 @@ public sealed class AlpacaHistoricalStockBarClientTests
 
     private static AlpacaOptions TestOptions() => new()
     {
-        BaseUrl = new Uri("https://paper-api.alpaca.markets"), KeyId = "test-key", SecretKey = "test-secret"
+        BaseUrl = new Uri("https://paper-api.alpaca.markets"),
+        DataBaseUrl = new Uri("https://data.alpaca.markets/"), KeyId = "test-key", SecretKey = "test-secret"
     };
 
     private sealed class PagedHandler(params string[] responses) : HttpMessageHandler

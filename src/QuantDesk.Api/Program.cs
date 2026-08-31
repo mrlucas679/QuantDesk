@@ -16,6 +16,7 @@ using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Runtime.Ingestion;
 using QuantDesk.Runtime.Modes;
+using QuantDesk.Runtime.Options;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Risk;
@@ -104,9 +105,9 @@ builder.Services.AddSingleton(services =>
     return new CryptoCostModel(new BasisPoints((double)(fees.TakerBps * 2m)), new BasisPoints(10));
 });
 builder.Services.AddSingleton(new ActionabilityGate(0.01, new Usd(0.01m)));
-builder.Services.AddSingleton(new RiskGovernor(new RiskLimits(
-    new Usd(5), new Usd(25), new Usd(100), new Usd(250), 1,
-    100_000, 100_000, 100_000, 0.01, 1)));
+builder.Services.AddSingleton(services => new RiskGovernor(
+    RiskLimitOptions.FromEnvironment(
+        services.GetRequiredService<AutonomousPaperTradingOptions>().OrderNotional)));
 builder.Services.AddSingleton<ExitEngine>();
 builder.Services.AddSingleton<AutonomousDecisionPipeline>();
 builder.Services.AddSingleton<AutonomousTradingState>();
@@ -165,6 +166,31 @@ builder.Services.AddHttpClient<AlpacaOptionContractClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(15);
 });
+builder.Services.AddSingleton<OptionResearchDatasetExporter>();
+builder.Services.AddHttpClient<AlpacaLatestOptionQuoteClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddHttpClient<AlpacaLatestEquityQuoteClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddSingleton<OpportunityRouter>();
+builder.Services.AddSingleton<MarketEvidenceProvider>();
+// A defined-risk vertical's whole safety property is that the debit paid is the maximum loss, so
+// the risk budget per spread is the hard cap on what one options opportunity can cost. It is
+// derived from the same notional envelope the spot lane uses rather than invented here.
+builder.Services.AddSingleton(services =>
+{
+    AutonomousPaperTradingOptions trading = services.GetRequiredService<AutonomousPaperTradingOptions>();
+    return new DefinedRiskVerticalCompiler(
+        riskBudgetPerSpread: new Usd(trading.OrderNotional),
+        maximumRelativeSpread: 0.15,
+        minimumRewardToRisk: 0.5,
+        minimumDaysToExpiry: 7,
+        maximumDaysToExpiry: 60);
+});
+builder.Services.AddSingleton<OptionVerticalOpportunityService>();
 
 WebApplication app = builder.Build();
 app.Services.GetRequiredService<FullSystemReadinessState>().RecordDeterministicRuntime(

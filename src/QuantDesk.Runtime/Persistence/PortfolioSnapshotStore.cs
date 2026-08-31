@@ -13,11 +13,9 @@ public sealed class PortfolioSnapshotStore(string path)
         ArgumentNullException.ThrowIfNull(snapshot);
         string? directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-        string temporary = path + ".tmp";
         lock (gate)
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot, Options));
-            File.Move(temporary, path, true);
+            AtomicFile.WriteAllText(path, JsonSerializer.Serialize(snapshot, Options));
         }
     }
 

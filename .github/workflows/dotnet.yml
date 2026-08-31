@@ -20,4 +20,15 @@ jobs:
       - run: dotnet nuget locals all --clear
       - run: dotnet restore QuantDesk.slnx --force
       - run: dotnet build QuantDesk.slnx --no-restore --configuration Release
-      - run: dotnet test QuantDesk.slnx --no-build --configuration Release
+      # A solution-level `dotnet test` reports success even when it enumerates only a subset of the
+      # test projects — a green exit code alone does not prove every suite ran. Assert that the
+      # number of reported test assemblies matches the number of test projects in the solution.
+      - name: Test every project in the solution
+        shell: bash
+        run: |
+          set -o pipefail
+          expected=$(grep -c '\.Tests\.csproj' QuantDesk.slnx)
+          dotnet test QuantDesk.slnx --no-build --configuration Release --nologo | tee test-output.txt
+          actual=$(grep -cE '^(Passed|Failed)!' test-output.txt)
+          echo "Executed $actual test assemblies; solution declares $expected test projects."
+          test "$actual" -eq "$expected"

@@ -46,7 +46,7 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         string? pageToken = null;
         do
         {
-            string requestUri = "https://data.alpaca.markets/v1beta3/crypto/us/bars" +
+            string requestUri = options.DataUri("v1beta3/crypto/us/bars") +
                 $"?symbols={Uri.EscapeDataString(symbol)}&timeframe={Uri.EscapeDataString(timeframe)}" +
                 $"&start={Uri.EscapeDataString(start.ToString("O"))}&end={Uri.EscapeDataString(end.ToString("O"))}" +
                 "&limit=10000&sort=asc" +
@@ -73,7 +73,7 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         string requestUri =
-            $"https://data.alpaca.markets/v1beta3/crypto/us/latest/quotes?symbols={Uri.EscapeDataString(symbol)}";
+            options.DataUri($"v1beta3/crypto/us/latest/quotes?symbols={Uri.EscapeDataString(symbol)}");
         using var request = AuthenticatedRequest(requestUri);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -94,7 +94,7 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         string symbol, CancellationToken cancellationToken)
     {
         string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-2).ToString("O"));
-        string requestUri = "https://data.alpaca.markets/v1beta3/crypto/us/bars" +
+        string requestUri = options.DataUri("v1beta3/crypto/us/bars") +
             $"?symbols={Uri.EscapeDataString(symbol)}&timeframe=5Min&start={start}&limit=30&sort=asc";
         using var request = AuthenticatedRequest(requestUri);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
