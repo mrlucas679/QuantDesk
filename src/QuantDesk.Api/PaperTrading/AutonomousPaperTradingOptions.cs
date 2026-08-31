@@ -3,9 +3,23 @@ using QuantDesk.Domain.Runtime;
 
 namespace QuantDesk.Api.PaperTrading;
 
+/// <summary>How an approved directional view is expressed as a position.</summary>
+public enum OpportunityExpression
+{
+    /// <summary>Hold the underlying instrument directly.</summary>
+    Spot,
+
+    /// <summary>
+    /// Express the view as a two-leg debit vertical whose maximum loss is the premium paid.
+    /// The configured symbol stays the underlying; the chain is discovered at runtime.
+    /// </summary>
+    DefinedRiskVertical
+}
+
 public sealed record AutonomousPaperTradingOptions(
     bool Enabled,
     AutonomousTradingMode Mode,
+    OpportunityExpression Expression,
     ExperimentalPaperAuthorization? ExperimentalAuthorization,
     string Symbol,
     decimal OrderNotional,
@@ -45,6 +59,7 @@ public sealed record AutonomousPaperTradingOptions(
         return new(
             enabled,
             mode,
+            ParseExpression(),
             authorization,
             symbol,
             notional,
@@ -52,6 +67,13 @@ public sealed record AutonomousPaperTradingOptions(
             TimeSpan.FromSeconds(fillTimeoutSeconds),
             TimeSpan.FromSeconds(cycleIntervalSeconds));
     }
+
+    private static OpportunityExpression ParseExpression() =>
+        Enum.TryParse(
+            Environment.GetEnvironmentVariable("QUANTDESK_AUTONOMOUS_EXPRESSION"),
+            ignoreCase: true, out OpportunityExpression parsed)
+            ? parsed
+            : OpportunityExpression.Spot;
 
     private static ExperimentalPaperAuthorization ReadExperimentalAuthorization(string symbol)
     {

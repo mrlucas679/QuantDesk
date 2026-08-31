@@ -56,8 +56,13 @@ public sealed class OptionExecutionCoordinator(
     /// </summary>
     private const decimal ExitLimitFraction = 0.50m;
 
+    /// <param name="underlying">
+    /// The equity whose directional view is being expressed. The option chain is discovered at
+    /// runtime, so the caller configures a stable underlying rather than an OCC symbol that
+    /// expires and could never be held in static configuration.
+    /// </param>
     public async Task<OptionExecutionOutcome> ExecuteAsync(
-        OpportunityRoute route,
+        string underlying,
         AccountCapabilities capabilities,
         string executionId,
         decimal underlyingPrice,
@@ -70,19 +75,18 @@ public sealed class OptionExecutionCoordinator(
         decimal strikeBandFraction,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(route);
         ArgumentNullException.ThrowIfNull(capabilities);
+        ArgumentException.ThrowIfNullOrWhiteSpace(underlying);
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
 
-        if (route.AssetClass != TradedAssetClass.UsEquityOption)
-            return OptionExecutionOutcome.Rejected("RouteIsNotAnOptionRoute");
-        if (!route.IsPermittedBy(capabilities))
+        // A defined-risk vertical is a spread, which Alpaca gates at options level 2 or above.
+        if (!capabilities.PaperEnvironment || !capabilities.OptionsTrading ||
+            capabilities.OptionsTradingLevel < 2)
             return OptionExecutionOutcome.Rejected("AssetClassNotPermitted");
 
-        string underlying = MarketEvidenceProvider.UnderlyingOf(route.Symbol);
         OptionOpportunityOutcome opportunity = await opportunities.FindAsync(
             underlying, underlyingPrice, expectedReturnBps, candidateId: StableCandidateId(executionId),
-            costBps: route.Costs.HurdleBps(0m), managementPlan, asOf,
+            costBps: ExecutionCostProfile.UsEquityOption.HurdleBps(0m), managementPlan, asOf,
             minimumDaysToExpiry, maximumDaysToExpiry, strikeBandFraction, cancellationToken);
 
         if (!opportunity.Admitted || opportunity.Compilation?.Candidate is not { } candidate)

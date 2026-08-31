@@ -39,7 +39,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
         OptionExecutionCoordinator coordinator = Coordinator(broker);
 
         OptionExecutionOutcome outcome = await coordinator.ExecuteAsync(
-            Route(), Enabled, "OPT-E2E-0001", Spot, expectedReturnBps: 200,
+            "SPY", Enabled, "OPT-E2E-0001", Spot, expectedReturnBps: 200,
             riskBudget: 500m, Plan(), AsOf, 7, 60, 0.05m, CancellationToken.None);
 
         output.WriteLine(
@@ -69,7 +69,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
     {
         var broker = new RecordingMultiLegBroker();
         await Coordinator(broker).ExecuteAsync(
-            Route(), Enabled, "OPT-DURABLE-0001", Spot, 200, 500m, Plan(),
+            "SPY", Enabled, "OPT-DURABLE-0001", Spot, 200, 500m, Plan(),
             AsOf, 7, 60, 0.05m, CancellationToken.None);
 
         // The record must exist on disk, and it must name the same order the broker received.
@@ -85,7 +85,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
         var noOptions = new AccountCapabilities(true, true, true, false, null);
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
-            Route(), noOptions, "OPT-PERM-0001", Spot, 200, 500m, Plan(),
+            "SPY", noOptions, "OPT-PERM-0001", Spot, 200, 500m, Plan(),
             AsOf, 7, 60, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
@@ -99,7 +99,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
         var broker = new RecordingMultiLegBroker();
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
-            Route(), Enabled, "OPT-BUDGET-0001", Spot, 200, riskBudget: 50m, Plan(),
+            "SPY", Enabled, "OPT-BUDGET-0001", Spot, 200, riskBudget: 50m, Plan(),
             AsOf, 7, 60, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
@@ -107,17 +107,17 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
     }
 
     [Fact]
-    public async Task ASpotRouteIsRefusedByTheOptionsCoordinator()
+    public async Task OptionsLevelBelowTwoCannotTradeASpread()
     {
         var broker = new RecordingMultiLegBroker();
-        new OpportunityRouter().TryRoute("BTC/USD", out OpportunityRoute? crypto, out _);
+        var levelOne = new AccountCapabilities(true, true, true, true, 1);
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
-            crypto!, Enabled, "OPT-ROUTE-0001", Spot, 200, 500m, Plan(),
+            "SPY", levelOne, "OPT-LEVEL-0001", Spot, 200, 500m, Plan(),
             AsOf, 7, 60, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
-        Assert.Equal("RouteIsNotAnOptionRoute", outcome.Reason);
+        Assert.Equal("AssetClassNotPermitted", outcome.Reason);
         Assert.Null(broker.LastCommand);
     }
 
@@ -127,18 +127,12 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
         var broker = new RecordingMultiLegBroker { IsPaper = false };
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
-            Route(), Enabled, "OPT-LIVE-0001", Spot, 200, 500m, Plan(),
+            "SPY", Enabled, "OPT-LIVE-0001", Spot, 200, 500m, Plan(),
             AsOf, 7, 60, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
         Assert.Equal("ReservationRejected", outcome.Reason);
         Assert.Null(broker.LastCommand);
-    }
-
-    private static OpportunityRoute Route()
-    {
-        new OpportunityRouter().TryRoute("SPY260918C00600000", out OpportunityRoute? route, out _);
-        return route!;
     }
 
     private OptionExecutionCoordinator Coordinator(RecordingMultiLegBroker broker)

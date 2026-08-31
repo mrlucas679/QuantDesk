@@ -26,6 +26,7 @@ public sealed class AutonomousPaperTradingService(
     IInstrumentSymbolResolver symbols,
     MarketEvidenceProvider evidenceProvider,
     OpportunityRouter router,
+    OptionExecutionCoordinator optionExecution,
     IAlpacaCapabilityProbe capabilityProbe,
     AutonomousDecisionPipeline pipeline,
     ResearchArtifactState researchArtifacts,
@@ -37,6 +38,13 @@ public sealed class AutonomousPaperTradingService(
     ILogger<AutonomousPaperTradingService> logger) : BackgroundService
 {
     private static readonly TimeSpan PositionMonitorInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>Expiry window for an options expression of a short-horizon directional view.</summary>
+    private const int MinimumOptionDaysToExpiry = 7;
+    private const int MaximumOptionDaysToExpiry = 60;
+
+    /// <summary>Strikes considered around spot, bounded so one quote request covers the band.</summary>
+    private const decimal OptionStrikeBandFraction = 0.05m;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -138,6 +146,15 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
 
+        // A defined-risk vertical expresses the same directional view the pipeline just approved,
+        // using options instead of the underlying. The view is formed on the underlying above;
+        // only the instrument differs, so the branch happens here and not earlier.
+        if (options.Expression == OpportunityExpression.DefinedRiskVertical)
+        {
+            await ExecuteOptionOpportunityAsync(capabilities, candidate, decision, cancellationToken);
+            return;
+        }
+
         var reservations = new ReservationLedger(initial);
         if (!reservations.TryReserve(initial.Version, risk.RequiredRiskReservation,
                 risk.RequiredCapitalReservation, new Usd(options.OrderNotional), out PortfolioReservation? reservation) ||
@@ -219,6 +236,60 @@ public sealed class AutonomousPaperTradingService(
             string.Equals(forecast.Instrument, options.Symbol, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(forecast.ForecastFamily, "directional_return_bps", StringComparison.OrdinalIgnoreCase) &&
             forecast.PointForecast > 0;
+    }
+
+    /// <summary>
+    /// Routes an approved directional view into the durable multi-leg options lifecycle.
+    ///
+    /// Risk, capital, and reconciliation checks have already run above; the coordinator adds the
+    /// options-specific ones — permission for the asset class, an admissible spread, and a debit
+    /// that stays inside the risk budget — and commits the reservation durably before any POST.
+    /// </summary>
+    private async Task ExecuteOptionOpportunityAsync(
+        AccountCapabilities capabilities,
+        TradeCandidate candidate,
+        AutonomousPipelineDecision decision,
+        CancellationToken cancellationToken)
+    {
+        double expectedReturnBps = decision.Committee?.ExpectedReturnBps ?? 0d;
+        decimal underlyingPrice = decision.Market is { } market && market.Mid > 0
+            ? (decimal)market.Mid
+            : 0m;
+        string executionId = DeterministicClientOrderId.Create(
+            "autoopt", OpportunityIdentity(candidate, candidate.InstrumentSlot), "execution");
+
+        state.Update("submitting_entry", options.Symbol, reason: "OptionSpreadAdmitted");
+        OptionExecutionOutcome outcome = await optionExecution.ExecuteAsync(
+            options.Symbol,
+            capabilities,
+            executionId,
+            underlyingPrice,
+            expectedReturnBps,
+            options.OrderNotional,
+            candidate.ManagementPlan,
+            clock.UtcNow,
+            MinimumOptionDaysToExpiry,
+            MaximumOptionDaysToExpiry,
+            OptionStrikeBandFraction,
+            cancellationToken);
+
+        if (!outcome.Submitted)
+        {
+            state.Update("abstained", options.Symbol, reason: outcome.Reason);
+            logger.LogInformation(
+                "Autonomous option opportunity for {Symbol} was not submitted: {Reason}.",
+                options.Symbol, outcome.Reason);
+            return;
+        }
+
+        // The multi-leg recovery worker owns the record from here: fills, the durable hold, the
+        // managed exit, and final reconciliation all advance without this cycle holding state.
+        state.Update("holding", options.Symbol, reason: outcome.State?.ToString());
+        logger.LogInformation(
+            "Autonomous option entry {ClientOrderId} submitted for {Symbol}; " +
+            "defined maximum loss {Loss}, net debit {Debit}. Lifecycle owns the exit.",
+            outcome.EntryClientOrderId, options.Symbol,
+            outcome.DefinedMaximumLoss, outcome.NetDebitPerSpread);
     }
 
     /// <summary>
