@@ -8,6 +8,142 @@ Improve QuantDesk until at least one strategy genuinely qualifies under unchange
 
 The goal is **not complete**. No strategy currently qualifies, no autonomous strategy order has been submitted, and autonomous execution remains disabled.
 
+## GO-LIVE RUNBOOK — 2026-09-01
+
+The options path is complete and automatic. Everything below the credential step is built, wired,
+and tested. **One blocker remains and only you can remove it: no session has ever held Alpaca
+credentials, so nothing here has contacted the venue or placed an order.**
+
+### What is now complete end to end
+
+An approved directional view is carried from the option chain to a broker submission without
+manual intervention. Proven against a recording broker:
+
+```
+submitted=True  state=EntrySubmitted  maxLoss=327.00  debit=3.27
+clientOrderId=qd-opt-073acb89dd7b00e814a9c089-entry
+```
+
+The chain is discovered and priced at runtime, a defined-risk vertical is compiled, legs are mapped
+to OCC symbols with open-side intents, and the reservation is committed to durable storage **before
+any POST** — so an interrupted submission is recoverable by deterministic client order ID rather
+than lost. The worst case is re-checked against the risk budget using the limit actually submitted,
+not the compiled mid, so the entry buffer cannot widen the maximum loss past the cap.
+
+Verified: **373 .NET tests**, 130 Python, ruff and mypy clean, Docker production image builds.
+
+### Step 1 — credentials (only you can do this)
+
+```powershell
+$env:APCA_API_KEY_ID    = "<paper key>"
+$env:APCA_API_SECRET_KEY = "<paper secret>"
+```
+
+The application refuses any host other than `paper-api.alpaca.markets`, and now refuses any
+market-data host other than `data.alpaca.markets`.
+
+### Step 2 — confirm the account can do what the lane needs
+
+```powershell
+docker compose up -d api
+curl http://localhost:8080/api/system/capabilities
+```
+
+Required: `paperEnvironment: true`, `optionsTrading: true`, `optionsTradingLevel >= 2`. A spread is
+gated at level 2; the lane refuses below it rather than sending an order that will bounce.
+
+### Step 3 — export an option dataset
+
+This is what unblocks volatility-risk-premium research, the highest-value remaining direction, and
+it also proves the option clients against real venue responses for the first time.
+
+```powershell
+docker compose exec api curl -s localhost:8080/api/system/capabilities
+```
+
+The exporter is registered; a scheduled trigger is still outstanding (register item C3), so for now
+invoke the research downloader directly:
+
+```powershell
+Set-Location research/python
+uv run --frozen python -m quantdesk_research.data.alpaca_historical --symbols "XLK,XLF,XLE,XLV,XLI,XLY,XLP,XLU,XLB,XLRE,XLC" --timeframe 1Day --start 2018-11-01 --end 2026-08-28 --output data/US_EQUITIES_RESEARCH_001
+```
+
+Widening the universe this way is worth roughly 1.4x in detectability — real, but not decisive on
+its own. See the research section for why.
+
+### Step 4 — configure the run
+
+For a defined-risk options trade on SPY:
+
+```
+QUANTDESK_AUTONOMOUS_MODE=ExperimentalPaper
+QUANTDESK_AUTONOMOUS_ENABLED=true
+QUANTDESK_AUTONOMOUS_SYMBOL=SPY
+QUANTDESK_AUTONOMOUS_EXPRESSION=DefinedRiskVertical
+QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL=500
+QUANTDESK_SYMBOLS=SPY,BTC/USD
+```
+
+`QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL` is the hard cap on what one options opportunity can lose,
+because a debit spread's maximum loss is exactly the premium paid. $500 admits the 600/605 SPY
+vertical the tests exercise; $20 will reject every spread as `EntryLimitExceedsRiskBudget`.
+
+`ExperimentalPaper` additionally requires the full authorization block — `QUANTDESK_EXPERIMENT_ID`,
+`QUANTDESK_HYPOTHESIS_ID`, `QUANTDESK_STRATEGY_VERSION`, `QUANTDESK_EXPERIMENT_REGISTERED_AT`,
+`QUANTDESK_EVIDENCE_REFERENCE`, and both sanity flags set true. It refuses to start otherwise. This
+is the designed route for a bounded run that does not claim validated alpha, and it relaxes only
+research-readiness gates — never risk, reservation, or reconciliation.
+
+### Step 5 — watch it
+
+```powershell
+curl http://localhost:8080/api/autonomous/status
+```
+
+States to expect: `abstained` with a typed reason on most cycles, then `submitting_entry` and
+`holding` when a spread is admitted. After that the multi-leg recovery worker owns the record —
+fills, the durable hold, the managed exit, and final reconciliation all advance without the
+evaluation cycle holding state.
+
+### Be prepared for abstention, and read it as working
+
+Most cycles will abstain, and that is the system behaving correctly rather than failing. The
+likeliest reasons, all typed:
+
+| Reason | Meaning |
+| --- | --- |
+| `EXPECTED_EDGE_BELOW_COSTS` | The momentum signal did not clear the venue hurdle. Most common. |
+| `ExpectedValueBelowCosts` | A spread existed but the forecast could not pay for it. |
+| `SpreadTooWide` | The chain was too illiquid at that moment. |
+| `QuoteUnhealthy` | Option quotes were stale, crossed, or one-sided. |
+| `EntryLimitExceedsRiskBudget` | Raise `ORDER_NOTIONAL` or accept narrower spreads. |
+| `PortfolioUnreconciled` | Any pre-existing broker position or order halts entry. |
+
+That last one matters operationally: entry halts on **any** open position or order, not only ones
+for the traded symbol. Start from a flat account.
+
+### The honest state of the research
+
+No strategy qualifies. Four families cleared discovery; none beat passive equal-weight
+out-of-sample. Microstructure and cross-asset lead-lag were researched on 2026-09-01 and both
+rejected — one was a quintile-spread framing that is not a holdable position, the other a March
+2020 crash artifact. Volatility risk premium is the strongest remaining direction and is blocked
+only on the option dataset from step 3.
+
+So `ExperimentalPaper` is the honest route to a first trade: a bounded, preregistered run that does
+not claim validated alpha. `ValidatedPaper` will not fire, because nothing has qualified.
+
+### What is still not done
+
+* `AutonomousPaperTradingService` still has **zero tests** — the money path. It is wired and builds,
+  but the orchestration itself is unverified. This is the largest remaining risk when you enable it.
+* The spot autonomous lane still lacks the durable store the options and diagnostic lanes have, so
+  its restart recovery is weaker despite deterministic client IDs.
+* No option dataset has ever been exported, so the option clients have never seen a real venue
+  response. Expect the strict validators (adjusted contracts, non-standard multipliers, stale
+  quotes) to fire on live data — treat a rejection as information, not a bug to suppress.
+
 ## Non-negotiable boundaries
 
 - Alpaca PAPER only. Never add a live endpoint or fallback.
