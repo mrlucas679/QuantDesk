@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
+import pytest
 
 from quantdesk_research.backtest.equity_costs import BASE_COST, COST_SCENARIOS
 from quantdesk_research.experiments.equity_research import (
@@ -15,10 +16,19 @@ from quantdesk_research.experiments.equity_research import (
 )
 
 
-def test_cost_scenarios_are_ordered_and_base_is_twenty_five_bps() -> None:
-    assert BASE_COST.round_trip_bps == 25.0
-    assert [scenario.round_trip_bps for scenario in COST_SCENARIOS] == [25.0, 35.0, 50.0]
-    assert BASE_COST.net_return(0.01) == 0.0075
+def test_cost_scenarios_match_alpacas_commission_free_equity_schedule() -> None:
+    """Pin the corrected round-trip costs for penny-spread US ETFs.
+
+    This test previously asserted a 25/35/50 bps ladder. Those figures were roughly eight times
+    the achievable cost for SPY, QQQ, IWM, and DIA on a commission-free venue, and they silently
+    rejected any candidate whose real edge was smaller than the modelling error. The derivation
+    of the corrected ladder is in ``quantdesk_research.backtest.equity_costs``.
+    """
+    assert BASE_COST.round_trip_bps == 5.0
+    assert [scenario.round_trip_bps for scenario in COST_SCENARIOS] == [5.0, 10.0, 20.0]
+    assert BASE_COST.net_return(0.01) == pytest.approx(0.0095)
+    for scenario in COST_SCENARIOS:
+        assert scenario.commission_bps == 0.0
 
 
 def test_all_twenty_candidates_are_unique_and_preregistered() -> None:
