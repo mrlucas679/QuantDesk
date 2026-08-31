@@ -16,9 +16,18 @@ public sealed class ResearchContractTests
     [Fact]
     public void ArtifactAndForecastRequireHashes()
     {
-        var artifact = new ModelArtifactContract("a", "m", "1", "price_volume_directional", "schema", "artifact", "B",
+        string[] gates = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R11", "R12"];
+        var validationEvidence = gates.ToDictionary(
+            gate => gate,
+            gate => new ValidationGateEvidenceContract(
+                gate, true, [$"evidence-{gate}"], DateTimeOffset.UtcNow, "{}"));
+        var strategy = new StrategyDefinitionContract(
+            "BTC/USD", 5, 60, "trend-state-v1", "State", "{}",
+            new ExitPolicyDefinitionContract("managed-v1", 60, true, true));
+        var artifact = new ModelArtifactContract("a", "m", "1", "price_volume_directional", strategy,
+            "schema", "artifact", "B",
             new EvidenceProfileContract("e", "hypothesis", "counter", ["source"], "B_Close", "close domain"),
-            ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R11", "R12"], "equity", DateTimeOffset.UtcNow);
+            gates, validationEvidence, "equity", DateTimeOffset.UtcNow);
         var forecast = new ForecastSnapshotContract("e", "m", "1", "AAPL", DateTimeOffset.UtcNow, "directional", 5, 1m, "schema", "artifact", "valid", "ok");
         Assert.True(artifact.IsValid());
         Assert.True(forecast.IsValid());

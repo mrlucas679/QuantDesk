@@ -13,7 +13,7 @@ namespace QuantDesk.Alpaca.Trading;
 public sealed class AlpacaTradingGateway(
     HttpClient httpClient,
     AlpacaOptions options,
-    IInstrumentSymbolResolver symbols) : IBrokerExecutionGateway
+    IInstrumentSymbolResolver symbols) : IBrokerExecutionGateway, IMultiLegBrokerExecutionGateway
 {
     private readonly Uri _paperBaseUrl = ValidatePaperBaseUrl(options.BaseUrl);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -92,6 +92,33 @@ public sealed class AlpacaTradingGateway(
         return new BrokerSubmitResult(BrokerSubmitState.Acknowledged, order.Id, null, requestId);
     }
 
+    /// <summary>Submits one atomic PAPER options strategy with explicit parent and leg semantics.</summary>
+    public async Task<BrokerSubmitResult> SubmitMultiLegAsync(
+        MultiLegExecutionCommand command,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        if (!command.IsValid())
+            return new BrokerSubmitResult(BrokerSubmitState.Rejected, null, "INVALID_MLEG_COMMAND", null);
+        using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint("/v2/orders"))
+        {
+            Content = JsonContent.Create(CreateMultiLegOrder(command), options: JsonOptions)
+        };
+        AddCredentials(request);
+        using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
+        string? requestId = ReadRequestId(response);
+        if (!response.IsSuccessStatusCode)
+        {
+            string reason = await ReadBrokerRejectionAsync(response, cancellationToken);
+            return new BrokerSubmitResult(BrokerSubmitState.Rejected, null, reason, requestId);
+        }
+        AlpacaOrder? order = await response.Content.ReadFromJsonAsync<AlpacaOrder>(
+            JsonOptions, cancellationToken);
+        return string.IsNullOrWhiteSpace(order?.Id)
+            ? new BrokerSubmitResult(BrokerSubmitState.Unknown, null, "BROKER_RESPONSE_INVALID", requestId)
+            : new BrokerSubmitResult(BrokerSubmitState.Acknowledged, order.Id, null, requestId);
+    }
+
     public async Task<BrokerOrderSnapshot?> FindByClientOrderIdAsync(string clientOrderId, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(clientOrderId);
@@ -143,10 +170,10 @@ public sealed class AlpacaTradingGateway(
         response.EnsureSuccessStatusCode();
         List<AlpacaPosition>? positions = await response.Content.ReadFromJsonAsync<List<AlpacaPosition>>(JsonOptions, cancellationToken);
         return positions?
-            .Where(position => symbols.TryResolveBySymbol(position.Symbol, out _))
             .Select(position =>
             {
-                symbols.TryResolveBySymbol(position.Symbol, out int slot);
+                if (!symbols.TryResolveBySymbol(position.Symbol, out int slot))
+                    symbols.TryRegisterOptionSymbol(position.Symbol, out slot);
                 return new BrokerPositionSnapshot(position.Symbol, slot, ParseDecimal(position.Quantity), ParseDecimal(position.AverageEntryPrice));
             })
             .ToArray() ?? [];
@@ -230,6 +257,25 @@ public sealed class AlpacaTradingGateway(
         if (positionIntent is not null) payload["position_intent"] = positionIntent;
         return payload;
     }
+
+    private static object CreateMultiLegOrder(MultiLegExecutionCommand command) =>
+        new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["order_class"] = "mleg",
+            ["client_order_id"] = command.ClientOrderId,
+            ["qty"] = command.Quantity.ToString(CultureInfo.InvariantCulture),
+            ["type"] = ToBrokerOrderType(command.OrderType),
+            ["time_in_force"] = ToBrokerTimeInForce(command.TimeInForce),
+            ["limit_price"] = command.LimitPrice?.ToString(CultureInfo.InvariantCulture),
+            ["legs"] = command.Legs.Select(leg => new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["symbol"] = leg.Symbol,
+                ["ratio_qty"] = leg.RatioQuantity.ToString(CultureInfo.InvariantCulture),
+                ["side"] = leg.Side == OrderSide.Buy ? "buy" : "sell",
+                ["position_intent"] = ToBrokerPositionIntent(leg.PositionIntent)
+                    ?? throw new InvalidOperationException("MLeg position intent is required.")
+            }).ToArray()
+        };
 
     private Uri Endpoint(string path) => new(_paperBaseUrl, path);
 

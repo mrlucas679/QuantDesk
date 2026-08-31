@@ -15,6 +15,14 @@ def literature_campaign_path() -> Path:
     return Path(__file__).parents[2] / "configs" / "literature_momentum_confirmation_campaign.json"
 
 
+def eth_transfer_campaign_path() -> Path:
+    return Path(__file__).parents[2] / "configs" / "eth_transfer_validation_campaign.json"
+
+
+def mechanism_state_campaign_path() -> Path:
+    return Path(__file__).parents[2] / "configs" / "mechanism_state_validation_campaign.json"
+
+
 def test_independent_campaign_is_stable_and_disjoint() -> None:
     campaign = IndependentValidationCampaign.load(campaign_path())
 
@@ -34,6 +42,24 @@ def test_literature_confirmation_counts_prior_comparisons() -> None:
         "dual_horizon_momentum",
         "four_week_breakout",
     )
+
+
+def test_eth_transfer_campaign_preserves_economic_gates() -> None:
+    campaign = IndependentValidationCampaign.load(eth_transfer_campaign_path())
+
+    assert campaign.instrument == "ETH/USD"
+    assert campaign.prior_comparisons == 40
+    assert campaign.round_trip_cost_bps == 60
+    assert campaign.minimum_trades == 60
+
+
+def test_trend_state_campaign_charges_all_prior_comparisons() -> None:
+    campaign = IndependentValidationCampaign.load(mechanism_state_campaign_path())
+
+    assert campaign.strategy_families == ("trend_state",)
+    assert campaign.holding_horizons_bars == (48, 144, 288, 576)
+    assert campaign.prior_comparisons == 41
+    assert campaign.round_trip_cost_bps == 60
 
 
 def test_independent_campaign_rejects_overlap(tmp_path: Path) -> None:

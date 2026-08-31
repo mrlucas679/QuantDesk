@@ -1,0 +1,25 @@
+{
+  "campaign_id": "CRYPTO-TREND-STATE-2026-08-31-001",
+  "instrument": "BTC/USD",
+  "timeframe": "5Min",
+  "registered_at": "2026-08-31T13:55:00+00:00",
+  "validation_start_inclusive": "2022-01-01T00:00:00+00:00",
+  "validation_end_exclusive": "2024-01-01T00:00:00+00:00",
+  "prior_search_data_start": "2024-08-29T07:45:00+00:00",
+  "minimum_validation_bars": 150000,
+  "round_trip_cost_bps": 60.0,
+  "minimum_trades": 60,
+  "minimum_sharpe": 0.5,
+  "required_lower_confidence_bps": 0.0,
+  "prior_comparisons": 41,
+  "strategy_families": ["trend_state"],
+  "holding_horizons_bars": [48, 144, 288, 576],
+  "hypothesis": {
+    "mechanism": "Information and capital are incorporated gradually, creating persistent multi-hour BTC trend states.",
+    "counter_hypothesis": "The apparent state has no positive expectancy after 60 bps costs and multiplicity correction.",
+    "falsification": "Reject unless at least 60 non-overlapping trades, Sharpe above 0.5, and the adjusted net lower bound is positive.",
+    "signal_type": "State",
+    "entry_rule": "one-hour trailing mean above four-hour trailing mean",
+    "primary_evidence_ids": ["user-critical-lens-2026-08-31", "NBER-w24877"]
+  }
+}

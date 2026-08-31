@@ -153,7 +153,12 @@ class IndependentValidationCampaign:
 
     def validate(self) -> None:
         """Reject overlap, underpowered samples, or weakened economic gates."""
-        if not self.campaign_id or self.instrument != "BTC/USD" or self.timeframe != "5Min":
+        supported_instruments = {"BTC/USD", "ETH/USD"}
+        if (
+            not self.campaign_id
+            or self.instrument not in supported_instruments
+            or self.timeframe != "5Min"
+        ):
             raise ValueError("Independent campaign support domain is invalid.")
         if not (
             self.validation_start_inclusive

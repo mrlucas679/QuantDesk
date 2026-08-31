@@ -194,6 +194,36 @@ public sealed class AlpacaTradingGatewayTests
         Assert.Equal(4, slot);
     }
 
+    [Fact]
+    public void Resolver_DynamicallyRegistersOccSymbolWithStableSlot()
+    {
+        var first = new DictionaryInstrumentSymbolResolver(new Dictionary<int, string> { [0] = "SPY" });
+        var restarted = new DictionaryInstrumentSymbolResolver(new Dictionary<int, string> { [0] = "SPY" });
+
+        Assert.True(first.TryRegisterOptionSymbol("SPY260904C00650000", out int firstSlot));
+        Assert.True(restarted.TryRegisterOptionSymbol("SPY260904C00650000", out int restartedSlot));
+
+        Assert.Equal(firstSlot, restartedSlot);
+        Assert.True(first.TryResolve(firstSlot, out string symbol));
+        Assert.Equal("SPY260904C00650000", symbol);
+    }
+
+    [Fact]
+    public async Task ListPositionsAsync_DoesNotHideUnknownBrokerInstrument()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, """
+            [{"symbol":"UNEXPECTED","qty":"1","avg_entry_price":"2.50"}]
+            """);
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+
+        IReadOnlyList<BrokerPositionSnapshot> positions =
+            await gateway.ListPositionsAsync(CancellationToken.None);
+
+        Assert.Single(positions);
+        Assert.Equal(-1, positions[0].InstrumentSlot);
+    }
+
     private static AlpacaOptions Options() => new()
     {
         BaseUrl = new Uri("https://paper-api.alpaca.markets"),

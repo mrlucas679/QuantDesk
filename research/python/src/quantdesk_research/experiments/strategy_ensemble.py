@@ -29,8 +29,8 @@ class StrategyEvaluation:
     maximum_drawdown_bps: float
 
 
-def build_strategy_frame(bars: list[dict[str, Any]], horizon_bars: int) -> pd.DataFrame:
-    """Build causal strategy signals and forward returns from chronological bars."""
+def build_signal_frame(bars: list[dict[str, Any]]) -> pd.DataFrame:
+    """Build causal rule signals without requiring unavailable future returns."""
     frame = pd.DataFrame(bars).sort_values("t").drop_duplicates("t").reset_index(drop=True)
     close = frame["c"].astype(float)
     returns = np.log(close).diff()
@@ -69,6 +69,14 @@ def build_strategy_frame(bars: list[dict[str, Any]], horizon_bars: int) -> pd.Da
     frame["four_week_time_series_momentum"] = four_week_return > 0
     frame["dual_horizon_momentum"] = (weekly_return > 0) & (four_week_return > 0)
     frame["four_week_breakout"] = close > prior_four_week_high
+    frame["trend_state"] = positive_trend
+    return frame
+
+
+def build_strategy_frame(bars: list[dict[str, Any]], horizon_bars: int) -> pd.DataFrame:
+    """Build causal strategy signals and forward returns from chronological bars."""
+    frame = build_signal_frame(bars)
+    close = frame["c"].astype(float)
     frame["target_return"] = np.log(close.shift(-horizon_bars) / close)
     return frame.dropna().reset_index(drop=True)
 

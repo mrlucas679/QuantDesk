@@ -17,11 +17,13 @@ public sealed record ModelArtifactContract(
     string ModelId,
     string ModelVersion,
     string StrategyFamily,
+    StrategyDefinitionContract StrategyDefinition,
     string FeatureSchemaHash,
     string ArtifactHash,
     string EvidenceGrade,
     EvidenceProfileContract EvidenceProfile,
     IReadOnlyList<string> ValidationGates,
+    IReadOnlyDictionary<string, ValidationGateEvidenceContract> ValidationEvidence,
     string SupportDomain,
     DateTimeOffset CreationTimestamp)
 {
@@ -29,15 +31,19 @@ public sealed record ModelArtifactContract(
         && !string.IsNullOrWhiteSpace(ModelId)
         && !string.IsNullOrWhiteSpace(ModelVersion)
         && ExecutableStrategyFamilies.Contains(StrategyFamily)
+        && StrategyDefinition.IsValid()
         && !string.IsNullOrWhiteSpace(FeatureSchemaHash)
         && !string.IsNullOrWhiteSpace(ArtifactHash)
         && !string.IsNullOrWhiteSpace(EvidenceGrade)
         && EvidenceProfile.IsValid()
         && ValidationGates.Count > 0
+        && ValidationEvidence.Count > 0
         && !string.IsNullOrWhiteSpace(SupportDomain);
 
     public bool HasRequiredExecutionGates() =>
-        RequiredExecutionGates.All(gate => ValidationGates.Contains(gate, StringComparer.Ordinal));
+        RequiredExecutionGates.All(gate => ValidationGates.Contains(gate, StringComparer.Ordinal) &&
+            ValidationEvidence.TryGetValue(gate, out ValidationGateEvidenceContract? evidence) &&
+            evidence.GateId == gate && evidence.IsValid() && evidence.Passed);
 
     private static readonly string[] RequiredExecutionGates = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R11", "R12"];
     private static readonly HashSet<string> ExecutableStrategyFamilies = new(StringComparer.Ordinal)
@@ -46,8 +52,51 @@ public sealed record ModelArtifactContract(
         "weekly_time_series_momentum", "four_week_time_series_momentum",
         "dual_horizon_momentum", "four_week_breakout",
         "donchian_breakout", "moving_average_trend", "bollinger_reversion", "rsi_reversion",
-        "volatility_breakout", "regime_ensemble", "volume_confirmed_breakout", "compression_breakout"
+        "volatility_breakout", "regime_ensemble", "volume_confirmed_breakout", "compression_breakout",
+        "trend_state"
     };
+}
+
+public sealed record StrategyDefinitionContract(
+    string Symbol,
+    int BarDurationMinutes,
+    int ForecastHorizonMinutes,
+    string EntryRuleVersion,
+    string SignalType,
+    string Parameters,
+    ExitPolicyDefinitionContract ExitPolicy)
+{
+    public bool IsValid() => !string.IsNullOrWhiteSpace(Symbol)
+        && BarDurationMinutes > 0
+        && ForecastHorizonMinutes > 0
+        && ForecastHorizonMinutes % BarDurationMinutes == 0
+        && !string.IsNullOrWhiteSpace(EntryRuleVersion)
+        && SignalType is "Event" or "State"
+        && !string.IsNullOrWhiteSpace(Parameters)
+        && ExitPolicy.IsValid();
+}
+
+public sealed record ExitPolicyDefinitionContract(
+    string PolicyVersion,
+    int MaximumHoldingMinutes,
+    bool ExitOnThesisInvalidation,
+    bool ExitOnRegimeChange)
+{
+    public bool IsValid() => !string.IsNullOrWhiteSpace(PolicyVersion)
+        && MaximumHoldingMinutes > 0;
+}
+
+public sealed record ValidationGateEvidenceContract(
+    string GateId,
+    bool Passed,
+    IReadOnlyList<string> EvidenceIds,
+    DateTimeOffset EvaluatedAt,
+    string Details)
+{
+    public bool IsValid() => !string.IsNullOrWhiteSpace(GateId)
+        && EvidenceIds.Count > 0
+        && EvidenceIds.All(id => !string.IsNullOrWhiteSpace(id))
+        && !string.IsNullOrWhiteSpace(Details);
 }
 
 public sealed record EvidenceProfileContract(

@@ -27,22 +27,65 @@ public static class PythonResearchContractReader
         JsonElement root = RequireObject(document.RootElement);
         JsonElement supportDomain = RequireProperty(root, "support_domain");
         JsonElement evidence = RequireProperty(root, "evidence_profile");
+        JsonElement validationEvidence = RequireProperty(root, "validation_evidence");
         if (supportDomain.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("Model artifact support_domain must be an object.");
+        if (validationEvidence.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Model artifact validation_evidence must be an object.");
         var contract = new ModelArtifactContract(
             RequirePropertyString(root, "artifact_id"),
             RequirePropertyString(root, "model_id"),
             RequirePropertyString(root, "model_version"),
             RequirePropertyString(root, "strategy_family"),
+            ReadStrategyDefinition(RequireProperty(root, "strategy_definition")),
             RequirePropertyString(root, "feature_schema_hash"),
             RequirePropertyString(root, "artifact_hash"),
             RequirePropertyString(root, "evidence_grade"),
             ReadEvidenceProfile(evidence),
             RequireArray(root, "validation_gates").EnumerateArray()
                 .Select(value => RequireString(value, "validation_gates[]")).ToArray(),
+            ReadValidationEvidence(validationEvidence),
             supportDomain.GetRawText(),
             RequireTimestamp(root, "creation_timestamp"));
         return contract.IsValid() ? contract : throw new InvalidDataException("Model artifact contract is invalid.");
+    }
+
+    private static StrategyDefinitionContract ReadStrategyDefinition(JsonElement definition)
+    {
+        JsonElement root = RequireObject(definition);
+        JsonElement exit = RequireObject(RequireProperty(root, "exit_policy"));
+        return new StrategyDefinitionContract(
+            RequirePropertyString(root, "symbol"),
+            RequirePositiveInt(root, "bar_duration_minutes"),
+            RequirePositiveInt(root, "forecast_horizon_minutes"),
+            RequirePropertyString(root, "entry_rule_version"),
+            RequirePropertyString(root, "signal_type"),
+            RequireObject(RequireProperty(root, "parameters")).GetRawText(),
+            new ExitPolicyDefinitionContract(
+                RequirePropertyString(exit, "policy_version"),
+                RequirePositiveInt(exit, "maximum_holding_minutes"),
+                RequireBoolean(exit, "exit_on_thesis_invalidation"),
+                RequireBoolean(exit, "exit_on_regime_change")));
+    }
+
+    private static IReadOnlyDictionary<string, ValidationGateEvidenceContract> ReadValidationEvidence(
+        JsonElement evidence)
+    {
+        var results = new Dictionary<string, ValidationGateEvidenceContract>(StringComparer.Ordinal);
+        foreach (JsonProperty property in evidence.EnumerateObject())
+        {
+            JsonElement value = RequireObject(property.Value);
+            var result = new ValidationGateEvidenceContract(
+                RequirePropertyString(value, "gate_id"),
+                RequireBoolean(value, "passed"),
+                RequireArray(value, "evidence_ids").EnumerateArray()
+                    .Select(item => RequireString(item, "evidence_ids[]")).ToArray(),
+                RequireTimestamp(value, "evaluated_at"),
+                RequireObject(RequireProperty(value, "details")).GetRawText());
+            if (!results.TryAdd(property.Name, result))
+                throw new InvalidDataException($"Duplicate validation evidence for '{property.Name}'.");
+        }
+        return results;
     }
 
     public static ForecastSnapshotContract ReadForecast(string json)
@@ -75,6 +118,8 @@ public static class PythonResearchContractReader
         if (!artifact.IsValid() || !schema.IsValid() || !forecast.IsValid() ||
             !string.Equals(artifact.ModelId, forecast.ModelId, StringComparison.Ordinal) ||
             !string.Equals(artifact.ModelVersion, forecast.ModelVersion, StringComparison.Ordinal) ||
+            !string.Equals(artifact.StrategyDefinition.Symbol, forecast.Instrument, StringComparison.OrdinalIgnoreCase) ||
+            artifact.StrategyDefinition.ForecastHorizonMinutes != forecast.HorizonMinutes ||
             !string.Equals(artifact.FeatureSchemaHash, schema.FeatureHash, StringComparison.Ordinal) ||
             !string.Equals(forecast.FeatureSchemaHash, schema.FeatureHash, StringComparison.Ordinal) ||
             !string.Equals(forecast.ArtifactHash, artifact.ArtifactHash, StringComparison.Ordinal))
@@ -137,4 +182,15 @@ public static class PythonResearchContractReader
 
     private static decimal RequireDecimal(JsonElement root, string name) => RequireProperty(root, name).TryGetDecimal(out decimal value)
         ? value : throw new InvalidDataException($"Research contract '{name}' must be a finite number.");
+
+    private static bool RequireBoolean(JsonElement root, string name)
+    {
+        JsonElement value = RequireProperty(root, name);
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => throw new InvalidDataException($"Research contract '{name}' must be a boolean.")
+        };
+    }
 }

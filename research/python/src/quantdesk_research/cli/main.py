@@ -31,6 +31,10 @@ def main() -> None:
     worker_parser = subparsers.add_parser("worker")
     worker_parser.add_argument("--data-root", type=str, default="/app/data")
     worker_parser.add_argument("--interval-seconds", type=int, default=21_600)
+    worker_once_parser = subparsers.add_parser("worker-once")
+    worker_once_parser.add_argument("--data-root", type=str, default="/app/data")
+    worker_once_parser.add_argument("--configs-root", type=str, default="/app/configs")
+    worker_once_parser.add_argument("--artifacts-root", type=str, default="/app/artifacts")
 
     args = parser.parse_args()
 
@@ -71,6 +75,11 @@ def main() -> None:
         from quantdesk_research.runtime.research_worker import run_forever
 
         run_forever(Path(args.data_root), args.interval_seconds)
+
+    elif args.command == "worker-once":
+        from quantdesk_research.runtime.research_worker import run_cycle
+
+        run_cycle(Path(args.data_root), Path(args.configs_root), Path(args.artifacts_root))
 
     elif args.command is None:
         parser.print_help()

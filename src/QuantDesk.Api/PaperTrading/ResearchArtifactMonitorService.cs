@@ -8,7 +8,7 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class ResearchArtifactState
 {
     private readonly object _sync = new();
-    private ResearchArtifactSnapshot _snapshot = new(false, "no_verified_research_artifact", null, null, null, null);
+    private ResearchArtifactSnapshot _snapshot = new(false, "no_verified_research_artifact", null, null, null, null, null);
 
     public ResearchArtifactSnapshot Snapshot()
     {
@@ -18,12 +18,13 @@ public sealed class ResearchArtifactState
     public void RecordValid(ModelArtifactContract artifact, ForecastSnapshotContract forecast)
     {
         lock (_sync) _snapshot = new(
-            true, "verified", artifact.ArtifactId, artifact.StrategyFamily, forecast.AsOfTime, forecast);
+            true, "verified", artifact.ArtifactId, artifact.StrategyFamily,
+            artifact.StrategyDefinition, forecast.AsOfTime, forecast);
     }
 
     public void RecordInvalid(string reason)
     {
-        lock (_sync) _snapshot = new(false, reason, null, null, null, null);
+        lock (_sync) _snapshot = new(false, reason, null, null, null, null, null);
     }
 }
 
@@ -32,6 +33,7 @@ public sealed record ResearchArtifactSnapshot(
     string Reason,
     string? ArtifactId,
     string? StrategyFamily,
+    StrategyDefinitionContract? StrategyDefinition,
     DateTimeOffset? ForecastAsOfTime,
     ForecastSnapshotContract? Forecast);
 

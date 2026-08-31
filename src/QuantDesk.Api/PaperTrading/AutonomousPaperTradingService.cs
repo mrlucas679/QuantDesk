@@ -76,7 +76,9 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
         if (!experimental && (!string.Equals(forecast!.Instrument, options.Symbol, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(forecast.ForecastFamily, "directional_return_bps", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(forecast.ForecastFamily, "directional_return_bps", StringComparison.OrdinalIgnoreCase) ||
+            research.StrategyDefinition is null ||
+            !string.Equals(research.StrategyDefinition.Symbol, options.Symbol, StringComparison.OrdinalIgnoreCase))
             )
         {
             state.Update("abstained", options.Symbol, reason: "VerifiedForecastIncompatible");
@@ -98,7 +100,8 @@ public sealed class AutonomousPaperTradingService(
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, evidence, initial, true, true,
             experimental ? null : (double)forecast!.PointForecast,
-            experimental ? null : research.StrategyFamily);
+            experimental ? null : research.StrategyFamily,
+            experimental ? null : research.StrategyDefinition);
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {

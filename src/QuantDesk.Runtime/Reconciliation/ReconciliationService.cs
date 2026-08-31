@@ -29,11 +29,17 @@ public sealed class ReconciliationService(RuntimeModeState runtimeMode)
 
         if (externalOrders.Length > 0) mismatches.Add("UNKNOWN_BROKER_ORDER");
 
-        var brokerPositions = input.BrokerPositions.ToDictionary(position => position.InstrumentSlot, position => position.Quantity);
+        bool hasUnknownInstrument = input.BrokerPositions.Any(position => position.InstrumentSlot < 0);
+        if (hasUnknownInstrument) mismatches.Add("UNKNOWN_BROKER_INSTRUMENT");
+        var brokerPositions = input.BrokerPositions
+            .Where(position => position.InstrumentSlot >= 0)
+            .GroupBy(position => position.InstrumentSlot)
+            .ToDictionary(group => group.Key, group => group.Sum(position => position.Quantity));
         int[] positionMismatches = input.LocalPositionQuantities
             .Where(local => !brokerPositions.TryGetValue(local.Key, out decimal brokerQuantity) || brokerQuantity != local.Value)
             .Select(local => local.Key)
             .Concat(brokerPositions.Keys.Where(slot => !input.LocalPositionQuantities.ContainsKey(slot)))
+            .Concat(hasUnknownInstrument ? [-1] : [])
             .Distinct()
             .ToArray();
 

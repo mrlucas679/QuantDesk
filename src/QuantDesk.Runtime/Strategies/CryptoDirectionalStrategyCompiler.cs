@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using QuantDesk.Domain.Capabilities;
+using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Portfolio;
@@ -25,6 +26,36 @@ public sealed class CryptoDirectionalStrategyCompiler(
         Span<TradeCandidate> destination) => Compile(
             forecasts, market, portfolio, capabilities, nowMonotonicTicks,
             "crypto-long-momentum-v1", destination);
+
+    public int Compile(
+        in ForecastBundle forecasts,
+        in InstrumentSnapshot market,
+        PortfolioSnapshot portfolio,
+        AccountCapabilities capabilities,
+        long nowMonotonicTicks,
+        string strategyFamily,
+        StrategyDefinitionContract definition,
+        Span<TradeCandidate> destination)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        if (!definition.IsValid()) return 0;
+        int count = Compile(
+            forecasts, market, portfolio, capabilities, nowMonotonicTicks,
+            strategyFamily, destination);
+        if (count == 0) return 0;
+        TradeCandidate compiled = destination[0];
+        destination[0] = compiled with
+        {
+            ManagementPlan = new PositionManagementPlan(
+                TimeSpan.FromMinutes(definition.ExitPolicy.MaximumHoldingMinutes),
+                definition.ExitPolicy.ExitOnThesisInvalidation,
+                definition.ExitPolicy.ExitOnRegimeChange,
+                compiled.EstimatedStressLoss,
+                MinimumDteToHold: null,
+                definition.ExitPolicy.PolicyVersion)
+        };
+        return 1;
+    }
 
     public int Compile(
         in ForecastBundle forecasts,

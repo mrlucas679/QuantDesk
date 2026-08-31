@@ -1,0 +1,18 @@
+{
+  "campaign_id": "CRYPTO-ETH-TRANSFER-2026-08-31-001",
+  "instrument": "ETH/USD",
+  "timeframe": "5Min",
+  "registered_at": "2026-08-31T09:35:00+00:00",
+  "validation_start_inclusive": "2021-01-01T00:00:00+00:00",
+  "validation_end_exclusive": "2024-01-01T00:00:00+00:00",
+  "prior_search_data_start": "2024-08-29T00:00:00+00:00",
+  "minimum_validation_bars": 300000,
+  "round_trip_cost_bps": 60.0,
+  "minimum_trades": 60,
+  "minimum_sharpe": 0.5,
+  "required_lower_confidence_bps": 0.0,
+  "prior_comparisons": 40,
+  "strategy_families": ["four_week_time_series_momentum"],
+  "holding_horizons_bars": [2016],
+  "primary_evidence_ids": ["NBER-w24877", "NBER-w26816", "BTC-transfer-freeze-2026-08-31"]
+}

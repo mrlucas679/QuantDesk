@@ -60,6 +60,13 @@ class ContractPublisher:
             raise ValueError("Forecast feature schema hash does not match the schema.")
         if forecast.model_id != artifact.model_id or forecast.model_version != artifact.model_version:
             raise ValueError("Forecast model identity does not match the artifact.")
+        definition = artifact.strategy_definition
+        if definition.forecast_horizon_minutes % definition.bar_duration_minutes != 0:
+            raise ValueError("Strategy horizon is not divisible by its bar duration.")
+        if forecast.instrument != definition.symbol:
+            raise ValueError("Forecast instrument does not match the executable strategy definition.")
+        if forecast.horizon_minutes != definition.forecast_horizon_minutes:
+            raise ValueError("Forecast horizon does not match the executable strategy definition.")
         if forecast.artifact_hash != artifact.artifact_hash:
             raise ValueError("Forecast artifact hash does not match the artifact.")
         profile = artifact.evidence_profile
@@ -70,6 +77,19 @@ class ContractPublisher:
         missing_gates = REQUIRED_EXECUTION_GATES.difference(artifact.validation_gates)
         if missing_gates:
             raise ValueError(f"Published artifact is missing required validation gates: {sorted(missing_gates)}")
+        unsupported_claims = set(artifact.validation_gates).difference(artifact.validation_evidence)
+        if unsupported_claims:
+            raise ValueError(
+                f"Published artifact has gates without validation evidence: {sorted(unsupported_claims)}"
+            )
+        for gate_id in REQUIRED_EXECUTION_GATES:
+            evidence = artifact.validation_evidence.get(gate_id)
+            if evidence is None:
+                raise ValueError(f"Published artifact is missing validation evidence for {gate_id}.")
+            if evidence.gate_id != gate_id:
+                raise ValueError(f"Validation evidence key does not match gate {gate_id}.")
+            if not evidence.passed:
+                raise ValueError(f"Validation evidence for {gate_id} did not pass.")
 
     def _write_atomic(self, file_name: str, document: dict[str, Any]) -> None:
         target = self._root / file_name

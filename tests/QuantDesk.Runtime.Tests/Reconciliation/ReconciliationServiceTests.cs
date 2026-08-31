@@ -41,5 +41,22 @@ public sealed class ReconciliationServiceTests
         Assert.True(result.IsReconciled);
         Assert.Equal(SystemMode.Ready, mode.Snapshot().Mode);
     }
-}
 
+    [Fact]
+    public void Reconcile_UnknownBrokerInstrumentFailsClosed()
+    {
+        var mode = new RuntimeModeState();
+        var service = new ReconciliationService(mode);
+        var input = new ReconciliationInput(
+            new HashSet<string>(),
+            new Dictionary<int, decimal>(),
+            [],
+            [new BrokerPositionSnapshot("UNEXPECTED", -1, 1, 2.5m)]);
+
+        ReconciliationResult result = service.Reconcile(input);
+
+        Assert.False(result.IsReconciled);
+        Assert.Contains("UNKNOWN_BROKER_INSTRUMENT", result.MismatchCodes);
+        Assert.Contains(-1, result.PositionMismatches);
+    }
+}

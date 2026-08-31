@@ -27,6 +27,12 @@ public sealed class HistoricalCryptoDatasetService(
     private static readonly DateTimeOffset IndependentValidationEnd =
         DateTimeOffset.Parse("2024-01-01T00:00:00Z", CultureInfo.InvariantCulture);
     private const string IndependentValidationManifest = "independent-validation-manifest.json";
+    private static readonly DateTimeOffset FinalValidationStart =
+        DateTimeOffset.Parse("2022-01-01T00:00:00Z", CultureInfo.InvariantCulture);
+    private static readonly DateTimeOffset FinalValidationEnd =
+        DateTimeOffset.Parse("2024-01-01T00:00:00Z", CultureInfo.InvariantCulture);
+    private const string FinalValidationManifest = "final-validation-manifest.json";
+    private const string EthTransferValidationManifest = "eth-transfer-validation-manifest.json";
     // The shortest production forecast is one hour (12 five-minute bars).  Refreshing
     // no slower than half that horizon prevents a valid forecast becoming stale while
     // the worker is waiting on an unchanged dataset.
@@ -57,10 +63,67 @@ public sealed class HistoricalCryptoDatasetService(
             await PublishDatasetAsync(outputRoot, "ETH/USD", end.AddDays(-lookbackDays), end, "5Min", "latest-eth-manifest.json", stoppingToken);
             await PublishDatasetAsync(outputRoot, trading.Symbol, end.AddDays(-3_000), end, "1Day", "latest-daily-manifest.json", stoppingToken);
             await PublishIndependentValidationDatasetAsync(outputRoot, stoppingToken);
+            await PublishFinalValidationDatasetAsync(outputRoot, stoppingToken);
+            await PublishEthTransferValidationDatasetAsync(outputRoot, stoppingToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "Historical research dataset publication failed closed.");
+        }
+    }
+
+    private async Task PublishEthTransferValidationDatasetAsync(
+        string outputRoot,
+        CancellationToken cancellationToken)
+    {
+        string manifestPath = Path.Combine(outputRoot, EthTransferValidationManifest);
+        if (File.Exists(manifestPath)) return;
+        await PublishDatasetAsync(
+            outputRoot,
+            "ETH/USD",
+            DateTimeOffset.Parse("2021-01-01T00:00:00Z", CultureInfo.InvariantCulture),
+            DateTimeOffset.Parse("2024-01-01T00:00:00Z", CultureInfo.InvariantCulture),
+            "5Min",
+            EthTransferValidationManifest,
+            cancellationToken);
+    }
+
+    private async Task PublishFinalValidationDatasetAsync(
+        string outputRoot,
+        CancellationToken cancellationToken)
+    {
+        string manifestPath = Path.Combine(outputRoot, FinalValidationManifest);
+        if (ManifestCoversWindow(manifestPath, trading.Symbol, FinalValidationStart, FinalValidationEnd))
+            return;
+        await PublishDatasetAsync(
+            outputRoot,
+            trading.Symbol,
+            FinalValidationStart,
+            FinalValidationEnd,
+            "5Min",
+            FinalValidationManifest,
+            cancellationToken);
+    }
+
+    private static bool ManifestCoversWindow(
+        string manifestPath,
+        string symbol,
+        DateTimeOffset requestedStart,
+        DateTimeOffset requestedEnd)
+    {
+        if (!File.Exists(manifestPath)) return false;
+        try
+        {
+            HistoricalDatasetManifest? manifest = JsonSerializer.Deserialize<HistoricalDatasetManifest>(
+                File.ReadAllBytes(manifestPath), JsonOptions);
+            return manifest is not null &&
+                string.Equals(manifest.Symbol, symbol, StringComparison.OrdinalIgnoreCase) &&
+                manifest.Start >= requestedStart && manifest.Start < requestedStart.AddDays(1) &&
+                manifest.End > requestedEnd.AddDays(-1) && manifest.End <= requestedEnd;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

@@ -1,5 +1,6 @@
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Domain.Capabilities;
+using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Experts;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Market;
@@ -48,7 +49,8 @@ public sealed class AutonomousDecisionPipeline(
         bool brokerHealthy,
         bool portfolioReconciled,
         double? verifiedForecastBps = null,
-        string? verifiedStrategyFamily = null)
+        string? verifiedStrategyFamily = null,
+        StrategyDefinitionContract? verifiedStrategyDefinition = null)
     {
         if (verifiedForecastBps is null)
         {
@@ -99,10 +101,16 @@ public sealed class AutonomousDecisionPipeline(
             validUntil);
         var bundle = new ForecastBundle(instrumentSlot, market.StateVersion, aggregate);
         var candidates = new TradeCandidate[1];
-        int count = compiler.Compile(
-            bundle, market, portfolio,
-            new AccountCapabilities(true, false, true, false, null),
-            nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1", candidates);
+        int count = verifiedStrategyDefinition is null
+            ? compiler.Compile(
+                bundle, market, portfolio,
+                new AccountCapabilities(true, false, true, false, null),
+                nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1", candidates)
+            : compiler.Compile(
+                bundle, market, portfolio,
+                new AccountCapabilities(true, false, true, false, null),
+                nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1",
+                verifiedStrategyDefinition, candidates);
         if (count == 0) return Reject("NoOpportunity", committeeDecision, market);
 
         TradeCandidate candidate = candidates[0];

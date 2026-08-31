@@ -15,7 +15,12 @@ from numpy.typing import NDArray
 
 from quantdesk_research.contracts.feature_schema import FeatureSchema
 from quantdesk_research.contracts.forecast import Forecast
-from quantdesk_research.contracts.model_artifact import EvidenceProfile, ModelArtifact
+from quantdesk_research.contracts.model_artifact import (
+    EvidenceProfile,
+    ExitPolicyDefinition,
+    ModelArtifact,
+    StrategyDefinition,
+)
 from quantdesk_research.evaluation.trial_ledger import TrialLedger
 from quantdesk_research.models.contract_publication import ContractPublisher
 from quantdesk_research.models.model_registry import ModelRegistry
@@ -741,10 +746,25 @@ def publish_validated_directional_forecast(
     artifact = ModelArtifact(
         artifact_id=artifact_id, model_id=f"{experiment_name}-lgbm", model_type="lightgbm_huber",
         strategy_family=strategy_family,
+        strategy_definition=StrategyDefinition(
+            symbol=str(manifest["symbol"]),
+            bar_duration_minutes=5 if timeframe == "5Min" else 24 * 60,
+            forecast_horizon_minutes=horizon_minutes,
+            entry_rule_version="directional-forecast-positive-v1",
+            signal_type="State",
+            parameters={"minimum_expected_return_bps": 0.0},
+            exit_policy=ExitPolicyDefinition(
+                policy_version="crypto-directional-managed-v1",
+                maximum_holding_minutes=horizon_minutes,
+                exit_on_thesis_invalidation=True,
+                exit_on_regime_change=True,
+            ),
+        ),
         model_version="rolling-v1", feature_schema_hash=feature_hash, dataset_hash=manifest["sha256"],
         training_window={"end": manifest["end"]}, parameters={"horizon_bars": horizon_bars},
         random_seed=42, metrics=asdict(evaluation), evidence_grade=evidence_profile.transfer_grade,
         evidence_profile=evidence_profile, validation_gates=["R0", "R1", "R2", "R4"],
+        validation_evidence={},
         support_domain={"instrument": manifest["symbol"], "timeframe": timeframe},
         git_commit="working-tree", config_hash=f"{experiment_name}-rolling-v1",
         creation_timestamp=datetime.now(UTC), artifact_hash=artifact_hash,
