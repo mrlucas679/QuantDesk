@@ -15,6 +15,16 @@ public sealed record FullSystemReadinessSnapshot(
     bool PaperEndpointVerified,
     DateTimeOffset UpdatedAt)
 {
+    /// <summary>
+    /// Infrastructure-only readiness used by diagnostic paper orders. Research, strategy,
+    /// market-signal, and exit-lifecycle readiness are intentionally outside this admission.
+    /// </summary>
+    public bool InfrastructureExecutionReady => BrokerReconciled && PortfolioKnown && RiskReady &&
+        ReservationReady && ExecutionReady && PaperEndpointVerified;
+
+    /// <summary>Research readiness adds candidate and model-plane evidence to infrastructure.</summary>
+    public bool StrategyResearchReady => InfrastructureExecutionReady && FeaturesReady && ExpertsReady;
+
     public bool Ready => MarketDataHealthy && TradeUpdatesHealthy && BrokerReconciled &&
         PortfolioKnown && FeaturesReady && ExpertsReady && CommitteesReady && RiskReady &&
         ReservationReady && ExecutionReady && ExitEngineReady && PaperEndpointVerified;

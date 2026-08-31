@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - run: dotnet restore QuantDesk.slnx
+      # Prevent a polluted/shared NuGet cache from hiding missing analyzer assemblies.
+      - run: dotnet nuget locals all --clear
+      - run: dotnet restore QuantDesk.slnx --force
       - run: dotnet build QuantDesk.slnx --no-restore --configuration Release
       - run: dotnet test QuantDesk.slnx --no-build --configuration Release

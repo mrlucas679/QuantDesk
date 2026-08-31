@@ -71,6 +71,9 @@ services:
       QUANTDESK_OPERATOR_KEY: ${QUANTDESK_OPERATOR_KEY:-}
       QUANTDESK_SYMBOLS: ${QUANTDESK_SYMBOLS:-SPY,BTC/USD}
       QUANTDESK_MAX_PAPER_ORDER_NOTIONAL: ${QUANTDESK_MAX_PAPER_ORDER_NOTIONAL:-1000}
+      # Alpaca rejected a $5 BTC/USD diagnostic below its $10 minimum on 2026-08-31.
+      QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL: ${QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL:-10}
+      QUANTDESK_DIAGNOSTIC_STORE_PATH: /app/runtime-data/diagnostic-executions.json
       QUANTDESK_AUTONOMOUS_ENABLED: ${QUANTDESK_AUTONOMOUS_ENABLED:-true}
       QUANTDESK_AUTONOMOUS_MODE: ${QUANTDESK_AUTONOMOUS_MODE:-ExperimentalPaper}
       QUANTDESK_EXPERIMENT_ID: ${QUANTDESK_EXPERIMENT_ID:-EXP-001}
@@ -93,6 +96,7 @@ services:
       # Bound authenticated quote collection while building the next point-in-time research dataset.
       QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS: ${QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS:-5}
     volumes:
+      - quantdesk-runtime-data:/app/runtime-data
       - quantdesk-research-data:/app/research-data
       - quantdesk-research-artifacts:/app/research-artifacts:ro
     depends_on:
@@ -101,6 +105,8 @@ services:
     restart: unless-stopped
 
 volumes:
+  quantdesk-runtime-data:
+    name: quantdesk-runtime-data
   quantdesk-research-data:
     name: quantdesk-research-data
     external: true

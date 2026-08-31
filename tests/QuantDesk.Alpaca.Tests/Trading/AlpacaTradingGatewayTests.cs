@@ -15,7 +15,7 @@ public sealed class AlpacaTradingGatewayTests
     {
         var handler = new CaptureHandler(HttpStatusCode.OK, """
             {"id":"account-1","status":"ACTIVE","equity":"100000.50","buying_power":"200000",
-             "trading_blocked":false,"account_blocked":false}
+             "trading_blocked":false,"account_blocked":false,"crypto_status":"ACTIVE"}
             """);
         using var client = new HttpClient(handler);
         var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
@@ -25,6 +25,7 @@ public sealed class AlpacaTradingGatewayTests
         Assert.NotNull(account);
         Assert.Equal("account-1", account.AccountId);
         Assert.Equal(100000.50m, account.Equity);
+        Assert.Equal("ACTIVE", account.CryptoTradingStatus);
         Assert.Equal(HttpMethod.Get, handler.Request!.Method);
         Assert.Equal("/v2/account", handler.Request.RequestUri!.AbsolutePath);
     }
@@ -48,6 +49,78 @@ public sealed class AlpacaTradingGatewayTests
         string body = handler.RequestBody;
         Assert.Contains("\"symbol\":\"SPY\"", body);
         Assert.Contains("\"client_order_id\":\"qd-1\"", body);
+    }
+
+    [Fact]
+    public async Task SubmitAsync_UsesBoundedNotionalWithoutAlsoSendingQuantity()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, """
+            {"id":"broker-crypto","client_order_id":"qd-1","status":"accepted"}
+            """);
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+        ExecutionCommand command = Command() with { Notional = 5m };
+
+        BrokerSubmitResult result = await gateway.SubmitAsync(command, CancellationToken.None);
+
+        Assert.Equal(BrokerSubmitState.Acknowledged, result.State);
+        Assert.Contains("\"notional\":\"5\"", handler.RequestBody);
+        Assert.DoesNotContain("\"qty\"", handler.RequestBody);
+    }
+
+    [Fact]
+    public async Task GetAssetAsync_MapsBtcTradabilityFromPaperEndpoint()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, """
+            {"symbol":"BTC/USD","status":"active","class":"crypto","tradable":true}
+            """);
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+
+        BrokerAssetSnapshot? asset = await gateway.GetAssetAsync("BTC/USD", CancellationToken.None);
+
+        Assert.NotNull(asset);
+        Assert.True(asset.Tradable);
+        Assert.Equal("crypto", asset.AssetClass);
+        Assert.Equal("/v2/assets/BTCUSD", handler.Request!.RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task FindByClientOrderIdAsync_MapsIdentity_fills_and_broker_timestamps()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, """
+            {"id":"broker-lookup","client_order_id":"qd-deterministic","symbol":"BTC/USD",
+             "status":"partially_filled","filled_qty":"0.00002","filled_avg_price":"100000",
+             "created_at":"2026-08-30T10:00:00Z","submitted_at":"2026-08-30T10:00:01Z",
+             "updated_at":"2026-08-30T10:00:02Z"}
+            """);
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+
+        BrokerOrderSnapshot? order = await gateway.FindByClientOrderIdAsync(
+            "qd-deterministic", CancellationToken.None);
+
+        Assert.NotNull(order);
+        Assert.Equal("broker-lookup", order.BrokerOrderId);
+        Assert.Equal(0.00002m, order.FilledQuantity);
+        Assert.Equal(100000m, order.AverageFillPrice);
+        Assert.Equal(DateTimeOffset.Parse("2026-08-30T10:00:01Z"), order.SubmittedAt);
+        Assert.Contains("client_order_id=qd-deterministic", handler.Request!.RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task ListOpenOrdersForSymbolAsync_UsesBtcOrderFilter()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, "[]");
+        using var client = new HttpClient(handler);
+        var gateway = new AlpacaTradingGateway(client, Options(), Resolver());
+
+        IReadOnlyList<BrokerOrderSnapshot> orders = await gateway.ListOpenOrdersForSymbolAsync(
+            "BTC/USD", CancellationToken.None);
+
+        Assert.Empty(orders);
+        Assert.Contains("status=open", handler.Request!.RequestUri!.Query);
+        Assert.Contains("symbols=BTCUSD", handler.Request.RequestUri.Query);
     }
 
     [Fact]

@@ -4,22 +4,23 @@ using QuantDesk.Alpaca.Mapping;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Alpaca.Trading;
 using QuantDesk.Api.PaperTrading;
-using QuantDesk.Runtime.Modes;
-using QuantDesk.Runtime.Time;
 using QuantDesk.Api.Security;
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Risk;
 using QuantDesk.Domain.Runtime;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Experts;
+using QuantDesk.Runtime.Ingestion;
+using QuantDesk.Runtime.Modes;
+using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
-using QuantDesk.Domain.Market;
-using QuantDesk.Runtime.Ingestion;
+using QuantDesk.Runtime.Time;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -28,10 +29,23 @@ builder.Services.AddHealthChecks();
 builder.Services.AddSingleton<IRuntimeClock, LiveRuntimeClock>();
 builder.Services.AddSingleton<RuntimeModeState>();
 builder.Services.AddSingleton<FullSystemReadinessState>();
+builder.Services.AddSingleton<ExecutionAdmissionPolicy>();
 builder.Services.AddSingleton<ResearchArtifactState>();
 builder.Services.AddSingleton<OperatorKeyAuthorizer>();
 builder.Services.AddSingleton(AlpacaOptions.FromEnvironment());
 builder.Services.AddSingleton(PaperTradingOptions.FromEnvironment());
+builder.Services.AddSingleton(services => DiagnosticExecutionOptions.FromEnvironment(
+    services.GetRequiredService<PaperTradingOptions>()));
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_DIAGNOSTIC_STORE_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "diagnostic-executions.json");
+    return new DiagnosticExecutionStore(Path.GetFullPath(configured));
+});
+builder.Services.AddSingleton<CryptoDiagnosticExecutionService>();
+builder.Services.AddSingleton<DiagnosticExecutionRecoveryService>();
+builder.Services.AddHostedService(services =>
+    services.GetRequiredService<DiagnosticExecutionRecoveryService>());
 builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.FromEnvironment(
     services.GetRequiredService<PaperTradingOptions>()));
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
@@ -164,6 +178,89 @@ app.MapGet("/api/research/status", (ResearchArtifactState artifacts) =>
     Results.Ok(artifacts.Snapshot()));
 app.MapGet("/api/research/microstructure-status", (MicrostructureEvidenceBuffer evidence) =>
     Results.Ok(evidence.Snapshot()));
+app.MapGet("/api/diagnostics/recovery", (
+    HttpRequest request,
+    DiagnosticExecutionRecoveryService recovery,
+    OperatorKeyAuthorizer authorizer) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+    return Results.Ok(new
+    {
+        active = recovery.StartedAt is not null && recovery.LastError is null,
+        recovery.StartedAt,
+        recovery.LastCycleAt,
+        recovery.LastError
+    });
+});
+app.MapGet("/api/diagnostics/{experimentId}", (
+    HttpRequest request,
+    string experimentId,
+    DiagnosticExecutionStore store,
+    OperatorKeyAuthorizer authorizer) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+    DiagnosticExecutionRecord? record = store.Find(experimentId);
+    return record is null ? Results.NotFound() : Results.Ok(record);
+});
+app.MapPost("/api/diagnostics/{experimentId}/start", async (
+    HttpRequest request,
+    string experimentId,
+    CryptoDiagnosticExecutionService diagnostics,
+    DiagnosticExecutionOptions diagnosticOptions,
+    DiagnosticExecutionStore store,
+    IBrokerExecutionGateway broker,
+    OperatorKeyAuthorizer authorizer,
+    CancellationToken cancellationToken) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+
+    DiagnosticExecutionRecord? existing = store.Find(experimentId);
+    DiagnosticExecutionResult result = existing is null
+        ? await diagnostics.PrepareAsync(
+            experimentId,
+            DiagnosticExecutionOptions.RequiredSymbol,
+            diagnosticOptions.MaximumNotional,
+            cancellationToken)
+        : DiagnosticExecutionResult.Ready(
+            existing.ExperimentId,
+            existing.EntryClientOrderId!,
+            existing.ExitClientOrderId!);
+    if (!result.Allowed) return Results.Json(result, statusCode: StatusCodes.Status409Conflict);
+
+    DiagnosticExecutionRecord reserved = store.Find(experimentId)!;
+    if (reserved.State == "EntryRejected" &&
+        reserved.EntryBrokerOrderId is null &&
+        reserved.FailureReason?.StartsWith("BROKER_", StringComparison.Ordinal) == true &&
+        await broker.FindByClientOrderIdAsync(reserved.EntryClientOrderId!, cancellationToken) is null)
+    {
+        store.Update(experimentId, current => current with
+        {
+            State = "EntryReserved",
+            RequestedNotional = diagnosticOptions.MaximumNotional,
+            EntrySubmissionAttemptedAt = null,
+            Failure = DiagnosticExecutionFailure.None,
+            FailureReason = null
+        });
+        reserved = store.Find(experimentId)!;
+    }
+    if (reserved.State == "EntryReserved" && reserved.EntrySubmissionAttemptedAt is null)
+        result = await diagnostics.AdvanceAsync(experimentId, 0, 0.00000001m, cancellationToken);
+    else if (reserved.State == "ReconciliationFailed")
+    {
+        store.Update(experimentId, current => current with
+        {
+            State = "Reconciling",
+            Failure = DiagnosticExecutionFailure.None,
+            FailureReason = null
+        });
+        result = await diagnostics.AdvanceAsync(experimentId, 0, 0, cancellationToken);
+    }
+    return Results.Json(new { result, record = store.Find(experimentId) }, statusCode:
+        result.Allowed ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+});
 app.MapPost("/api/system/halt", (
     HttpRequest request,
     RuntimeModeState runtimeMode,

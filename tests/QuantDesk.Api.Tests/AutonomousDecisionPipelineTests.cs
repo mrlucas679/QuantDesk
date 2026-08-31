@@ -74,7 +74,8 @@ public sealed class AutonomousDecisionPipelineTests
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),
                 new Usd(250), 1, 100_000, 100_000, 100_000, 0.01, 1)),
-            clock);
+            clock,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AutonomousDecisionPipeline>.Instance);
     }
 
     private static CryptoMarketEvidence Evidence(

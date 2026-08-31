@@ -18,6 +18,8 @@ public sealed class AlpacaTradingGateway(
     private readonly Uri _paperBaseUrl = ValidatePaperBaseUrl(options.BaseUrl);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    public bool IsPaperEnvironment => true;
+
     /// <summary>Reads paper-account state for the execution preflight without exposing credentials.</summary>
     public async Task<BrokerAccountSnapshot?> GetAccountAsync(CancellationToken cancellationToken)
     {
@@ -34,7 +36,34 @@ public sealed class AlpacaTradingGateway(
                 ParseDecimal(account.Equity),
                 ParseDecimal(account.BuyingPower),
                 account.TradingBlocked,
-                account.AccountBlocked);
+                account.AccountBlocked)
+            {
+                CryptoTradingStatus = account.CryptoStatus
+            };
+    }
+
+    /// <summary>Reads the broker's current asset eligibility for a configured symbol.</summary>
+    public async Task<BrokerAssetSnapshot?> GetAssetAsync(
+        string symbol,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        string brokerSymbol = NormalizeBrokerSymbol(symbol);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            Endpoint($"/v2/assets/{Uri.EscapeDataString(brokerSymbol)}"));
+        AddCredentials(request);
+        using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        response.EnsureSuccessStatusCode();
+        AlpacaAsset? asset = await response.Content.ReadFromJsonAsync<AlpacaAsset>(JsonOptions, cancellationToken);
+        return asset is null || string.IsNullOrWhiteSpace(asset.Symbol)
+            ? null
+            : new BrokerAssetSnapshot(
+                asset.Symbol,
+                asset.Status ?? "unknown",
+                asset.AssetClass ?? "unknown",
+                asset.Tradable);
     }
 
     public async Task<BrokerSubmitResult> SubmitAsync(ExecutionCommand command, CancellationToken cancellationToken)
@@ -50,10 +79,11 @@ public sealed class AlpacaTradingGateway(
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
         string? requestId = ReadRequestId(response);
 
-        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            return new BrokerSubmitResult(BrokerSubmitState.Rejected, null, "BROKER_UNAUTHORIZED", requestId);
         if (!response.IsSuccessStatusCode)
-            return new BrokerSubmitResult(BrokerSubmitState.Rejected, null, "BROKER_ORDER_REJECTED", requestId);
+        {
+            string reason = await ReadBrokerRejectionAsync(response, cancellationToken);
+            return new BrokerSubmitResult(BrokerSubmitState.Rejected, null, reason, requestId);
+        }
 
         AlpacaOrder? order = await response.Content.ReadFromJsonAsync<AlpacaOrder>(JsonOptions, cancellationToken);
         if (order is null || string.IsNullOrWhiteSpace(order.Id))
@@ -79,7 +109,25 @@ public sealed class AlpacaTradingGateway(
 
     public async Task<IReadOnlyList<BrokerOrderSnapshot>> ListOpenOrdersAsync(CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint("/v2/orders?status=open"));
+        return await ListOpenOrdersAsync("/v2/orders?status=open", cancellationToken);
+    }
+
+    /// <summary>Queries only open orders relevant to one broker symbol.</summary>
+    public async Task<IReadOnlyList<BrokerOrderSnapshot>> ListOpenOrdersForSymbolAsync(
+        string symbol,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        string brokerSymbol = NormalizeBrokerSymbol(symbol);
+        string path = $"/v2/orders?status=open&symbols={Uri.EscapeDataString(brokerSymbol)}";
+        return await ListOpenOrdersAsync(path, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<BrokerOrderSnapshot>> ListOpenOrdersAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint(path));
         AddCredentials(request);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -168,13 +216,16 @@ public sealed class AlpacaTradingGateway(
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["symbol"] = symbol,
-            ["qty"] = command.Quantity.ToString(CultureInfo.InvariantCulture),
             ["side"] = command.Side == OrderSide.Buy ? "buy" : "sell",
             ["type"] = ToBrokerOrderType(command.OrderType),
             ["time_in_force"] = ToBrokerTimeInForce(command.TimeInForce),
             ["client_order_id"] = command.ClientOrderId,
             ["limit_price"] = command.LimitPrice?.ToString(CultureInfo.InvariantCulture)
         };
+        if (command.Notional is decimal notional)
+            payload["notional"] = notional.ToString(CultureInfo.InvariantCulture);
+        else
+            payload["qty"] = command.Quantity.ToString(CultureInfo.InvariantCulture);
         string? positionIntent = ToBrokerPositionIntent(command.PositionIntent);
         if (positionIntent is not null) payload["position_intent"] = positionIntent;
         return payload;
@@ -200,9 +251,47 @@ public sealed class AlpacaTradingGateway(
     private static string? ReadRequestId(HttpResponseMessage response) =>
         response.Headers.TryGetValues("X-Request-ID", out IEnumerable<string>? values) ? values.FirstOrDefault() : null;
 
+    private static async Task<string> ReadBrokerRejectionAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        string prefix = response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+            ? "BROKER_UNAUTHORIZED"
+            : "BROKER_ORDER_REJECTED";
+        string body = await response.Content.ReadAsStringAsync(cancellationToken);
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body);
+            string code = document.RootElement.TryGetProperty("code", out JsonElement codeElement)
+                ? codeElement.ToString()
+                : ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture);
+            string message = document.RootElement.TryGetProperty("message", out JsonElement messageElement)
+                ? messageElement.GetString() ?? "unknown"
+                : "unknown";
+            return $"{prefix}:{code}:{message}";
+        }
+        catch (JsonException)
+        {
+            return $"{prefix}:HTTP_{(int)response.StatusCode}";
+        }
+    }
+
     private static BrokerOrderSnapshot ToSnapshot(AlpacaOrder order) => new(
         order.Id, order.ClientOrderId ?? string.Empty, order.Status ?? "unknown", ParseDecimal(order.FilledQuantity),
-        order.FilledAveragePrice is null ? null : ParseDecimal(order.FilledAveragePrice));
+        order.FilledAveragePrice is null ? null : ParseDecimal(order.FilledAveragePrice))
+    {
+        Symbol = order.Symbol,
+        CreatedAt = order.CreatedAt,
+        SubmittedAt = order.SubmittedAt,
+        UpdatedAt = order.UpdatedAt,
+        FilledAt = order.FilledAt,
+        CanceledAt = order.CanceledAt,
+        ExpiredAt = order.ExpiredAt,
+        RejectedAt = order.FailedAt
+    };
+
+    private static string NormalizeBrokerSymbol(string symbol) =>
+        symbol.Trim().Replace("/", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
 
     private static decimal ParseDecimal(string? value) =>
         decimal.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal parsed) ? parsed : 0;
@@ -237,7 +326,21 @@ public sealed class AlpacaTradingGateway(
         [property: JsonPropertyName("client_order_id")] string? ClientOrderId,
         [property: JsonPropertyName("status")] string? Status,
         [property: JsonPropertyName("filled_qty")] string? FilledQuantity,
-        [property: JsonPropertyName("filled_avg_price")] string? FilledAveragePrice);
+        [property: JsonPropertyName("filled_avg_price")] string? FilledAveragePrice,
+        [property: JsonPropertyName("symbol")] string? Symbol = null,
+        [property: JsonPropertyName("created_at")] DateTimeOffset? CreatedAt = null,
+        [property: JsonPropertyName("submitted_at")] DateTimeOffset? SubmittedAt = null,
+        [property: JsonPropertyName("updated_at")] DateTimeOffset? UpdatedAt = null,
+        [property: JsonPropertyName("filled_at")] DateTimeOffset? FilledAt = null,
+        [property: JsonPropertyName("canceled_at")] DateTimeOffset? CanceledAt = null,
+        [property: JsonPropertyName("expired_at")] DateTimeOffset? ExpiredAt = null,
+        [property: JsonPropertyName("failed_at")] DateTimeOffset? FailedAt = null);
+
+    private sealed record AlpacaAsset(
+        [property: JsonPropertyName("symbol")] string Symbol,
+        [property: JsonPropertyName("status")] string? Status,
+        [property: JsonPropertyName("class")] string? AssetClass,
+        [property: JsonPropertyName("tradable")] bool Tradable);
 
     private sealed record AlpacaPosition(
         [property: JsonPropertyName("symbol")] string Symbol,
@@ -250,5 +353,6 @@ public sealed class AlpacaTradingGateway(
         [property: JsonPropertyName("equity")] string? Equity,
         [property: JsonPropertyName("buying_power")] string? BuyingPower,
         [property: JsonPropertyName("trading_blocked")] bool TradingBlocked,
-        [property: JsonPropertyName("account_blocked")] bool AccountBlocked);
+        [property: JsonPropertyName("account_blocked")] bool AccountBlocked,
+        [property: JsonPropertyName("crypto_status")] string? CryptoStatus = null);
 }

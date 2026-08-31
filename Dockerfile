@@ -18,6 +18,6 @@ ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
 
 COPY --from=build /app/publish .
+RUN mkdir -p /app/runtime-data && chown -R $APP_UID:$APP_UID /app/runtime-data
 USER $APP_UID
 ENTRYPOINT ["dotnet", "QuantDesk.Api.dll"]
-

@@ -13,6 +13,7 @@ $env:APCA_API_SECRET_KEY = "your-paper-secret"
 $env:QUANTDESK_OPERATOR_KEY = "a-long-random-local-operator-key"
 $env:QUANTDESK_SYMBOLS = "SPY"
 $env:QUANTDESK_MAX_PAPER_ORDER_NOTIONAL = "1000"
+$env:QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL = "10"
 ```
 
 Build and test without starting the API:
@@ -40,47 +41,60 @@ docker compose ps
 
 Private specifications and credentials are excluded from every production image.
 
-## First paper trade
+## Bounded BTC/USD paper diagnostic
 
-Start the complete Compose runtime, then wait until broker reconciliation has completed:
+The first broker-path proof is a dedicated diagnostic lifecycle, not strategy
+authorization. It requires PAPER endpoint verification, account and asset
+health, a clean BTC/USD broker position/order reconciliation, durable storage,
+and the recovery worker. It deliberately ignores feature, expert, momentum,
+and strategy-qualification readiness.
+
+Start the complete Compose runtime with autonomous strategy execution disabled:
 
 ```powershell
+$env:QUANTDESK_SYMBOLS = "SPY,BTC/USD"
+$env:QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL = "10"
+$env:QUANTDESK_AUTONOMOUS_ENABLED = "false"
 docker compose up -d --build
-Invoke-RestMethod http://localhost:8080/ready
+$readiness = Invoke-RestMethod http://localhost:8080/api/system/readiness
+$readiness.infrastructureExecutionReady
 ```
 
-Submit a small limit order. Use a deliberately conservative limit price for the first connectivity test so it does not fill unexpectedly:
+Verify that recovery is active, then create or resume one deterministic
+diagnostic ID. The operator key must be configured outside the repository.
 
 ```powershell
 $headers = @{ "X-QuantDesk-Operator-Key" = $env:QUANTDESK_OPERATOR_KEY }
-$order = @{
-  symbol = "SPY"
-  side = "buy"
-  quantity = 1
-  limitPrice = 1.00
-  clientOrderId = "quantdesk-first-paper-trade"
-} | ConvertTo-Json
-
-$submitted = Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8080/api/paper/orders `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body $order
-
-$submitted
-```
-
-Cancel the test order using the returned broker order ID:
-
-```powershell
 Invoke-RestMethod `
-  -Method Delete `
-  -Uri "http://localhost:8080/api/paper/orders/$($submitted.brokerOrderId)" `
+  -Uri http://localhost:8080/api/diagnostics/recovery `
+  -Headers $headers
+
+$experimentId = "CRYPTO-DIAGNOSTIC-YYYY-MM-DD-001"
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8080/api/diagnostics/$experimentId/start" `
   -Headers $headers
 ```
 
-The API accepts paper limit orders only, restricts symbols through `QUANTDESK_SYMBOLS`, rejects orders above `QUANTDESK_MAX_PAPER_ORDER_NOTIONAL`, checks paper-account status and buying power, and requires the operator key. It will not become ready when Alpaca reconciliation fails.
+Do not send another start request during the hold. Polling is read-only; the
+registered worker owns the durable two-minute hold, exit, and reconciliation:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/diagnostics/$experimentId" `
+  -Headers $headers
+```
+
+`Complete` is persisted only after Alpaca reports no unresolved diagnostic
+orders, broker BTC/USD exposure is zero, internal diagnostic exposure is zero,
+and broker/internal reconciliation passes. Alpaca rejected a $5 BTC/USD order
+as below its $10 minimum on 2026-08-31, so the checked-in diagnostic default is
+$10. Reconfirm broker limits before changing it.
+
+The first end-to-end proof, `CRYPTO-DIAGNOSTIC-2026-08-30-001`, completed on
+2026-08-31 with one PAPER entry and one automatic PAPER exit. This proves the
+broker execution and recovery lane only; it does not authorize autonomous
+strategy entries.
 
 ## Autonomous paper execution
 

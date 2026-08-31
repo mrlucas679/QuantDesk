@@ -1,0 +1,85 @@
+{
+  "diagnostic_runner_version": "quantdesk-alpaca-cli-assessment-v1",
+  "adapter_version": "NONE",
+  "alpaca_cli_version": "0.0.14",
+  "alpaca_cli_binary_sha256": "48220cb7ad4674ff64c55264769127f4ff3b7eaa6b1124958b4bb15e09613304",
+  "checked_at": "2026-08-30T22:25:34.5065575+02:00",
+  "paper_mode": true,
+  "client_order_id": null,
+  "credential_transport": "child-process environment",
+  "raw_responses_persisted": false,
+  "calls": [
+    {
+      "command_family": "version",
+      "exit_code": 0,
+      "duration_ms": 77,
+      "timed_out": false,
+      "stdout_json": false,
+      "response_hash": "sha256:0f63b381bd90c7ea26cb2d670dca30aed0d0ddf72a353623e73202f322aec657",
+      "stderr_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command_family": "doctor",
+      "exit_code": 0,
+      "duration_ms": 2132,
+      "timed_out": false,
+      "stdout_json": false,
+      "response_hash": "sha256:723210b3eea866c470462eecfb8d3d090639045ee56939cec5f4dfe562943003",
+      "stderr_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command_family": "account.get",
+      "exit_code": 0,
+      "duration_ms": 817,
+      "timed_out": false,
+      "stdout_json": true,
+      "response_hash": "sha256:f7e9bda7c977e16be320d9c2773007375076f3f85cda6754f54c40c2bb3db8ea",
+      "stderr_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command_family": "position.list",
+      "exit_code": 0,
+      "duration_ms": 787,
+      "timed_out": false,
+      "stdout_json": true,
+      "response_hash": "sha256:37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "stderr_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command_family": "order.list.open",
+      "exit_code": 0,
+      "duration_ms": 853,
+      "timed_out": false,
+      "stdout_json": true,
+      "response_hash": "sha256:37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "stderr_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command_family": "clock",
+      "exit_code": 0,
+      "duration_ms": 778,
+      "timed_out": false,
+      "stdout_json": true,
+      "response_hash": "sha256:baacb05735c2e001a3f1e6055fb603486f0152f8a0cce62f5c6a456b1d15eeda",
+      "stderr_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command_family": "asset.get.invalid-invocation",
+      "exit_code": 1,
+      "duration_ms": 70,
+      "timed_out": false,
+      "stdout_json": false,
+      "response_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_hash": "sha256:74f6104608bb15407a69b756776d889928bd2baecb77a4d825c19160ea5bbb8e"
+    },
+    {
+      "command_family": "asset.get",
+      "exit_code": 0,
+      "duration_ms": 800,
+      "timed_out": false,
+      "stdout_json": true,
+      "response_hash": "sha256:f0440c1ad2ffef9af9c59e19d15f759a0ee116acd85aeed3056d4afd4aaa12ef",
+      "stderr_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

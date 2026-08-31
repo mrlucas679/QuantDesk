@@ -58,7 +58,11 @@ public sealed record ExecutionCommand(
     decimal? LimitPrice,
     long CreatedMonotonicTicks,
     long ExpiresMonotonicTicks,
-    string StrategyId);
+    string StrategyId)
+{
+    /// <summary>Optional cash-denominated order size; when set, the broker request omits quantity.</summary>
+    public decimal? Notional { get; init; }
+}
 
 public sealed record BrokerSubmitResult(
     BrokerSubmitState State,
@@ -72,6 +76,13 @@ public sealed record BrokerPositionSnapshot(
     decimal Quantity,
     decimal AveragePrice);
 
+/// <summary>Broker-reported asset eligibility needed before an execution can be admitted.</summary>
+public sealed record BrokerAssetSnapshot(
+    string Symbol,
+    string Status,
+    string AssetClass,
+    bool Tradable);
+
 /// <summary>Minimal broker account state required to preflight paper execution.</summary>
 public sealed record BrokerAccountSnapshot(
     string AccountId,
@@ -79,19 +90,38 @@ public sealed record BrokerAccountSnapshot(
     decimal Equity,
     decimal BuyingPower,
     bool TradingBlocked,
-    bool AccountBlocked);
+    bool AccountBlocked)
+{
+    public string? CryptoTradingStatus { get; init; }
+}
 
 public sealed record BrokerOrderSnapshot(
     string BrokerOrderId,
     string ClientOrderId,
     string Status,
     decimal FilledQuantity,
-    decimal? AverageFillPrice);
+    decimal? AverageFillPrice)
+{
+    public string? Symbol { get; init; }
+    public DateTimeOffset? CreatedAt { get; init; }
+    public DateTimeOffset? SubmittedAt { get; init; }
+    public DateTimeOffset? UpdatedAt { get; init; }
+    public DateTimeOffset? FilledAt { get; init; }
+    public DateTimeOffset? CanceledAt { get; init; }
+    public DateTimeOffset? ExpiredAt { get; init; }
+    public DateTimeOffset? RejectedAt { get; init; }
+}
 
 public interface IBrokerExecutionGateway
 {
+    /// <summary>True only when the adapter has verified an Alpaca paper-trading endpoint.</summary>
+    bool IsPaperEnvironment => false;
+
     Task<BrokerAccountSnapshot?> GetAccountAsync(CancellationToken cancellationToken) =>
         Task.FromResult<BrokerAccountSnapshot?>(null);
+
+    Task<BrokerAssetSnapshot?> GetAssetAsync(string symbol, CancellationToken cancellationToken) =>
+        Task.FromResult<BrokerAssetSnapshot?>(null);
 
     Task<BrokerSubmitResult> SubmitAsync(ExecutionCommand command, CancellationToken cancellationToken);
 
@@ -99,6 +129,10 @@ public interface IBrokerExecutionGateway
 
     Task<IReadOnlyList<BrokerOrderSnapshot>> ListOpenOrdersAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<BrokerOrderSnapshot>>([]);
+
+    Task<IReadOnlyList<BrokerOrderSnapshot>> ListOpenOrdersForSymbolAsync(
+        string symbol,
+        CancellationToken cancellationToken) => ListOpenOrdersAsync(cancellationToken);
 
     Task<IReadOnlyList<BrokerPositionSnapshot>> ListPositionsAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<BrokerPositionSnapshot>>([]);

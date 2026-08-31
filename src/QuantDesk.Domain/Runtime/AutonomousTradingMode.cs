@@ -4,6 +4,8 @@ namespace QuantDesk.Domain.Runtime;
 public enum AutonomousTradingMode
 {
     Disabled,
+    /// <summary>Paper-only forward observation; never implies strategy qualification.</summary>
+    ForwardResearch,
     ExperimentalPaper,
     ValidatedPaper
 }
