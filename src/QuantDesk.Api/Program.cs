@@ -166,7 +166,8 @@ builder.Services.AddSingleton(services => new MultiLegExecutionLifecycle(
     services.GetRequiredService<IBrokerExecutionGateway>(),
     services.GetRequiredService<MultiLegExecutionStore>(),
     services.GetRequiredService<IRuntimeClock>(),
-    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout));
+    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout,
+    services.GetRequiredService<IHoldInterrupt>()));
 builder.Services.AddSingleton(services =>
 {
     string configured = Environment.GetEnvironmentVariable("QUANTDESK_SPOT_STORE_PATH")
@@ -183,6 +184,12 @@ builder.Services.AddSingleton<IHeldPositionMarker>(services => new MarketStateHe
 // Retraction is listed first so it names the exit when both fire at once.
 builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInterrupt(
     new ArtifactRetractionHoldInterrupt(services.GetRequiredService<ResearchArtifactState>()),
+    // Options only. A defined-risk vertical days from expiry is not the position that was opened
+    // with weeks to run: gamma rises, spreads widen as makers step back, and assignment on the
+    // short leg becomes real. MinimumDteToHold existed on the management plan to say this and was
+    // passed as null by every compiler, so the rule was stated in the domain and absent from the
+    // system. Spot carries no expiry and the rule correctly ignores it.
+    new ExpiryHoldInterrupt(services.GetRequiredService<IRuntimeClock>(), minimumDaysToExpiry: 2),
     new AdverseLossHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>())));
 
 builder.Services.AddSingleton(services => new SpotExecutionLifecycle(

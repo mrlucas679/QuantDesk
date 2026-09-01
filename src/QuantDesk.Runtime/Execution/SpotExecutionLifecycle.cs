@@ -211,6 +211,16 @@ public sealed class SpotExecutionLifecycle(
         return updated;
     }
 
+    /// <summary>Projects a spot record onto the view every early-exit rule reads.</summary>
+    private static HeldPosition HeldPositionView(SpotExecutionRecord record) => new(
+        record.ExecutionId,
+        record.Symbol,
+        record.EntryFilledQuantity,
+        record.EntryAverageFillPrice,
+        record.DefinedMaximumLoss,
+        record.Ownership,
+        EarliestLegExpiry: null);
+
     private SpotExecutionRecord StartHold(SpotExecutionRecord record)
     {
         DateTimeOffset now = clock.UtcNow;
@@ -234,7 +244,7 @@ public sealed class SpotExecutionLifecycle(
         bool timerDue = record.ScheduledExitAt is { } due && clock.UtcNow >= due;
         HoldInterrupt interrupt = timerDue
             ? HoldInterrupt.None
-            : holdInterrupt?.Evaluate(record) ?? HoldInterrupt.None;
+            : holdInterrupt?.Evaluate(HeldPositionView(record)) ?? HoldInterrupt.None;
 
         if (!timerDue && !interrupt.ShouldExitNow) return record;
 

@@ -1,5 +1,3 @@
-using QuantDesk.Runtime.Persistence;
-
 namespace QuantDesk.Runtime.Execution;
 
 /// <summary>Why a hold should end before its scheduled time, or that it should not.</summary>
@@ -17,7 +15,7 @@ public readonly record struct HoldInterrupt(bool ShouldExitNow, string? Reason)
 ///
 /// Why this exists
 /// ---------------
-/// The durable spot lifecycle exited on one condition: the scheduled time. The richer exit rules —
+/// The durable lifecycles exited on one condition: the scheduled time. The richer exit rules —
 /// thesis invalidation, regime change, and the defined maximum adverse loss — lived in an
 /// <c>ExitEngine</c> that only the autonomous lane's in-memory position manager called, and that
 /// manager was never invoked. So in the live path a position whose research had been retracted ran
@@ -34,7 +32,7 @@ public readonly record struct HoldInterrupt(bool ShouldExitNow, string? Reason)
 public interface IHoldInterrupt
 {
     /// <summary>Whether this held execution should exit now.</summary>
-    HoldInterrupt Evaluate(SpotExecutionRecord record);
+    HoldInterrupt Evaluate(in HeldPosition position);
 }
 
 /// <summary>
@@ -47,11 +45,11 @@ public sealed class CompositeHoldInterrupt(params IHoldInterrupt[] interrupts) :
 {
     private readonly IHoldInterrupt[] _interrupts = interrupts ?? [];
 
-    public HoldInterrupt Evaluate(SpotExecutionRecord record)
+    public HoldInterrupt Evaluate(in HeldPosition position)
     {
         foreach (IHoldInterrupt interrupt in _interrupts)
         {
-            HoldInterrupt result = interrupt.Evaluate(record);
+            HoldInterrupt result = interrupt.Evaluate(position);
             if (result.ShouldExitNow) return result;
         }
 

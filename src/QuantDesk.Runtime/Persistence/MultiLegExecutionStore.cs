@@ -69,6 +69,12 @@ public sealed record MultiLegExecutionRecord(
     public DateTimeOffset? CompletedAt { get; init; }
     public string? FailureReason { get; init; }
 
+    /// <summary>Why the hold ended before its timer, or null when the timer ended it.</summary>
+    public string? EarlyExitReason { get; init; }
+
+    /// <summary>The research publication that authorised this position, captured at reservation.</summary>
+    public PositionOwnership? Ownership { get; init; }
+
     public decimal InternalOpenQuantity => Math.Max(0, EntryFilledQuantity - ExitFilledQuantity);
 
     /// <summary>

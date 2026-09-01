@@ -344,17 +344,17 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
 
     private sealed class AlwaysExit(string reason) : IHoldInterrupt
     {
-        public HoldInterrupt Evaluate(SpotExecutionRecord record) => HoldInterrupt.Now(reason);
+        public HoldInterrupt Evaluate(in HeldPosition position) => HoldInterrupt.Now(reason);
     }
 
     private sealed class NeverExit : IHoldInterrupt
     {
-        public HoldInterrupt Evaluate(SpotExecutionRecord record) => HoldInterrupt.None;
+        public HoldInterrupt Evaluate(in HeldPosition position) => HoldInterrupt.None;
     }
 
     private sealed class Throwing : IHoldInterrupt
     {
-        public HoldInterrupt Evaluate(SpotExecutionRecord record) =>
+        public HoldInterrupt Evaluate(in HeldPosition position) =>
             throw new InvalidOperationException("a broken interrupt must not strand a position");
     }
 

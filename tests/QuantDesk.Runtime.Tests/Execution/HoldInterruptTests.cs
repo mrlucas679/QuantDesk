@@ -65,15 +65,8 @@ public sealed class AdverseLossHoldInterruptTests
         Assert.False(interrupt.Evaluate(Held(100m, 0m, 5m)).ShouldExitNow);
     }
 
-    private static SpotExecutionRecord Held(decimal entryPrice, decimal quantity, decimal maximumLoss) =>
-        new("exec", "strategy", "BTC/USD", 0, SpotExecutionState.Holding, "entry", "exit", quantity,
-            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch)
-        {
-            DefinedMaximumLoss = maximumLoss,
-            MaximumHoldingPeriod = TimeSpan.FromMinutes(5),
-            EntryFilledQuantity = quantity,
-            EntryAverageFillPrice = entryPrice,
-        };
+    private static HeldPosition Held(decimal entryPrice, decimal quantity, decimal maximumLoss) =>
+        new("exec", "BTC/USD", quantity, entryPrice, maximumLoss, null, EarliestLegExpiry: null);
 
     private sealed class StubMarker(decimal? mid) : IHeldPositionMarker
     {
@@ -101,13 +94,12 @@ public sealed class CompositeHoldInterruptTests
         Assert.False(new CompositeHoldInterrupt().Evaluate(Record()).ShouldExitNow);
     }
 
-    private static SpotExecutionRecord Record() =>
-        new("exec", "strategy", "BTC/USD", 0, SpotExecutionState.Holding, "entry", "exit", 1m,
-            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+    private static HeldPosition Record() =>
+        new("exec", "BTC/USD", 1m, 100m, 5m, null, EarliestLegExpiry: null);
 
     private sealed class Always(bool exit, string? reason) : IHoldInterrupt
     {
-        public HoldInterrupt Evaluate(SpotExecutionRecord record) => new(exit, reason);
+        public HoldInterrupt Evaluate(in HeldPosition position) => new(exit, reason);
     }
 }
 

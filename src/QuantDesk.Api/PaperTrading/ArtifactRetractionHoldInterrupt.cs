@@ -1,5 +1,4 @@
 using QuantDesk.Runtime.Execution;
-using QuantDesk.Runtime.Persistence;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -25,13 +24,11 @@ namespace QuantDesk.Api.PaperTrading;
 /// </summary>
 public sealed class ArtifactRetractionHoldInterrupt(ResearchArtifactState research) : IHoldInterrupt
 {
-    public HoldInterrupt Evaluate(SpotExecutionRecord record)
+    public HoldInterrupt Evaluate(in HeldPosition position)
     {
-        ArgumentNullException.ThrowIfNull(record);
-
         // No binding means no artifact ever claimed this position — the experimental mode, which is
         // honest about resting on no research. There is nothing to retract.
-        if (record.Ownership is not { } ownership) return HoldInterrupt.None;
+        if (position.Ownership is not { } ownership) return HoldInterrupt.None;
 
         ResearchArtifactSnapshot snapshot = research.Snapshot();
 

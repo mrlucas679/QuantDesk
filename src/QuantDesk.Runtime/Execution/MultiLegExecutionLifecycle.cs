@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Diagnostics.Metrics;
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Options;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Time;
@@ -14,7 +15,8 @@ public sealed class MultiLegExecutionLifecycle(
     IBrokerExecutionGateway broker,
     MultiLegExecutionStore store,
     IRuntimeClock clock,
-    TimeSpan brokerSubmitTimeout)
+    TimeSpan brokerSubmitTimeout,
+    IHoldInterrupt? holdInterrupt = null)
 {
     private static readonly Meter Meter = new("QuantDesk.MultiLegExecution", "1.0");
     private static readonly Counter<long> StateTransitions = Meter.CreateCounter<long>(
@@ -56,6 +58,96 @@ public sealed class MultiLegExecutionLifecycle(
         });
     }
 
+    /// <summary>
+    /// Ends the hold when its deadline passes or an early-exit rule fires.
+    ///
+    /// Two defects are closed here. The multi-leg lane exited on the scheduled time alone, so a
+    /// position past its defined maximum loss, one whose authorising research had been retracted,
+    /// and one drifting into expiry week all ran to the timer regardless — the same gap the spot
+    /// lane had, and it matters more here because an option's risk changes with the calendar and not
+    /// only with price.
+    ///
+    /// And the deadline itself was trusted to exist. A record that reached Holding with a null
+    /// ScheduledExitAt would never leave it: the old condition required a non-null deadline to
+    /// exit, so a missing one meant the position was held forever. The spot lane repairs a missing
+    /// deadline on entry to the hold; this one did not. It is repaired rather than treated as an
+    /// error, because refusing to act would leave the position exactly as stranded.
+    ///
+    /// The interrupt may still only pull the exit forward. The deadline is evaluated first and
+    /// independently, so a faulty rule cannot extend a hold.
+    /// </summary>
+    private void EvaluateHold(MultiLegExecutionRecord record)
+    {
+        if (record.ScheduledExitAt is not { } due)
+        {
+            DateTimeOffset repaired = (record.HoldStartedAt ?? clock.UtcNow).Add(record.MaximumHoldingPeriod);
+            store.Update(record.ExecutionId, item => item with
+            {
+                HoldStartedAt = item.HoldStartedAt ?? clock.UtcNow,
+                ScheduledExitAt = repaired,
+            });
+            return;
+        }
+
+        if (clock.UtcNow >= due)
+        {
+            store.Update(record.ExecutionId, item => item with { State = MultiLegExecutionState.ExitDue });
+            return;
+        }
+
+        HoldInterrupt interrupt = holdInterrupt?.Evaluate(HeldPositionView(record)) ?? HoldInterrupt.None;
+        if (!interrupt.ShouldExitNow) return;
+
+        store.Update(record.ExecutionId, item => item with
+        {
+            State = MultiLegExecutionState.ExitDue,
+            EarlyExitReason = interrupt.Reason,
+        });
+    }
+
+    /// <summary>Projects a multi-leg record onto the view every early-exit rule reads.</summary>
+    private static HeldPosition HeldPositionView(MultiLegExecutionRecord record) => new(
+        record.ExecutionId,
+        UnderlyingOf(record),
+        record.EntryFilledQuantity,
+        record.EntryAverageFillPrice,
+        record.DefinedMaximumLoss,
+        record.Ownership,
+        EarliestExpiryOf(record));
+
+    /// <summary>
+    /// The nearest expiry across the legs, or null when none of them parse as option symbols.
+    ///
+    /// The nearest rather than the furthest: a vertical is only defined-risk while both legs exist,
+    /// and the first one to expire is when that stops being true.
+    /// </summary>
+    private static DateTimeOffset? EarliestExpiryOf(MultiLegExecutionRecord record)
+    {
+        DateTimeOffset? earliest = null;
+        foreach (BrokerOrderLegSnapshot leg in record.EntryLegs)
+        {
+            if (!OccOptionSymbol.TryParse(leg.Symbol, out OccOptionSymbol? parsed) || parsed is null)
+                continue;
+
+            // Contracts cease trading at the close on their expiration date.
+            var expiry = new DateTimeOffset(parsed.Expiration.ToDateTime(new TimeOnly(20, 0)), TimeSpan.Zero);
+            if (earliest is null || expiry < earliest) earliest = expiry;
+        }
+
+        return earliest;
+    }
+
+    private static string UnderlyingOf(MultiLegExecutionRecord record)
+    {
+        foreach (BrokerOrderLegSnapshot leg in record.EntryLegs)
+        {
+            if (OccOptionSymbol.TryParse(leg.Symbol, out OccOptionSymbol? parsed) && parsed is not null)
+                return parsed.Underlying;
+        }
+
+        return record.EntryLegs.Count > 0 ? record.EntryLegs[0].Symbol : string.Empty;
+    }
+
     public async Task<MultiLegExecutionRecord> AdvanceAsync(
         string executionId,
         CancellationToken cancellationToken)
@@ -79,8 +171,7 @@ public sealed class MultiLegExecutionLifecycle(
                 store.Update(executionId, item => item with { State = MultiLegExecutionState.Holding });
                 break;
             case MultiLegExecutionState.Holding:
-                if (record.ScheduledExitAt is not null && clock.UtcNow >= record.ScheduledExitAt)
-                    store.Update(executionId, item => item with { State = MultiLegExecutionState.ExitDue });
+                EvaluateHold(record);
                 break;
             case MultiLegExecutionState.ExitDue:
                 store.TryReserveExit(executionId, clock.UtcNow);

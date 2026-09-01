@@ -1,5 +1,3 @@
-using QuantDesk.Runtime.Persistence;
-
 namespace QuantDesk.Runtime.Execution;
 
 /// <summary>Supplies the current mid for a held symbol, or null when no healthy quote exists.</summary>
@@ -22,20 +20,18 @@ public interface IHeldPositionMarker
 /// </summary>
 public sealed class AdverseLossHoldInterrupt(IHeldPositionMarker marker) : IHoldInterrupt
 {
-    public HoldInterrupt Evaluate(SpotExecutionRecord record)
+    public HoldInterrupt Evaluate(in HeldPosition position)
     {
-        ArgumentNullException.ThrowIfNull(record);
+        if (position.DefinedMaximumLoss <= 0m) return HoldInterrupt.None;
+        if (position.Quantity <= 0m) return HoldInterrupt.None;
+        if (position.EntryPrice is not { } entryPrice || entryPrice <= 0m) return HoldInterrupt.None;
+        if (marker.CurrentMid(position.Symbol) is not { } mid || mid <= 0m) return HoldInterrupt.None;
 
-        if (record.DefinedMaximumLoss <= 0m) return HoldInterrupt.None;
-        if (record.EntryFilledQuantity <= 0m) return HoldInterrupt.None;
-        if (record.EntryAverageFillPrice is not { } entryPrice || entryPrice <= 0m) return HoldInterrupt.None;
-        if (marker.CurrentMid(record.Symbol) is not { } mid || mid <= 0m) return HoldInterrupt.None;
-
-        // Long-only spot: a fall below the entry price is the loss.
-        decimal unrealised = (mid - entryPrice) * record.EntryFilledQuantity;
-        if (unrealised > -record.DefinedMaximumLoss) return HoldInterrupt.None;
+        // Long-only: a fall below the entry price is the loss.
+        decimal unrealised = (mid - entryPrice) * position.Quantity;
+        if (unrealised > -position.DefinedMaximumLoss) return HoldInterrupt.None;
 
         return HoldInterrupt.Now(
-            $"AdverseLossBreached:{unrealised:0.00}<=-{record.DefinedMaximumLoss:0.00}");
+            $"AdverseLossBreached:{unrealised:0.00}<=-{position.DefinedMaximumLoss:0.00}");
     }
 }

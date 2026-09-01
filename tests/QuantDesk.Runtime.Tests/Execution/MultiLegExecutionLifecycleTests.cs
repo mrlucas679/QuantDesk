@@ -255,14 +255,141 @@ public sealed class MultiLegExecutionLifecycleTests
             fixture.Store.Find("OPTIONS-EMERGENCY")!.State);
     }
 
-    private static Fixture CreateFixture()
+    [Fact]
+    public async Task AHoldWithNoDeadlineIsRepairedRatherThanHeldForever()
+    {
+        // The old condition required a non-null ScheduledExitAt to exit, so a record that reached
+        // Holding without one would never leave it -- a position held forever by a missing field.
+        // The spot lane repairs a missing deadline; this one did not.
+        using Fixture fixture = CreateFixture();
+        fixture.Store.TryCreate(Stranded());
+
+        MultiLegExecutionRecord repaired = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-STRANDED", CancellationToken.None);
+
+        Assert.NotNull(repaired.ScheduledExitAt);
+        Assert.Equal(MultiLegExecutionState.Holding, repaired.State);
+
+        // And the repaired deadline is honoured.
+        fixture.Clock.Advance(TimeSpan.FromMinutes(31));
+        Assert.Equal(MultiLegExecutionState.ExitDue,
+            (await fixture.Lifecycle.AdvanceAsync("OPTIONS-STRANDED", CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task AnInterruptEndsTheMultiLegHoldBeforeItsTimer()
+    {
+        // The options lane had the same timer-only hold the spot lane did: a position past its
+        // defined maximum loss, or one whose research had been retracted, ran to its deadline.
+        using Fixture fixture = CreateFixture(new AlwaysExit("AdverseLossBreached:test"));
+        fixture.Store.TryCreate(Held());
+
+        MultiLegExecutionRecord interrupted = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-HELD", CancellationToken.None);
+
+        Assert.Equal(MultiLegExecutionState.ExitDue, interrupted.State);
+        Assert.Equal("AdverseLossBreached:test", interrupted.EarlyExitReason);
+    }
+
+    [Fact]
+    public async Task AnInterruptCannotExtendTheMultiLegHoldPastItsDeadline()
+    {
+        using Fixture fixture = CreateFixture(new NeverExit());
+        fixture.Store.TryCreate(Held());
+        fixture.Clock.Advance(TimeSpan.FromMinutes(31));
+
+        MultiLegExecutionRecord due = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-HELD", CancellationToken.None);
+
+        Assert.Equal(MultiLegExecutionState.ExitDue, due.State);
+        Assert.Null(due.EarlyExitReason);
+    }
+
+    [Fact]
+    public async Task ThePositionIsProjectedWithTheNearestLegExpiry()
+    {
+        // The nearest rather than the furthest: a vertical is defined-risk only while both legs
+        // exist, and the first to expire is when that stops being true.
+        using Fixture fixture = CreateFixture(new ExpiryHoldInterrupt(
+            new VirtualRuntimeClock(Start), minimumDaysToExpiry: 2));
+        fixture.Store.TryCreate(Held() with
+        {
+            EntryLegs =
+            [
+                new BrokerOrderLegSnapshot("b-1", "SPY260901C00650000", "filled", 1m, 1.25m),
+                new BrokerOrderLegSnapshot("b-2", "SPY261204C00655000", "filled", 1m, 0.90m)
+            ]
+        });
+
+        MultiLegExecutionRecord exiting = await fixture.Lifecycle.AdvanceAsync(
+            "OPTIONS-HELD", CancellationToken.None);
+
+        Assert.Equal(MultiLegExecutionState.ExitDue, exiting.State);
+        Assert.Contains("ApproachingExpiry", exiting.EarlyExitReason);
+    }
+
+    [Fact]
+    public async Task AComfortablyDatedSpreadIsNotClosedForExpiry()
+    {
+        using Fixture fixture = CreateFixture(new ExpiryHoldInterrupt(
+            new VirtualRuntimeClock(Start), minimumDaysToExpiry: 2));
+        fixture.Store.TryCreate(Held() with
+        {
+            EntryLegs =
+            [
+                new BrokerOrderLegSnapshot("b-1", "SPY261204C00650000", "filled", 1m, 1.25m)
+            ]
+        });
+
+        Assert.Equal(MultiLegExecutionState.Holding,
+            (await fixture.Lifecycle.AdvanceAsync("OPTIONS-HELD", CancellationToken.None)).State);
+    }
+
+    private static MultiLegExecutionRecord Held() => Stranded("OPTIONS-HELD") with
+    {
+        ScheduledExitAt = Start.AddMinutes(30),
+        HoldStartedAt = Start,
+    };
+
+    private static MultiLegExecutionRecord Stranded(string id = "OPTIONS-STRANDED")
+    {
+        var command = new MultiLegExecutionCommand(
+            $"{id}-entry", 1, ExecutionOrderType.Limit, ExecutionTimeInForce.Day, 1.25m, EntryLegs());
+        var exit = new MultiLegExecutionCommand(
+            $"{id}-exit", 1, ExecutionOrderType.Limit, ExecutionTimeInForce.Day, 1.40m, EntryLegs());
+        return new MultiLegExecutionRecord(
+            id, "spy-vertical-v1", MultiLegExecutionState.Holding, command, exit, Start, Start)
+        {
+            DefinedMaximumLoss = 100m,
+            MaximumHoldingPeriod = TimeSpan.FromMinutes(30),
+            EntryFilledQuantity = 1m,
+            EntryAverageFillPrice = 1.25m,
+            EntryLegs =
+            [
+                new BrokerOrderLegSnapshot("b-1", "SPY260904C00650000", "filled", 1m, 1.25m)
+            ],
+        };
+    }
+
+    private sealed class AlwaysExit(string reason) : IHoldInterrupt
+    {
+        public HoldInterrupt Evaluate(in HeldPosition position) => HoldInterrupt.Now(reason);
+    }
+
+    private sealed class NeverExit : IHoldInterrupt
+    {
+        public HoldInterrupt Evaluate(in HeldPosition position) => HoldInterrupt.None;
+    }
+
+    private static Fixture CreateFixture(IHoldInterrupt? interrupt = null)
     {
         string path = Path.Combine(Path.GetTempPath(), $"qd-mleg-{Guid.NewGuid():N}.json");
         var broker = new FakeBroker();
         var clock = new VirtualRuntimeClock(Start);
         var store = new MultiLegExecutionStore(path);
         return new Fixture(path, broker, clock, store,
-            new MultiLegExecutionLifecycle(broker, broker, store, clock, TimeSpan.FromSeconds(1)));
+            new MultiLegExecutionLifecycle(
+                broker, broker, store, clock, TimeSpan.FromSeconds(1), interrupt));
     }
 
     private static IReadOnlyList<MultiLegExecutionLeg> EntryLegs() =>
