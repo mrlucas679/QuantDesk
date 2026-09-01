@@ -1335,6 +1335,13 @@ the test failed, and the first reading was that the fixture was malformed. It wa
 same pattern as the other four — testing against what the venue actually sends, rather than against
 what the parser already expects.
 
+**First real venue contact — 2026-09-01.** The preflight was run against
+`paper-api.alpaca.markets` with the placeholder credentials still in `.env`. It reached Alpaca and
+returned `contract discovery: Failed — Alpaca /v2/options/contracts failed with 401 Unauthorized:
+unauthorized`, with the three dependent stages `Skipped`. That is the intended shape of a first
+contact: one run, the venue's own answer, and no guessing about which stage failed. Earlier notes in
+this file saying nothing here has ever contacted Alpaca are superseded — read-only, no order placed.
+
 **Still unknown, and only credentials will settle it:** whether the account's option data feed is
 entitled at all, whether real spreads are tight enough to clear the cost floor, and whether strike
 coverage supports the vertical widths the compiler wants.

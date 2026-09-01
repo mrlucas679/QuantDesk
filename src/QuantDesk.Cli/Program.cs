@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using QuantDesk.Alpaca.Capabilities;
 using QuantDesk.Alpaca.Configuration;
 using QuantDesk.Alpaca.MarketData;
@@ -67,6 +68,16 @@ internal static class QuantDeskCli
     }
 
     /// <summary>
+    /// Enum members are written by name. This report exists to be read by a person on first contact
+    /// with the venue, and "Outcome": 1 tells them nothing.
+    /// </summary>
+    private static readonly JsonSerializerOptions ReportJson = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    /// <summary>
     /// Exercises every option data path against the live venue, read-only, and prints what each one
     /// returned. This is the command to run the moment credentials exist: no option client in this
     /// repository has ever been run against Alpaca, so the first contact should produce a report
@@ -88,10 +99,7 @@ internal static class QuantDeskCli
         OptionPreflightReport report = await preflight.RunAsync(
             underlying, today, today.AddDays(45), asOf, cancellationToken);
 
-        Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions
-        {
-            WriteIndented = true
-        }));
+        Console.WriteLine(JsonSerializer.Serialize(report, ReportJson));
         return report.Passed ? 0 : 1;
     }
 
