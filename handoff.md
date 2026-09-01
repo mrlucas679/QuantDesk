@@ -1363,11 +1363,28 @@ problems. Level 3 clears the level-2 bar a debit vertical needs.
 | contract discovery | **Passed — 5,792 contracts published, none excluded, 4 sampled.** Every cross-validation rule and the OCC parser fix hold against real venue data at scale. |
 | latest quotes | Feed works. Real two-sided market returned (`bp 340.26 / ap 354.68`), stamped at the previous close, so stale under the 15-minute rule. **Market closed, not broken.** |
 | greeks / IV | No `greeks` block on the sampled contract; same closed-market caveat. |
-| historical bars | **`403 OPRA agreement is not signed`** — a real entitlement gap, and the one item needing an account action. |
+| historical bars | Initially `403`; **now passes with 27 bars** once the window is held behind the real-time boundary and representative strikes are sampled. |
 
-**The one blocker left is signing the OPRA agreement** in the Alpaca dashboard. It gates historical
-option bars, which is what the option dataset export and the volatility-risk-premium family (C7) both
-wait on.
+**Corrected after direct probing: OPRA was never the blocker for historical bars.** The `403 OPRA
+agreement is not signed` came from requesting bars *up to the present instant*, which is a real-time
+request. The identical seven-day window returns `200` when it ends twenty minutes earlier. Verified:
+
+| window end | result |
+| --- | --- |
+| now | `403 OPRA agreement is not signed` |
+| now − 20 min | `200` |
+| now − 2 h | `200` |
+
+`AlpacaHistoricalOptionBarClient` now holds its window behind a twenty-minute real-time boundary and
+reports the clamped end on the query, so a dataset manifest still records what was actually served.
+Without this, the option dataset export would have failed for any account lacking an OPRA
+subscription, for a reason unrelated to the data being asked for.
+
+A second correction: an interim conclusion here that "the delayed tier returns no option bars" was
+wrong. It came from probing deep-ITM contracts. The preflight was sampling the *first* four tradable
+contracts, which are the deepest in-the-money strikes and the least liquid in the book — hence a
+four-percent quoted spread and one bar in thirty days. Sampling from the middle of the chain by strike
+gives **27 bars across 4 contracts**, and those are the strikes a vertical would actually use.
 
 The run also exposed a defect in the preflight itself: it reported stale quotes as a flat failure, so
 it would cry wolf on every run outside regular hours. It now reports how stale the freshest quote is

@@ -190,6 +190,69 @@ public sealed class AlpacaHistoricalOptionBarClientTests
         Assert.DoesNotContain("test-secret", failure.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task TheWindowIsHeldBehindAlpacasRealTimeBoundary()
+    {
+        // Asking for option bars up to the present instant is a real-time request, which Alpaca refuses
+        // with "OPRA agreement is not signed" even when every bar wanted is days old. Verified live: the
+        // same seven-day window failed ending at now and succeeded ending twenty minutes earlier.
+        var handler = new PagedHandler("""{"bars":null,"next_page_token":null}""");
+        using var httpClient = new HttpClient(handler);
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-09-01T12:00:00Z"));
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options(), clock);
+
+        OptionBarQuery query = await client.GetBarsAsync(
+            ["SPY260904C00650000"],
+            DateTimeOffset.Parse("2026-08-25T12:00:00Z"),
+            DateTimeOffset.Parse("2026-09-01T12:00:00Z"),
+            "1Day",
+            CancellationToken.None);
+
+        Assert.Equal(DateTimeOffset.Parse("2026-09-01T11:40:00Z"), query.End);
+        Assert.Contains("11%3A40%3A00", handler.Requests[0].Query, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AWindowEndingEarlierThanTheBoundaryIsLeftAlone()
+    {
+        // The clamp must not quietly move a window the caller was entitled to ask for.
+        var handler = new PagedHandler("""{"bars":null,"next_page_token":null}""");
+        using var httpClient = new HttpClient(handler);
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-09-01T12:00:00Z"));
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options(), clock);
+        DateTimeOffset end = DateTimeOffset.Parse("2026-08-31T20:00:00Z");
+
+        OptionBarQuery query = await client.GetBarsAsync(
+            ["SPY260904C00650000"], DateTimeOffset.Parse("2026-08-25T12:00:00Z"), end, "1Day",
+            CancellationToken.None);
+
+        Assert.Equal(end, query.End);
+    }
+
+    [Fact]
+    public async Task AWindowEntirelyInsideTheBoundaryIsRefusedWithTheReason()
+    {
+        var handler = new PagedHandler("""{"bars":null,"next_page_token":null}""");
+        using var httpClient = new HttpClient(handler);
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-09-01T12:00:00Z"));
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options(), clock);
+
+        ArgumentException failure = await Assert.ThrowsAsync<ArgumentException>(() => client.GetBarsAsync(
+            ["SPY260904C00650000"],
+            DateTimeOffset.Parse("2026-09-01T11:50:00Z"),
+            DateTimeOffset.Parse("2026-09-01T12:00:00Z"),
+            "1Day",
+            CancellationToken.None));
+
+        Assert.Contains("real-time boundary", failure.Message, StringComparison.Ordinal);
+        Assert.Empty(handler.Requests);
+    }
+
+    private sealed class FakeTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
     private static async Task AssertRejectsAsync(string page)
     {
         var handler = new PagedHandler(page);

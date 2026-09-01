@@ -79,7 +79,7 @@ public sealed class OptionDataPreflight(
         {
             OptionContractQuery discovered = await contracts.ListAsync(
                 underlying, expirationStart, expirationEnd, "active", cancellationToken);
-            sample = [.. discovered.Contracts.Where(contract => contract.Tradable).Take(SampleSize)];
+            sample = SampleRepresentative(discovered.Contracts);
             steps.Add(DescribeDiscovery(discovered, sample));
         }
         catch (Exception exception) when (IsVenueFailure(exception))
@@ -138,13 +138,43 @@ public sealed class OptionDataPreflight(
         steps.Add(await RunStepAsync("historical bars", async () =>
         {
             OptionBarQuery history = await bars.GetBarsAsync(
-                [.. slots.Keys], asOf.AddDays(-7), asOf, "1Day", cancellationToken);
+                [.. slots.Keys], asOf.AddDays(-30), asOf, "1Day", cancellationToken);
             int total = history.Bars.Values.Sum(series => series.Count);
-            // Zero bars is reportable but not a failure: a freshly listed contract legitimately has none.
-            return (true, $"{total} bars across {history.Bars.Count} contracts over 7 days");
+            // Zero bars over a month of liquid contracts is not "a quiet window". Alpaca answers an
+            // unentitled option-bar request with 200 and an empty set rather than an error, so silence
+            // is the shape a missing subscription takes and has to be called out as one.
+            return (total > 0,
+                total > 0
+                    ? $"{total} bars across {history.Bars.Count} contracts over 30 days"
+                    : $"no bars for any of {history.Bars.Count} contracts over 30 days. Alpaca answers " +
+                      "an unentitled option-bar request with an empty set rather than an error, so this " +
+                      "is either a missing subscription or contracts too illiquid to have traded.");
         }));
 
         return new OptionPreflightReport(underlying, steps);
+    }
+
+    /// <summary>
+    /// Picks contracts from the middle of the chain by strike, not the first ones returned.
+    ///
+    /// The chain arrives sorted by expiration then strike, so taking the first few yields the deepest
+    /// in-the-money contracts — the least liquid in the book. Sampling those made the preflight report
+    /// a four-percent quoted spread and one bar in thirty days, and then present that as the state of
+    /// the feed. Strikes near the middle of the range are the ones a vertical would actually use, so
+    /// they are what the report should be describing.
+    /// </summary>
+    private static IReadOnlyList<AlpacaOptionContract> SampleRepresentative(
+        IReadOnlyList<AlpacaOptionContract> contracts)
+    {
+        AlpacaOptionContract[] tradable = [.. contracts
+            .Where(contract => contract.Tradable)
+            .OrderBy(contract => contract.Expiration)
+            .ThenBy(contract => contract.Strike)];
+        if (tradable.Length <= SampleSize) return tradable;
+
+        int middle = tradable.Length / 2;
+        int start = Math.Max(0, middle - (SampleSize / 2));
+        return [.. tradable.Skip(start).Take(SampleSize)];
     }
 
     /// <summary>How stale the freshest returned quote is, in units a person reads at a glance.</summary>

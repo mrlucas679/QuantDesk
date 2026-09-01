@@ -180,7 +180,9 @@ public sealed class OptionDataPreflightTests
             new AlpacaOptionContractClient(httpClient, options),
             new AlpacaLatestOptionQuoteClient(httpClient, options),
             new AlpacaOptionRiskSnapshotClient(httpClient, options),
-            new AlpacaHistoricalOptionBarClient(httpClient, options));
+            // The bar client holds its window behind Alpaca's real-time boundary using its own clock,
+            // so the test has to own that clock too or the two disagree about "now".
+            new AlpacaHistoricalOptionBarClient(httpClient, options, new FixedTime(asOf ?? AsOf)));
         return await preflight.RunAsync("SPY", Start, End, asOf ?? AsOf, CancellationToken.None);
     }
 
@@ -196,6 +198,11 @@ public sealed class OptionDataPreflightTests
     /// Answers each option endpoint with a venue-shaped payload, and lets one test at a time make a
     /// single endpoint misbehave.
     /// </summary>
+    private sealed class FixedTime(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
     private sealed class RoutingHandler : HttpMessageHandler
     {
         private const string Symbol = "SPY261016C00600000";

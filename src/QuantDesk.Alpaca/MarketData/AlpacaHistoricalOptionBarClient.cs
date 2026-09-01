@@ -11,8 +11,27 @@ namespace QuantDesk.Alpaca.MarketData;
 /// outside the requested window, a self-inconsistent bar, or a conflicting duplicate fails the acquisition
 /// so a research dataset can never absorb data the caller did not ask for and cannot reproduce.
 /// </summary>
-public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, AlpacaOptions options)
+public sealed class AlpacaHistoricalOptionBarClient(
+    HttpClient httpClient,
+    AlpacaOptions options,
+    TimeProvider? timeProvider = null)
 {
+    /// <summary>
+    /// How far back from the present the request window is held.
+    ///
+    /// Asking for option bars up to the present instant is a request for *real-time* data, which Alpaca
+    /// gates behind the OPRA agreement and refuses with
+    /// <c>403 OPRA agreement is not signed</c> — even when every bar actually wanted is days old. The
+    /// same request ending twenty minutes earlier returns 200. Verified against the live venue: an
+    /// identical seven-day window failed ending at <c>now</c> and succeeded ending at <c>now - 20m</c>.
+    ///
+    /// Held here rather than left to callers because it is a fact about the venue, not a preference:
+    /// every caller wants history and none wants a 403. The clamped end is reported on the returned
+    /// <see cref="OptionBarQuery"/>, so a dataset manifest still records the window that was actually
+    /// served rather than the one that was asked for.
+    /// </summary>
+    private static readonly TimeSpan RealTimeBoundary = TimeSpan.FromMinutes(20);
+
     private const int MaximumSymbolsPerRequest = 100;
     private const int MaximumPages = 10_000;
     private const string Endpoint = "v1beta1/options/bars";
@@ -33,6 +52,16 @@ public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, Alpac
         if (symbols.Count is 0 or > MaximumSymbolsPerRequest)
             throw new ArgumentOutOfRangeException(nameof(symbols), "One to 100 OCC symbols are required.");
         if (start >= end) throw new ArgumentException("Start must precede end.", nameof(start));
+
+        DateTimeOffset latestServable = (timeProvider ?? TimeProvider.System).GetUtcNow() - RealTimeBoundary;
+        if (end > latestServable) end = latestServable;
+        if (start >= end)
+        {
+            throw new ArgumentException(
+                $"The requested window lies inside Alpaca's real-time boundary: option bars can only be " +
+                $"read up to {RealTimeBoundary.TotalMinutes:N0} minutes ago without an OPRA subscription.",
+                nameof(start));
+        }
         string[] normalized = symbols.Select(ValidateSymbol).Distinct(StringComparer.Ordinal).ToArray();
 
         var barsBySymbol = normalized.ToDictionary(
