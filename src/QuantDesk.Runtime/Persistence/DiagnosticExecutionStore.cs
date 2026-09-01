@@ -340,6 +340,23 @@ public sealed record DiagnosticExecutionRecord(
     /// winners into losses.
     /// </summary>
     public decimal? NetPaperPnl { get; init; }
+
+    /// <summary>Account equity immediately before the entry was reserved.</summary>
+    public decimal? AccountEquityBefore { get; init; }
+
+    /// <summary>Account equity once the lane reconciled flat.</summary>
+    public decimal? AccountEquityAfter { get; init; }
+
+    /// <summary>
+    /// What the round trip actually cost the account, from the broker's own equity.
+    ///
+    /// Ground truth, and the only figure here that owes nothing to a fee model. Measured across 59
+    /// live round trips the store reported −$2.12 while the account moved −$4.04: gross saw 11 bps of
+    /// cost, the fee-aware net saw 36, and the account said 68. The missing half is the separate USD
+    /// "Coin Pair Transaction Fee" cash charge, which never appears in a fill price or quantity and so
+    /// cannot be derived from fills at all.
+    /// </summary>
+    public decimal? RealisedAccountPnl { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public string? EmergencyClientOrderId { get; init; }
     public string? EmergencyBrokerOrderId { get; init; }

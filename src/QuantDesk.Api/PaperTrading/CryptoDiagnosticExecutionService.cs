@@ -63,10 +63,11 @@ public sealed class CryptoDiagnosticExecutionService(
         if (context.OpenOrders.Count != 0 || DiagnosticAdmissionPolicy.RelevantPositions(context.Positions).Count != 0)
             return DiagnosticExecutionResult.Blocked("UNEXPLAINED_BROKER_EXPOSURE");
 
-        return PersistReservation(normalizedExperimentId, notional);
+        return PersistReservation(normalizedExperimentId, notional, context.Account?.Equity);
     }
 
-    private DiagnosticExecutionResult PersistReservation(string experimentId, decimal notional)
+    private DiagnosticExecutionResult PersistReservation(
+        string experimentId, decimal notional, decimal? accountEquityBefore)
     {
         string entryId = ClientId(experimentId, "entry");
         string exitId = ClientId(experimentId, "exit");
@@ -85,6 +86,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             EntryReservedAt = reservedAt,
             EmergencyClientOrderId = emergencyId,
+            AccountEquityBefore = accountEquityBefore,
             ReconciliationResult = "Clean"
         };
 
@@ -430,6 +432,10 @@ public sealed class CryptoDiagnosticExecutionService(
                 DiagnosticExecutionOptions.RequiredSymbol,
                 cancellationToken);
             IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
+            // Read equity here, at the moment the lane believes it is flat, so the difference from the
+            // reservation snapshot is what the round trip actually cost the account -- fees included,
+            // without inferring them from fills.
+            BrokerAccountSnapshot? finalAccount = await broker.GetAccountAsync(cancellationToken);
             decimal brokerQuantity = DiagnosticAdmissionPolicy.RelevantPositions(positions).Sum(position => position.Quantity);
             decimal internalQuantity = DiagnosticExecutionMath.InternalExposure(record);
             bool hasUnresolvedDiagnosticOrder = openOrders.Any(order => DiagnosticAdmissionPolicy.IsDiagnosticOrder(record, order));
@@ -443,6 +449,11 @@ public sealed class CryptoDiagnosticExecutionService(
                 ReconciliationResult = reconciled ? "Flat" : "Mismatch",
                 GrossPaperPnl = reconciled ? DiagnosticExecutionMath.GrossPaperPnl(current) : current.GrossPaperPnl,
                 NetPaperPnl = reconciled ? DiagnosticExecutionMath.NetPaperPnl(current) : current.NetPaperPnl,
+                AccountEquityAfter = finalAccount?.Equity ?? current.AccountEquityAfter,
+                RealisedAccountPnl = reconciled && current.AccountEquityBefore is decimal before &&
+                                     finalAccount is not null
+                    ? finalAccount.Equity - before
+                    : current.RealisedAccountPnl,
                 CompletedAt = reconciled ? clock.UtcNow : null,
                 Failure = reconciled
                     ? DiagnosticExecutionFailure.None

@@ -1350,6 +1350,48 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### What is actually losing the money — 2026-09-01
+
+**Not the strategies. There were none.** All 59 round trips came from the diagnostic lane, which has no
+signal, no forecast and no model: it buys $10 of BTC, waits exactly 120 seconds, and sells. It is built
+to pay the round-trip cost and report whether the machinery worked. Losing money there says nothing
+about strategy quality, and 59/59 completed with zero failures.
+
+**The real defect was that the system could not see what trading costs.** Three measurements of the
+same 59 trades:
+
+| source | today's total | per $10 round trip |
+| --- | --- | --- |
+| `grossPaperPnl` | −$0.67 | **11 bps** |
+| `netPaperPnl` (fill-derived) | −$2.12 | **36 bps** |
+| **broker account equity** | **−$4.04** | **68 bps** |
+
+Gross omits the fee entirely. The fee-aware net catches the in-kind quantity loss but not the separate
+`Coin Pair Transaction Fee (USD)` cash charge, which never appears in a fill price or quantity and so
+**cannot be derived from fills at all**. Half the true cost was invisible to every figure the system
+produced.
+
+**The cost model was right the whole time.** `CryptoCostScenarios.FeeFloor` is 50 bps + spread ≈ 60,
+`Base` ≈ 70; the account says 68. The research plane's `NO_TRADE` verdict on crypto was correct and is
+now validated against broker truth for the first time. It was the *execution* plane claiming trading was
+six times cheaper than it is — and that is the number a search would have optimised against.
+
+`RealisedAccountPnl` now records account equity at reservation and again at reconciliation, so every
+round trip carries what it actually cost, owing nothing to a fee model. First live measurement:
+
+```
+gross         -0.0066   ( 6.6 bps)
+net (fills)   -0.0311   (31   bps)
+account truth -0.0600   (60   bps)
+```
+
+**Strategy and model inventory, for the record.** C#: `AutonomousDecisionPipeline`, `ExpertCommittee`,
+`CommitteeAllocator`, `DirectionalStrategyCompiler`, `CryptoDirectionalStrategyCompiler`. Python:
+`crypto_direction`, `equity_campaign`, `equity_portfolio_strategies`, `equity_relative_strength`,
+`strategy_ensemble`, `prospective_campaign`. **None has produced a qualifying artifact, and none placed
+any of the 59 trades.** Nothing in that list is responsible for the losses; a 68 bps round trip at a
+two-minute horizon is.
+
 ### Stress campaign 2 — restart recovery proven under process death — 2026-09-01
 
 **Phase C, the test campaign 1 failed to actually run.** A diagnostic was driven to a live fill
