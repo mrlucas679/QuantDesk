@@ -94,6 +94,23 @@ public sealed class DiagnosticExecutionStore(string path)
         }
     }
 
+    /// <summary>
+    /// Every round trip that completed cleanly, for measuring what trading actually cost.
+    ///
+    /// Deliberately excludes the failure states. A trip that was rejected, cancelled, expired, or
+    /// emergency-flattened either paid no cost or paid an exceptional one, and averaging those into
+    /// a cost curve would describe a kind of trading this system does not do on purpose.
+    /// </summary>
+    public IReadOnlyList<DiagnosticExecutionRecord> ListCompleted()
+    {
+        lock (gate)
+        {
+            return LoadOrEmpty().Records
+                .Where(record => record.State is "Complete")
+                .ToArray();
+        }
+    }
+
     public void Update(string experimentId, Func<DiagnosticExecutionRecord, DiagnosticExecutionRecord> mutate)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(experimentId);

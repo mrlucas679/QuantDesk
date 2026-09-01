@@ -1,7 +1,7 @@
 """Selection-free ensembles, and the multiple-testing correction that was only claimed."""
 import numpy as np
-import pytest
 import pandas as pd
+import pytest
 
 from quantdesk_research.evaluation.deflated_sharpe import calculate_deflated_sharpe_ratio
 from quantdesk_research.experiments.equity_portfolio_strategies import (

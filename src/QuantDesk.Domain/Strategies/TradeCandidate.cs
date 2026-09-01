@@ -44,6 +44,18 @@ public readonly record struct CostEstimate(
     Usd Slippage,
     Usd AdverseSelection)
 {
-    public Usd Total => EntrySpreadCost + ExitSpreadCost + Fees + Slippage + AdverseSelection;
+    /// <summary>
+    /// Cost that was measured on real round trips but that the modelled components do not explain.
+    ///
+    /// This is deliberately not folded into <see cref="Fees"/> or <see cref="Slippage"/>. Measured
+    /// implementation shortfall arrives as a single number and does not decompose, so attributing
+    /// the remainder to either one would claim a breakdown the measurement cannot support. Keeping
+    /// it separate says exactly what is known: this much was charged, and the model does not
+    /// account for it.
+    /// </summary>
+    public Usd MeasuredExcess { get; init; } = Usd.Zero;
+
+    public Usd Total =>
+        EntrySpreadCost + ExitSpreadCost + Fees + Slippage + AdverseSelection + MeasuredExcess;
 }
 

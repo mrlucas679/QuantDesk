@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import NormalDist
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 
+from quantdesk_research.backtest.realised_costs import resolve_round_trip_bps
 from quantdesk_research.data.manifest_keys import require_manifest_value
 from quantdesk_research.experiments.prospective_campaign import (
     IndependentValidationCampaign,
@@ -281,13 +283,24 @@ def main() -> int:
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--manifest-name", default="latest-manifest.json")
     parser.add_argument("--horizon-bars", type=int, default=12)
-    parser.add_argument("--round-trip-cost-bps", type=float, default=60.0)
+    parser.add_argument(
+        "--round-trip-cost-bps",
+        type=float,
+        default=None,
+        help="Override the measured round-trip cost; otherwise read from the published dataset.",
+    )
     arguments = parser.parse_args()
+
+    cost_bps, provenance = resolve_round_trip_bps(
+        arguments.data_root, arguments.round_trip_cost_bps
+    )
+    print(f"round-trip cost: {provenance}", file=sys.stderr)
+
     results = run_campaign(
         arguments.data_root,
         arguments.manifest_name,
         arguments.horizon_bars,
-        arguments.round_trip_cost_bps,
+        cost_bps,
     )
     print(json.dumps([asdict(result) for result in results], sort_keys=True))
     return 0 if any(result.passed for result in results) else 1

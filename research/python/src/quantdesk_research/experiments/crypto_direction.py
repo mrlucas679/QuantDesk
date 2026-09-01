@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ import pandas as pd  # type: ignore[import-untyped]  # pandas-stubs is not insta
 from numpy.typing import NDArray
 
 from quantdesk_research.backtest.equity_costs import CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED
+from quantdesk_research.backtest.realised_costs import resolve_round_trip_bps
 from quantdesk_research.contracts.feature_schema import FeatureSchema
 from quantdesk_research.contracts.forecast import Forecast
 from quantdesk_research.contracts.model_artifact import (
@@ -805,14 +807,30 @@ def publish_validated_directional_forecast(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, default=Path("data"))
-    parser.add_argument("--round-trip-cost-bps", type=float, default=60.0)
+    parser.add_argument(
+        "--round-trip-cost-bps",
+        type=float,
+        default=None,
+        help=(
+            "Override the measured round-trip cost. Without this the cost is read from the "
+            "published realised-cost dataset; there is deliberately no default, because a "
+            "plausible-looking constant is how an assumed 60 bps outlived a measured 68."
+        ),
+    )
     parser.add_argument("--horizon-bars", type=int, default=12)
     parser.add_argument("--manifest-name", default="latest-manifest.json")
     parser.add_argument("--experiment-name", default="crypto-direction")
     arguments = parser.parse_args()
+
+    # Resolved here rather than defaulted in the parser, so the run reports which of the two it got.
+    cost_bps, provenance = resolve_round_trip_bps(
+        arguments.data_root, arguments.round_trip_cost_bps
+    )
+    print(f"round-trip cost: {provenance}", file=sys.stderr)
+
     result = run_experiment(
         arguments.data_root,
-        arguments.round_trip_cost_bps,
+        cost_bps,
         arguments.horizon_bars,
         arguments.manifest_name,
         arguments.experiment_name,

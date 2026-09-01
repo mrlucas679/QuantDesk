@@ -1,3 +1,4 @@
+using System.Globalization;
 using QuantDesk.Alpaca.Capabilities;
 using QuantDesk.Alpaca.Configuration;
 using QuantDesk.Alpaca.Mapping;
@@ -5,6 +6,7 @@ using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Alpaca.Trading;
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Api.Security;
+using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
@@ -339,6 +341,30 @@ app.MapGet("/api/diagnostics/{experimentId}", (
         return Results.Unauthorized();
     DiagnosticExecutionRecord? record = store.Find(experimentId);
     return record is null ? Results.NotFound() : Results.Ok(record);
+});
+app.MapGet("/api/costs/realised", (
+    HttpRequest request,
+    DiagnosticExecutionStore store,
+    OperatorKeyAuthorizer authorizer) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+
+    // Derived on read rather than cached. The dataset is only ever as good as the trips behind it,
+    // and a cached copy would keep answering after new evidence had arrived.
+    RealisedCostContract? contract = RealisedCostEstimator.Estimate(
+        store.ListCompleted(),
+        datasetId: "alpaca-paper-realised-cost",
+        datasetVersion: DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture),
+        assetClass: "crypto",
+        venue: "alpaca");
+
+    // 404 rather than an empty dataset or a zero. Too few completed round trips is not a cost of
+    // zero; it is the absence of a measurement, and the caller has to be able to tell the
+    // difference before deciding whether to trade on it.
+    return contract is null
+        ? Results.NotFound(new { reason = "InsufficientCompletedRoundTrips" })
+        : Results.Ok(contract);
 });
 app.MapPost("/api/diagnostics/{experimentId}/start", async (
     HttpRequest request,
