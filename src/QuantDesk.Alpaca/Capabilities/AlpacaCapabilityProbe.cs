@@ -20,9 +20,13 @@ public sealed class AlpacaCapabilityProbe(
 
         if (!response.IsSuccessStatusCode)
         {
-            return Unavailable(
-                $"Alpaca account probe returned HTTP {(int)response.StatusCode}.",
-                requestId);
+            // A rejected credential and a malformed one look identical from the status alone, and the
+            // difference decides whether to regenerate a key or go looking at account permissions.
+            string problem = $"Alpaca account probe returned HTTP {(int)response.StatusCode}.";
+            if (AlpacaCredentialShape.DescribeSuspectCredentials(options.KeyId, options.SecretKey)
+                is string suspect)
+                problem = $"{problem} {suspect}";
+            return Unavailable(problem, requestId);
         }
 
         AlpacaAccount? account = await response.Content.ReadFromJsonAsync<AlpacaAccount>(

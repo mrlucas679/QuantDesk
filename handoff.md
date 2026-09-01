@@ -1342,6 +1342,14 @@ unauthorized`, with the three dependent stages `Skipped`. That is the intended s
 contact: one run, the venue's own answer, and no guessing about which stage failed. Earlier notes in
 this file saying nothing here has ever contacted Alpaca are superseded — read-only, no order placed.
 
+**Credential-shape diagnosis.** A malformed key and a revoked key both come back `401 unauthorized`,
+and the difference decides whether to regenerate a key or go looking at account permissions. The first
+real credentials tried in this repository were an Alpaca *account number* pasted into the key-ID field
+— which Alpaca's dashboard shows a few centimetres from the API key. `AlpacaCredentialShape` now adds
+a sentence naming that when the venue refuses. It is advisory and runs only after a refusal: Alpaca can
+change key formats at will, and a shape rule that *blocked* a request would eventually reject working
+credentials, which is a far worse failure than the opaque one it fixes.
+
 **Still unknown, and only credentials will settle it:** whether the account's option data feed is
 entitled at all, whether real spreads are tight enough to clear the cost floor, and whether strike
 coverage supports the vertical widths the compiler wants.
