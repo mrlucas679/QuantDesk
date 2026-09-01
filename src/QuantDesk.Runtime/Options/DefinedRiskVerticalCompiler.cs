@@ -32,6 +32,21 @@ public sealed record VerticalCompilation(
     decimal Breakeven)
 {
     public bool Admitted => Candidate is not null && Rejection == VerticalRejection.None;
+
+    /// <summary>
+    /// Expected payoff at the forecast price, less the debit and the round-trip execution charge.
+    ///
+    /// Already computed to decide admission; kept so that admissible spreads can be ranked against
+    /// each other instead of the first one found being taken.
+    /// </summary>
+    public decimal NetExpectedValue { get; init; }
+
+    /// <summary>
+    /// The wider of the two legs' quoted spreads, as a fraction of mid. Reported because it is the
+    /// dominant execution cost on a real chain: SPY near-the-money spreads measured 0.61% at the
+    /// tightest against a 3.93% median on 2026-09-01, and a vertical crosses both legs both ways.
+    /// </summary>
+    public double WidestLegRelativeSpread { get; init; }
 }
 
 /// <summary>
@@ -106,7 +121,6 @@ public sealed class DefinedRiskVerticalCompiler(
                     VerticalCompilation attempt = TryPair(
                         candidateId, strikes[lower], strikes[upper], bullish, targetPrice,
                         quotes, costBps, managementPlan);
-                    if (attempt.Admitted) return attempt;
                     best = Prefer(best, attempt);
                 }
             }
@@ -165,7 +179,8 @@ public sealed class DefinedRiskVerticalCompiler(
             : Math.Clamp(upper.Strike - targetPrice, 0m, upper.Strike - lower.Strike);
         decimal expectedPayoff = intrinsicAtTarget * multiplier;
         decimal costCharge = maxLoss.Value * costBps / 10_000m;
-        if (expectedPayoff - maxLoss.Value - costCharge <= 0)
+        decimal netExpectedValue = expectedPayoff - maxLoss.Value - costCharge;
+        if (netExpectedValue <= 0)
             return Rejected(VerticalRejection.ExpectedValueBelowCosts, maxLoss, maxProfit, netDebitPerShare, breakeven);
 
         var candidate = new MultiLegOptionCandidate(
@@ -180,7 +195,11 @@ public sealed class DefinedRiskVerticalCompiler(
             managementPlan with { MaximumAdverseLoss = maxLoss });
 
         return new VerticalCompilation(
-            candidate, VerticalRejection.None, maxLoss, maxProfit, netDebitPerShare, breakeven);
+            candidate, VerticalRejection.None, maxLoss, maxProfit, netDebitPerShare, breakeven)
+        {
+            NetExpectedValue = netExpectedValue,
+            WidestLegRelativeSpread = Math.Max(longQuote.RelativeSpread, shortQuote.RelativeSpread)
+        };
     }
 
     private bool IsWithinExpiryWindow(DateOnly expiration, DateOnly asOf)
@@ -195,8 +214,28 @@ public sealed class DefinedRiskVerticalCompiler(
         quote.Bid >= 0 && quote.Ask > 0 && quote.Bid <= quote.Ask;
 
     /// <summary>Keeps the most informative rejection so the caller learns the real obstacle.</summary>
-    private static VerticalCompilation Prefer(VerticalCompilation current, VerticalCompilation attempt) =>
-        attempt.Rejection > current.Rejection ? attempt : current;
+    /// <summary>
+    /// Ranks one compilation against another.
+    ///
+    /// Between two admissible spreads, the one with more expected value after costs wins. The search
+    /// used to return the *first* admissible pair in ascending strike order, which is an arbitrary
+    /// choice dressed as a decision: on a measured SPY chain the tightest near-the-money spread was
+    /// 0.61% against a 3.93% median, and a vertical crosses both legs in both directions — so taking
+    /// the first admissible pair rather than the best one can pay several times the necessary
+    /// execution cost while reporting nothing unusual.
+    ///
+    /// Between two refusals the later-stage rejection wins, because a spread refused for
+    /// <see cref="VerticalRejection.RewardToRiskTooLow"/> got further than one refused for
+    /// <see cref="VerticalRejection.QuoteUnhealthy"/> and says more about why nothing qualified.
+    /// </summary>
+    private static VerticalCompilation Prefer(VerticalCompilation current, VerticalCompilation attempt)
+    {
+        if (attempt.Admitted && current.Admitted)
+            return attempt.NetExpectedValue > current.NetExpectedValue ? attempt : current;
+        if (attempt.Admitted) return attempt;
+        if (current.Admitted) return current;
+        return attempt.Rejection > current.Rejection ? attempt : current;
+    }
 
     private static VerticalCompilation Rejected(
         VerticalRejection rejection,

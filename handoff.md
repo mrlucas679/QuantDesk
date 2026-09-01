@@ -1350,6 +1350,32 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### The compiler took the first admissible spread, not the best — 2026-09-01
+
+Following the spread measurement above. The compiler does gate on quoted spread
+(`VerticalRejection.SpreadTooWide`) and searches strike pairs exhaustively, so the width filter was
+never the gap. The gap was the selection:
+
+```csharp
+if (attempt.Admitted) return attempt;   // first admissible pair, in ascending strike order
+```
+
+Every quantity needed to choose well — expected payoff at the forecast price, the debit, and the
+round-trip cost charge — was already computed to decide admission, then discarded. On a chain where two
+verticals both qualify, the first in strike order was taken regardless of which was cheaper to enter.
+With a measured 0.61% tightest against a 3.93% median spread, and a vertical crossing both legs in both
+directions, that can pay several times the necessary execution cost while reporting nothing unusual.
+
+`Prefer` now ranks admissible spreads by net expected value after costs, and `VerticalCompilation`
+carries `NetExpectedValue` and `WidestLegRelativeSpread` so the choice is auditable. Refusals still rank
+by how far they got, so the reported rejection remains the most informative one.
+
+Verified by mutation: reverting to first-wins makes the compiler take a 3.20 debit where the ranked
+version takes 2.20 — identical payoff at the forecast price, $100 less capital at risk. The first
+attempt at this test did *not* catch the mutation, because the fixture's earlier pair failed
+reward-to-risk and so only one spread was ever admissible; the fixture was rebuilt so two genuinely
+compete.
+
 ### Live option spreads, measured during the session — 2026-09-01 17:40Z
 
 The last unknown before an options trade, answered with real quotes on SPY (mid 761.91), 40

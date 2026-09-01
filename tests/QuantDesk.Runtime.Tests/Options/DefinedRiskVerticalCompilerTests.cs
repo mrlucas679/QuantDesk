@@ -189,4 +189,63 @@ public sealed class DefinedRiskVerticalCompilerTests
     private static OptionQuoteSnapshot Quote(
         int slot, double bid, double ask, double relativeSpread = 0.02) =>
         new(slot, bid, ask, (bid + ask) / 2, relativeSpread, 1_000, DataQuality.Healthy);
+
+    [Fact]
+    public void AmongAdmissibleSpreadsTheOneWithMoreExpectedValueWins()
+    {
+        // Two admissible verticals in one chain. The 600/605 pair comes first in strike order but
+        // pays a wider spread; the 605/610 pair is cheaper to get into for the same forecast. Taking
+        // the first admissible pair rather than the best one is an arbitrary choice dressed as a
+        // decision, and on a real chain it costs several times the necessary execution cost.
+        // Both 600/605 and 605/610 clear every gate, and 600/605 is reached first in strike order.
+        //   600/605: pay 8.20, receive 5.00 -> debit 3.20, max loss 320, payoff at target 500
+        //   605/610: pay 5.20, receive 3.00 -> debit 2.20, max loss 220, payoff at target 500
+        // Same payoff, smaller outlay, so the second is worth ~$100 more after costs. Returning the
+        // first admissible pair would take the more expensive one and report nothing unusual.
+        OptionContractDefinition[] chain =
+            [Contract(600, OptionRight.Call), Contract(605, OptionRight.Call), Contract(610, OptionRight.Call)];
+        var quotes = new Dictionary<int, OptionQuoteSnapshot>
+        {
+            [Slot(600)] = Quote(Slot(600), 8.00, 8.20),
+            [Slot(605)] = Quote(Slot(605), 5.00, 5.20),
+            [Slot(610)] = Quote(Slot(610), 3.00, 3.20)
+        };
+
+        VerticalCompilation result = Compiler().Compile(
+            42, Underlying, expectedReturnBps: 300, chain, quotes, Today, 30m, Plan());
+
+        Assert.True(result.Admitted);
+        Assert.Equal(2.20m, result.NetDebitPerSpread);
+        Assert.Equal(220m, result.DefinedMaximumLoss.Value);
+        Assert.True(
+            result.NetExpectedValue > 270m,
+            $"expected the cheaper spread's net value, got {result.NetExpectedValue}");
+    }
+
+    [Fact]
+    public void TheChosenSpreadReportsItsWidestLegSpread()
+    {
+        VerticalCompilation result = Compiler().Compile(
+            42, Underlying, 200, Chain(), Quotes(), Today, 30m, Plan());
+
+        Assert.True(result.Admitted);
+        Assert.Equal(0.02, result.WidestLegRelativeSpread, 6);
+    }
+
+    [Fact]
+    public void AWideLegIsStillRefusedRatherThanRankedLast()
+    {
+        // Ranking must not become a way in for a spread the width gate would have refused.
+        var quotes = new Dictionary<int, OptionQuoteSnapshot>
+        {
+            [Slot(600)] = Quote(Slot(600), 8.0, 8.2, relativeSpread: 0.50),
+            [Slot(605)] = Quote(Slot(605), 5.0, 5.2, relativeSpread: 0.50)
+        };
+
+        VerticalCompilation result = Compiler().Compile(
+            42, Underlying, 200, Chain(), quotes, Today, 30m, Plan());
+
+        Assert.False(result.Admitted);
+        Assert.Equal(VerticalRejection.SpreadTooWide, result.Rejection);
+    }
 }
