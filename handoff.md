@@ -1350,6 +1350,55 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Every model run, and what they actually say — 2026-09-01
+
+All fourteen families were run on the committed SIP daily ETF panel (1,965 sessions), covering the four
+highest-evidence types in the reference corpus: cross-sectional momentum, time-series trend,
+volatility-scaled trend, and defensive low-volatility.
+
+**Discovery ranked exactly as the literature predicts.** `vol-scaled-trend-126d` first at 4.773 net
+bps/day, Sharpe 0.604 — time-series momentum with volatility scaling, which is Moskowitz/Ooi/Pedersen
+combined with Moreira/Muir. Four families passed every gate.
+
+**Validation reversed it.** Out of sample, *every* trend family loses to buy-and-hold equal weight:
+
+| family | net bps/d | Sharpe | verdict |
+| --- | --- | --- | --- |
+| **equal-weight-benchmark** | **8.948** | **1.389** | the thing to beat |
+| defensive-low-vol-63d | 8.861 | 1.431 | passes on Sharpe alone, not on return |
+| ts-trend-63d | 7.133 | 1.309 | loses to benchmark |
+| vol-scaled-trend-126d | 5.514 | 1.116 | loses to benchmark |
+| every cross-sectional family | ≤ 2.5 | — | fails multiple gates |
+
+**PBO = 0.500 on validation — the coin-flip maximum.** The families that topped discovery are not the
+ones that do best out of sample, which is the signature of selection noise rather than edge. This is
+precisely the failure Harvey/Liu/Zhu and Hou/Xue/Zhang describe.
+
+**The decisive number is turnover, once cost is measured rather than assumed.** What round-trip cost
+does each family's out-of-sample edge survive?
+
+| family | turnover/day | breakeven cost |
+| --- | --- | --- |
+| equal-weight-benchmark | 0.002 | **4,479 bps** |
+| defensive-low-vol-63d | 0.004 | 2,220 bps |
+| vol-scaled-trend-126d | 0.011 | 506 bps |
+| ts-trend-63d | 0.038 | 193 bps |
+| xs-momentum-63d | 0.059 | 48 bps |
+| xs-reversal-3d | 0.372 | **7 bps** |
+
+The measured venue cost is **80 bps per round trip**. Everything from `xs-momentum-63d` down is dead on
+arrival — its edge cannot pay the toll. The families that survive are the ones that barely trade.
+
+**So "use the models to stop losing money" has an answer, and it is not the one it looks like.** The
+models are running, they are the right families, and their verdict is that the best risk-adjusted
+allocation available in this data is a near-zero-turnover hold — 22.55% annualised at Sharpe 1.389 with
+turnover of 0.002/day. Every attempt to trade around it underperforms it out of sample, and at 80 bps a
+round trip the high-turnover families are not close.
+
+The diagnostic lane loses money because it trades ~1.0 turnover every two minutes for no signal at all.
+It has now proven the execution path four times over; continuing to run it is paying 80 bps a cycle for
+information already obtained.
+
 ### Research families re-examined against the measured 68 bps floor — 2026-09-01
 
 | family | charges | validated against a real fill | verdict |
