@@ -1350,6 +1350,46 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Autonomous lane experimental — 2026-09-02
+
+<a id="autonomous-lane-experimental-2026-09-02"></a>
+
+The autonomous lane is enabled in `ExperimentalPaper` mode on BTC/USD spot, $200 per opportunity,
+1-hour maximum hold, 60-second cycle. This is the mode the application provides for exercising the
+lane without a qualified artifact; it bypasses the verified-forecast requirement and **never implies
+strategy qualification**. `ValidatedPaper` — the mode that does imply it — remains unreachable, because
+no artifact qualifies and the deflated Sharpe says none is close.
+
+**The lane refused to start until the experiment was registered.** It threw on boot and restart-looped
+until `QUANTDESK_EXPERIMENT_ID`, `HYPOTHESIS_ID`, `STRATEGY_VERSION`, `EVIDENCE_REFERENCE`,
+`EXPERIMENT_REGISTERED_AT` and both sanity attestations were supplied and `IsValidFor` passed. That is
+a good gate: it makes running an experiment require saying what the experiment *is*.
+
+The two attestations are signed on work done in this session, not assumed:
+
+* **`LEAKAGE_SANITY_PASSED`** — the research plane was audited on 2026-09-01. `shift(1)` is applied
+  once in `build_weights`, so every weight uses closes through *t−1* only; the loader refuses anything
+  but SIP bars with `adjustment=all`; cost is charged on realised turnover with Newey-West errors.
+* **`REPLAY_SANITY_PASSED`** — the API container was killed outright with a live position open. The
+  durable record was recovered, the position closed, and reconciliation returned `Flat`. Repeated
+  across 60+ round trips with zero reconciliation failures.
+
+The hypothesis id is `QD-AUTONOMOUS-LANE-EXECUTION-001` deliberately: what is under test is the lane,
+not an alpha claim. Naming it after a strategy would misrepresent what this mode is.
+
+**First cycle:** cleared every gate and reached the decision, then `abstained` with reason
+`MOMENTUM_NOT_ALIGNED` — live evidence evaluated, no signal, no order. Runtime `Ready`, reason
+`broker_preflight_reconciled`.
+
+Symbol is BTC/USD rather than the configured SPY because US equity regular hours had closed two hours
+earlier and the lane would have abstained on stale evidence. Notional cut from $500 to $200: at the
+measured 80 bps round trip that is about $1.60 a cycle rather than $4.
+
+**What is still guarding, with the forecast gate bypassed:** asset-class routing and permission,
+live capability probe, broker exposure attribution, the decision pipeline, the two economic-viability
+floors, risk limits derived from order notional, reservation before POST, deterministic client order
+ids, ambiguous-submit recovery by lookup, restart recovery, automatic exit, and final reconciliation.
+
 ### Two model-plane improvements, and the number that ends the argument — 2026-09-01
 
 **Improvement 1 — stop selecting, start combining.** The campaign ranked fourteen families and took
