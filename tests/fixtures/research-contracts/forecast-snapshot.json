@@ -14,5 +14,11 @@
   "prediction_interval": null,
   "reason_code": null,
   "status": "Valid",
-  "support_domain_status": "InDomain"
+  "support_domain_status": "InDomain",
+  "uncertainty": {
+    "historical_net_edge_bps": 12.5,
+    "historical_net_edge_standard_error_bps": 3.1,
+    "historical_observations": 412,
+    "standard_error_bps": 8.0
+  }
 }

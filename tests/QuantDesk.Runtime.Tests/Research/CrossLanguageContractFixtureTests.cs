@@ -94,6 +94,43 @@ public sealed class CrossLanguageContractFixtureTests
             () => PythonResearchContractReader.ValidateForecast(artifact, schema, forecast));
     }
 
+    [Fact]
+    public void ThePublishedForecastCarriesItsOwnUncertaintyAcrossTheLanguageBoundary()
+    {
+        // The channel existed on the wire as an untyped, always-null "prediction_interval", and the
+        // C# reader dropped it along with "confidence". So the one number that could have said how
+        // wrong a forecast might be was neither published nor read, and a point estimate was traded
+        // as though it were exact.
+        ForecastSnapshotContract forecast = PythonResearchContractReader.ReadForecast(
+            Read("forecast-snapshot.json"));
+
+        Assert.NotNull(forecast.Uncertainty);
+        Assert.Equal(8.0, forecast.Uncertainty.StandardErrorBps);
+        Assert.Equal(12.5, forecast.Uncertainty.HistoricalNetEdgeBps);
+        Assert.Equal(412, forecast.Uncertainty.HistoricalObservations);
+    }
+
+    [Fact]
+    public void AForecastWithoutAnUncertaintyBlockStillReadsButSaysNothingAboutItsError()
+    {
+        // Backward compatible on the wire, and refused at the gate. Reading is not the same as
+        // trusting: an older publisher can still be parsed, and the assessment declines to trade it.
+        string withoutUncertainty = Read("forecast-snapshot.json")
+            .Replace("\"uncertainty\"", "\"unused_uncertainty\"", StringComparison.Ordinal);
+
+        Assert.Null(PythonResearchContractReader.ReadForecast(withoutUncertainty).Uncertainty);
+    }
+
+    [Fact]
+    public void AMalformedUncertaintyBlockIsAnErrorRatherThanASilentNull()
+    {
+        // Degrading a broken block to "unstated" would let a publishing bug quietly reopen the gap.
+        string broken = Read("forecast-snapshot.json")
+            .Replace("\"standard_error_bps\": 8.0", "\"standard_error_bps\": \"eight\"", StringComparison.Ordinal);
+
+        Assert.Throws<InvalidDataException>(() => PythonResearchContractReader.ReadForecast(broken));
+    }
+
     private static string Read(string name) => File.ReadAllText(Path.Combine(FixtureRoot, name));
 
     /// <summary>Walks up from the test binary to the repository root.</summary>

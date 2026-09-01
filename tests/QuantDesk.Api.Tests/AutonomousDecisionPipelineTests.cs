@@ -1,6 +1,7 @@
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Domain.Capabilities;
+using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Portfolio;
 using QuantDesk.Domain.Risk;
@@ -93,6 +94,76 @@ public sealed class AutonomousDecisionPipelineTests
         // what keeps the absence of an answer from reading as a yes.
         Assert.Throws<ArgumentNullException>(() => CreatePipeline().Evaluate(
             0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, null!));
+    }
+
+    [Fact]
+    public void AVerifiedForecastWithoutAStatedErrorBarIsRefusedOnceACostBoundExists()
+    {
+        // The point forecast used to flow straight into the net-edge comparison as though it were a
+        // fact. Once a measured cost bound is available the fuller test applies, and a forecast that
+        // never stated how wrong it could be cannot pass it -- silence is not a claim of precision.
+        AutonomousPipelineDecision result = CreatePipeline().Evaluate(
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            verifiedForecastBps: 400d,
+            verifiedStrategyFamily: null,
+            verifiedStrategyDefinition: null,
+            forecastUncertainty: null,
+            allInCostUpperBoundBps: 70d);
+
+        Assert.False(result.Approved);
+        Assert.Equal("ForecastUncertaintyNotPublished", result.Reason);
+    }
+
+    [Fact]
+    public void ALargeSignalFromAFamilyWithNoDemonstratedEdgeIsRefused()
+    {
+        AutonomousPipelineDecision result = CreatePipeline().Evaluate(
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            verifiedForecastBps: 400d,
+            verifiedStrategyFamily: null,
+            verifiedStrategyDefinition: null,
+            forecastUncertainty: new ForecastUncertaintyContract(
+                StandardErrorBps: 5d,
+                HistoricalNetEdgeBps: -3d,
+                HistoricalNetEdgeStandardErrorBps: 1d,
+                HistoricalObservations: 400),
+            allInCostUpperBoundBps: 70d);
+
+        Assert.False(result.Approved);
+        Assert.Equal("NoDemonstratedHistoricalEdge", result.Reason);
+    }
+
+    [Fact]
+    public void ANoisySignalIsRefusedEvenThoughItsPointEstimateClearsCost()
+    {
+        // 100 bps against a 70 bps cost passes a point comparison. At a standard error of 60 the
+        // lower bound is about +1 bps, and the trade is a coin flip wearing a forecast.
+        AutonomousPipelineDecision result = CreatePipeline().Evaluate(
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            verifiedForecastBps: 100d,
+            verifiedStrategyFamily: null,
+            verifiedStrategyDefinition: null,
+            forecastUncertainty: new ForecastUncertaintyContract(60d, 40d, 5d, 400),
+            allInCostUpperBoundBps: 70d);
+
+        Assert.False(result.Approved);
+        Assert.Equal("SignalBelowCostAtLowerBound", result.Reason);
+    }
+
+    [Fact]
+    public void WithoutAMeasuredCostBoundTheOlderComparisonStillGoverns()
+    {
+        // An unmeasured cost is not a licence to assume one, and it is also not a reason to stop
+        // trading entirely -- the gate falls back rather than failing closed on absent measurement.
+        AutonomousPipelineDecision result = CreatePipeline().Evaluate(
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            verifiedForecastBps: 400d,
+            verifiedStrategyFamily: null,
+            verifiedStrategyDefinition: null,
+            forecastUncertainty: null,
+            allInCostUpperBoundBps: null);
+
+        Assert.NotEqual("ForecastUncertaintyNotPublished", result.Reason);
     }
 
     private static readonly AccountCapabilities CryptoEnabled = new(

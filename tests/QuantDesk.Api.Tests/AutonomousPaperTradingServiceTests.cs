@@ -38,6 +38,8 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         Path.GetTempPath(), $"qd-auto-{Guid.NewGuid():N}.json");
     private readonly string _spotStorePath = Path.Combine(
         Path.GetTempPath(), $"qd-auto-spot-{Guid.NewGuid():N}.json");
+    private readonly string _diagnosticStorePath = Path.Combine(
+        Path.GetTempPath(), $"qd-auto-diag-{Guid.NewGuid():N}.json");
 
     [Fact]
     public async Task AnUnroutableSymbolAbstainsAndNeverContactsTheBroker()
@@ -251,6 +253,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
 
         var service = new AutonomousPaperTradingService(
             broker, resolver,
+            new DiagnosticExecutionStore(_diagnosticStorePath),
             new StubEvidenceProvider(evidence ?? Evidence(100m, 100.01m, 100m, 104m)),
             attributor,
             new OpportunityRouter(), coordinator, spotLifecycle,

@@ -10,6 +10,7 @@ using QuantDesk.Domain.Portfolio;
 using QuantDesk.Domain.Runtime;
 using QuantDesk.Domain.Strategies;
 using QuantDesk.Domain.Trading;
+using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Modes;
 using QuantDesk.Runtime.Portfolio;
@@ -25,6 +26,7 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
+    DiagnosticExecutionStore diagnosticStore,
     IMarketEvidenceProvider evidenceProvider,
     BrokerExposureAttributor attributor,
     OpportunityRouter router,
@@ -188,7 +190,12 @@ public sealed class AutonomousPaperTradingService(
             slot, evidence, initial, true, true, capabilities,
             experimental ? null : (double)forecast!.PointForecast,
             experimental ? null : research.StrategyFamily,
-            experimental ? null : research.StrategyDefinition);
+            experimental ? null : research.StrategyDefinition,
+            // The forecast's own error bar and the measured cost bound. Gross enters the comparison
+            // at its lower bound and cost at its upper, so neither estimate's error argues for the
+            // trade. Experimental mode has no verified forecast and no bound to apply.
+            experimental ? null : forecast!.Uncertainty,
+            experimental ? null : MeasuredCostUpperBoundBps());
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {
@@ -414,6 +421,30 @@ public sealed class AutonomousPaperTradingService(
             !string.Equals(account.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Paper account is unavailable for autonomous execution.");
         return account;
+    }
+
+    /// <summary>
+    /// What a round trip of this size has actually cost, at its upper confidence bound.
+    ///
+    /// Drawn from the diagnostic lane's records, which is where the ground truth lives: they carry
+    /// account equity before and after each trip, and the venue's separate USD cash charge appears
+    /// in nothing else. The autonomous lane's own spot records deliberately cannot contribute --
+    /// they hold fills but no equity readings, so a cost derived from them would be systematically
+    /// low, which is the error this whole measurement exists to correct.
+    ///
+    /// Null when nothing has been measured at this size. That is passed through as null rather than
+    /// replaced by a modelled figure, because an unmeasured cost is not a licence to assume one.
+    /// </summary>
+    private double? MeasuredCostUpperBoundBps()
+    {
+        RealisedCostContract? costs = RealisedCostEstimator.Estimate(
+            diagnosticStore.ListCompleted(),
+            datasetId: "alpaca-paper-realised-cost",
+            datasetVersion: "live",
+            assetClass: "crypto",
+            venue: "alpaca");
+
+        return costs?.UpperConfidenceCostBpsFor(options.OrderNotional) is { } bps ? (double)bps : null;
     }
 
     private static PortfolioSnapshot EmptyPortfolio(BrokerAccountSnapshot account) => new(

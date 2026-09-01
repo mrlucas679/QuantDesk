@@ -124,8 +124,50 @@ public static class PythonResearchContractReader
             RequirePropertyString(root, "feature_schema_hash"),
             RequirePropertyString(root, "artifact_hash"),
             status,
-            reason);
+            reason)
+        {
+            Uncertainty = ReadUncertainty(root),
+        };
         return contract.IsValid() ? contract : throw new InvalidDataException("Forecast contract is invalid.");
+    }
+
+    /// <summary>
+    /// Reads the uncertainty block, or null when the publisher did not emit one.
+    ///
+    /// A malformed block is an error rather than a null. Silently degrading bad uncertainty to
+    /// "unstated" would let a publishing bug quietly reopen the gap this field exists to close.
+    /// </summary>
+    private static ForecastUncertaintyContract? ReadUncertainty(JsonElement root)
+    {
+        if (!root.TryGetProperty("uncertainty", out JsonElement element)) return null;
+        if (element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
+        if (element.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Forecast uncertainty must be an object.");
+
+        var uncertainty = new ForecastUncertaintyContract(
+            RequireDouble(element, "standard_error_bps"),
+            RequireDouble(element, "historical_net_edge_bps"),
+            RequireDouble(element, "historical_net_edge_standard_error_bps"),
+            RequirePositiveInt(element, "historical_observations"));
+
+        return uncertainty.IsValid()
+            ? uncertainty
+            : throw new InvalidDataException("Forecast uncertainty block is invalid.");
+    }
+
+    private static double RequireDouble(JsonElement element, string name)
+    {
+        // The kind is checked before the value is read. TryGetDouble throws rather than returning
+        // false when the element is not a number, and letting that escape would surface a JSON
+        // library exception where the caller is catching a contract error.
+        if (!element.TryGetProperty(name, out JsonElement value)
+            || value.ValueKind != JsonValueKind.Number
+            || !value.TryGetDouble(out double result))
+        {
+            throw new InvalidDataException($"Forecast uncertainty is missing a numeric '{name}'.");
+        }
+
+        return result;
     }
 
     public static void ValidateForecast(ModelArtifactContract artifact, FeatureSchemaContract schema, ForecastSnapshotContract forecast)

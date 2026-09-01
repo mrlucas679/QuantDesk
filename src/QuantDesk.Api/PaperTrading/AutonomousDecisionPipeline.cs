@@ -51,7 +51,9 @@ public sealed class AutonomousDecisionPipeline(
         AccountCapabilities capabilities,
         double? verifiedForecastBps = null,
         string? verifiedStrategyFamily = null,
-        StrategyDefinitionContract? verifiedStrategyDefinition = null)
+        StrategyDefinitionContract? verifiedStrategyDefinition = null,
+        ForecastUncertaintyContract? forecastUncertainty = null,
+        double? allInCostUpperBoundBps = null)
     {
         // Capabilities are required, not defaulted.
         //
@@ -80,6 +82,33 @@ public sealed class AutonomousDecisionPipeline(
         else if (!double.IsFinite(verifiedForecastBps.Value) || verifiedForecastBps.Value <= 0)
         {
             return Reject("VerifiedForecastNotPositive");
+        }
+        else if (allInCostUpperBoundBps is { } costBound)
+        {
+            // A point forecast was being compared against a modelled cost as though both were
+            // facts. Three different questions were riding on that one number: what the model says
+            // now, what the family has historically earned net of costs, and how wrong the current
+            // reading could be. Separating them means a large noisy reading from a family that has
+            // never made money is refused, which the point comparison could not do.
+            var edge = new ForecastEdge(
+                verifiedForecastBps.Value,
+                forecastUncertainty?.StandardErrorBps,
+                forecastUncertainty?.HistoricalNetEdgeBps,
+                forecastUncertainty?.HistoricalNetEdgeStandardErrorBps,
+                forecastUncertainty?.HistoricalObservations);
+
+            ForecastEdgeAssessment assessment = ForecastEdgeAssessment.Evaluate(edge, costBound);
+            if (!assessment.Tradable)
+            {
+                logger.LogInformation(
+                    "Verified forecast refused: reason={Reason}, signal={Signal}bps, " +
+                    "signalLowerBound={SignalBound}, historicalLowerBound={HistoricalBound}, " +
+                    "costUpperBound={Cost}bps.",
+                    assessment.Reason, verifiedForecastBps.Value,
+                    assessment.CurrentSignalLowerBoundBps, assessment.HistoricalNetEdgeLowerBoundBps,
+                    costBound);
+                return Reject(assessment.Reason);
+            }
         }
 
         long nowTicks = clock.MonotonicTimestamp;

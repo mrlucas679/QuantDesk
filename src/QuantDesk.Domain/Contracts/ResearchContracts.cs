@@ -139,6 +139,27 @@ public sealed record EvidenceProfileContract(
     public bool IsExecutionEligible() => TransferGrade is "A_Direct" or "B_Close";
 }
 
+/// <summary>
+/// What a published forecast says about its own reliability, and about the family behind it.
+///
+/// Three separate questions, kept separate on purpose. <see cref="StandardErrorBps"/> says how
+/// wrong today's reading could be. <see cref="HistoricalNetEdgeBps"/> says what the family actually
+/// earned after costs in research. Neither substitutes for the other, and a point forecast answers
+/// neither. See <see cref="QuantDesk.Domain.Forecasts.ForecastEdge"/> for what went wrong when one
+/// number was asked to serve all three.
+/// </summary>
+public sealed record ForecastUncertaintyContract(
+    double StandardErrorBps,
+    double HistoricalNetEdgeBps,
+    double HistoricalNetEdgeStandardErrorBps,
+    int HistoricalObservations)
+{
+    public bool IsValid() => double.IsFinite(StandardErrorBps) && StandardErrorBps >= 0
+        && double.IsFinite(HistoricalNetEdgeBps)
+        && double.IsFinite(HistoricalNetEdgeStandardErrorBps) && HistoricalNetEdgeStandardErrorBps >= 0
+        && HistoricalObservations > 0;
+}
+
 public sealed record ForecastSnapshotContract(
     string ExpertId,
     string ModelId,
@@ -153,6 +174,15 @@ public sealed record ForecastSnapshotContract(
     string Status,
     string? ReasonCode)
 {
+    /// <summary>
+    /// The forecast's own uncertainty and its family's demonstrated edge.
+    ///
+    /// Optional on the wire, and null is refused at the gate rather than read as certainty. A
+    /// publisher that omits this has not said the forecast is exact; it has said nothing, and
+    /// treating silence as zero error is exactly how a point estimate came to be traded as a fact.
+    /// </summary>
+    public ForecastUncertaintyContract? Uncertainty { get; init; }
+
     public bool IsValid() => !string.IsNullOrWhiteSpace(ExpertId)
         && !string.IsNullOrWhiteSpace(ModelId)
         && !string.IsNullOrWhiteSpace(ModelVersion)
@@ -162,7 +192,8 @@ public sealed record ForecastSnapshotContract(
         && !string.IsNullOrWhiteSpace(FeatureSchemaHash)
         && !string.IsNullOrWhiteSpace(ArtifactHash)
         && !string.IsNullOrWhiteSpace(Status)
-        && (string.Equals(Status, "valid", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(ReasonCode));
+        && (string.Equals(Status, "valid", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(ReasonCode))
+        && (Uncertainty is null || Uncertainty.IsValid());
 }
 
 public static class ResearchContractValidator
