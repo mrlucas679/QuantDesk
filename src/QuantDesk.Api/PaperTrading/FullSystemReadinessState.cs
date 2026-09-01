@@ -22,6 +22,23 @@ public sealed record FullSystemReadinessSnapshot(
     public bool InfrastructureExecutionReady => BrokerReconciled && PortfolioKnown && RiskReady &&
         ReservationReady && ExecutionReady && PaperEndpointVerified;
 
+    /// <summary>
+    /// Readiness for *closing* exposure. Everything <see cref="InfrastructureExecutionReady"/> requires
+    /// except <see cref="BrokerReconciled"/>.
+    ///
+    /// That exclusion is the whole point. <c>BrokerReconciled</c> means "the account is flat", so the
+    /// instant this system opens a position it stops being reconciled — and gating the exit path on it
+    /// made closing a position impossible for exactly as long as one was open. A live BTC/USD diagnostic
+    /// sat stranded on this: entry filled, the two-minute hold expired, and every exit attempt was then
+    /// refused as INFRASTRUCTURE_NOT_READY because the position it was trying to close existed.
+    ///
+    /// Requiring flatness is right when *adding* exposure and self-defeating when removing it. The same
+    /// asymmetry already governs one layer down, where exit admission deliberately skips the
+    /// buying-power check rather than strand a position over a funding shortfall.
+    /// </summary>
+    public bool ExitExecutionReady => PortfolioKnown && RiskReady && ReservationReady &&
+        ExecutionReady && PaperEndpointVerified;
+
     /// <summary>Research readiness adds candidate and model-plane evidence to infrastructure.</summary>
     public bool StrategyResearchReady => InfrastructureExecutionReady && FeaturesReady && ExpertsReady;
 

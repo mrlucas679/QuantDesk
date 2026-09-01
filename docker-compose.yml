@@ -94,50 +94,43 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # Credentials come from the .env file directly, not from ${...} interpolation.
+    #
+    # Interpolation reads the *shell* environment first and only falls back to .env, so a stale
+    # APCA_API_KEY_ID left in a user's environment silently overrides the file they just edited. That
+    # happened: the CLI (reading .env) authenticated while this container 401'd on a key/secret pair
+    # assembled from two different generations, and nothing in either place looked wrong.
+    #
+    # env_file loads the file into the container without consulting the shell at all, which makes .env
+    # the single source of truth for credentials and this class of confusion impossible.
+    env_file:
+      - .env
+    # Only values that must differ inside the container, or that .env does not define, are set here.
+    #
+    # Anything listed under `environment:` overrides `env_file`, so every `${VAR:-default}` entry
+    # silently replaced the operator's .env value with a shell value or a hardcoded default. That cost
+    # a working operator key (blank -> 401 on every operator endpoint) and, before it, a working
+    # Alpaca credential pair. Duplicating a .env key here does not add a default; it takes control away
+    # from the file the operator edits.
     environment:
-      APCA_API_BASE_URL: ${APCA_API_BASE_URL:?Set APCA_API_BASE_URL to the Alpaca paper endpoint}
-      APCA_API_KEY_ID: ${APCA_API_KEY_ID:?Set APCA_API_KEY_ID outside this file}
-      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:?Set APCA_API_SECRET_KEY outside this file}
       # Blank means operator-only endpoints fail closed; autonomous execution never uses this key.
-      QUANTDESK_OPERATOR_KEY: ${QUANTDESK_OPERATOR_KEY:-}
-      QUANTDESK_SYMBOLS: ${QUANTDESK_SYMBOLS:-SPY,BTC/USD}
-      QUANTDESK_MAX_PAPER_ORDER_NOTIONAL: ${QUANTDESK_MAX_PAPER_ORDER_NOTIONAL:-1000}
       # Alpaca rejected a $5 BTC/USD diagnostic below its $10 minimum on 2026-08-31.
-      QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL: ${QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL:-10}
       QUANTDESK_DIAGNOSTIC_STORE_PATH: /app/runtime-data/diagnostic-executions.json
       # Durable execution records for the multi-leg and spot lanes. Both live on the runtime-data
       # volume so recovery survives a container restart rather than only a process restart.
       QUANTDESK_MLEG_STORE_PATH: /app/runtime-data/mleg-executions.json
       QUANTDESK_SPOT_STORE_PATH: /app/runtime-data/spot-executions.json
-      QUANTDESK_AUTONOMOUS_ENABLED: ${QUANTDESK_AUTONOMOUS_ENABLED:-false}
-      QUANTDESK_AUTONOMOUS_MODE: ${QUANTDESK_AUTONOMOUS_MODE:-ExperimentalPaper}
-      QUANTDESK_EXPERIMENT_ID: ${QUANTDESK_EXPERIMENT_ID:-EXP-001}
-      QUANTDESK_HYPOTHESIS_ID: ${QUANTDESK_HYPOTHESIS_ID:-QD-CAUSAL-MOMENTUM-001}
-      QUANTDESK_STRATEGY_VERSION: ${QUANTDESK_STRATEGY_VERSION:-EXP-001-v1}
-      QUANTDESK_EVIDENCE_REFERENCE: ${QUANTDESK_EVIDENCE_REFERENCE:-research.md#iteration-3}
-      QUANTDESK_EXPERIMENT_REGISTERED_AT: ${QUANTDESK_EXPERIMENT_REGISTERED_AT:-2026-08-30T00:00:00Z}
-      QUANTDESK_LEAKAGE_SANITY_PASSED: ${QUANTDESK_LEAKAGE_SANITY_PASSED:-true}
-      QUANTDESK_REPLAY_SANITY_PASSED: ${QUANTDESK_REPLAY_SANITY_PASSED:-true}
       # No execution symbol is implicit. Disabled research services retain their own BTC/USD
       # dataset fallback, but enabling autonomy requires an explicit chosen symbol.
-      QUANTDESK_AUTONOMOUS_SYMBOL: ${QUANTDESK_AUTONOMOUS_SYMBOL:-}
       # Spot holds the instrument; DefinedRiskVertical expresses the view as a debit spread.
-      QUANTDESK_AUTONOMOUS_EXPRESSION: ${QUANTDESK_AUTONOMOUS_EXPRESSION:-Spot}
       # Also the hard cap on what one opportunity can lose. A vertical needs 500; at 20 every
       # spread is refused as uneconomic once per-contract fees are counted.
-      QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL: ${QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL:-500}
       # This is a long safety expiry, not an entry/exit timer. Thesis, regime, and loss rules manage exits.
-      QUANTDESK_AUTONOMOUS_MAX_HOLDING_HOURS: ${QUANTDESK_AUTONOMOUS_MAX_HOLDING_HOURS:-2}
-      QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS: ${QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS:-30}
-      QUANTDESK_AUTONOMOUS_CYCLE_INTERVAL_SECONDS: ${QUANTDESK_AUTONOMOUS_CYCLE_INTERVAL_SECONDS:-60}
       QUANTDESK_RESEARCH_BASE_URL: http://quantdesk-research:8000
       QUANTDESK_RESEARCH_DATA_ROOT: /app/research-data
       QUANTDESK_RESEARCH_ARTIFACT_ROOT: /app/research-artifacts
       QUANTDESK_RESEARCH_LOOKBACK_DAYS: ${QUANTDESK_RESEARCH_LOOKBACK_DAYS:-180}
-      QUANTDESK_EQUITY_LOOKBACK_DAYS: ${QUANTDESK_EQUITY_LOOKBACK_DAYS:-730}
-      QUANTDESK_EQUITY_RESEARCH_SYMBOLS: ${QUANTDESK_EQUITY_RESEARCH_SYMBOLS:-SPY,QQQ,IWM,DIA}
       # Research requires SIP and rejects anything else; IEX is the default because SIP is paid.
-      QUANTDESK_EQUITY_RESEARCH_FEED: ${QUANTDESK_EQUITY_RESEARCH_FEED:-iex}
       # Bound authenticated quote collection while building the next point-in-time research dataset.
       QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS: ${QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS:-5}
     volumes:

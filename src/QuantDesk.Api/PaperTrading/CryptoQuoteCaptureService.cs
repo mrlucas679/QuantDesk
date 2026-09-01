@@ -34,7 +34,7 @@ public sealed class CryptoQuoteCaptureService(
                 CryptoQuoteSnapshot quote = await quoteClient.GetLatestQuoteAsync(symbol, cancellationToken);
                 await AppendSnapshotAsync(symbol, quote, cancellationToken);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
             {
                 logger.LogWarning(exception, "Point-in-time quote capture failed for {Symbol}.", symbol);
             }

@@ -68,7 +68,7 @@ public sealed class HistoricalCryptoDatasetService(
             await PublishFinalValidationDatasetAsync(outputRoot, stoppingToken);
             await PublishEthTransferValidationDatasetAsync(outputRoot, stoppingToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, stoppingToken))
         {
             logger.LogError(exception, "Historical research dataset publication failed closed.");
         }

@@ -482,7 +482,7 @@ public sealed class AutonomousPaperTradingService(
     private async Task EmergencyCloseAsync(int slot, CancellationToken cancellationToken)
     {
         try { await broker.ClosePositionAsync(slot, cancellationToken); }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             logger.LogCritical(exception, "Emergency paper position close failed for {Symbol}.", options.Symbol);
         }

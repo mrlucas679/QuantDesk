@@ -60,7 +60,7 @@ public sealed class PaperRuntimePreflightService(
                     readiness.Snapshot().Ready);
             }
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             readiness.RecordBrokerPreflight(false, false, false);
             if (!IsOperatorOverride(runtimeMode.Snapshot()))

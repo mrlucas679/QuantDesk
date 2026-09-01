@@ -68,7 +68,7 @@ public sealed class HistoricalEquityDatasetService(
                 await PublishAsync(
                     root, symbol, "1Day", intradayEnd.AddDays(-3_650), intradayEnd, 500, feed, stoppingToken);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception) when (HostedServiceFaults.IsFault(exception, stoppingToken))
             {
                 // One symbol failing must not abandon the rest of the universe; a partial universe
                 // is still usable research input, and the gap is visible in the published set.

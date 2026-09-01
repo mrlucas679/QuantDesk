@@ -79,7 +79,7 @@ public sealed class ResearchArtifactMonitorService(
                 throw new InvalidDataException("Forecast publication is stale.");
             state.RecordValid(artifact, forecast);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             state.RecordInvalid("artifact_unavailable_or_invalid");
             logger.LogDebug(exception, "Research artifact probe failed closed.");

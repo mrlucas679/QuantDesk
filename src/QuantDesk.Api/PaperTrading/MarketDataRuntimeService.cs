@@ -104,7 +104,7 @@ public sealed class MarketDataRuntimeService(
             logger.LogInformation("Refreshed stale crypto stream with an authenticated latest quote for {Symbol}.", symbol);
             return true;
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             logger.LogWarning(exception, "Latest crypto quote fallback failed closed for {Symbol}.", symbol);
             return false;

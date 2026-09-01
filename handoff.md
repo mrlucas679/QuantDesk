@@ -1350,6 +1350,49 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### A completed crypto round trip, and the deadlock it exposed — 2026-09-01
+
+`CRYPTO-DIAGNOSTIC-2026-09-01-002` ran end to end on the paper account: entry filled 0.000125816 BTC
+for $10, two-minute hold, exit filled 0.000125501, reconciliation **Flat**, gross paper P&L
+**-$0.00744**. Broker confirms no positions and no open orders; readiness returned to
+`brokerReconciled = true` on the next preflight cycle.
+
+Getting there exposed a deadlock that would have stranded every position the system ever opened.
+
+**`brokerReconciled` was defined as "the account is flat":**
+
+```csharp
+bool flatAndResolved = orders.Count == 0 && positions.All(p => p.Quantity == 0);
+readiness.RecordBrokerPreflight(flatAndResolved, ...);
+```
+
+`InfrastructureExecutionReady` requires it, and `AdvanceExitAsync` required
+`InfrastructureExecutionReady`. So filling an entry made the system unreconciled, which disqualified it
+from running the exit that would restore reconciliation. The live position sat at `ExitDue` for five
+and a half hours past its scheduled exit, refused on `INFRASTRUCTURE_NOT_READY`, with the recovery
+worker cycling once a second and reporting no error the entire time.
+
+The fix is an asymmetry the codebase already applies one layer down, where exit admission deliberately
+skips the buying-power check rather than strand a position over a funding shortfall. `ExitExecutionReady`
+drops only the flatness requirement; losing broker truth entirely still stops the exit, because an exit
+sized against unknown state is worse than none. Three regression tests pin it.
+
+**Two other faults found in the same run:**
+
+* **A background probe could kill the trading API.** Eight hosted services used
+  `catch (Exception) when (exception is not OperationCanceledException)`. `HttpClient` reports its own
+  timeouts as `TaskCanceledException`, which *is* an `OperationCanceledException` — so the filter
+  declined to catch the most common failure a polling service meets, the exception escaped
+  `ExecuteAsync`, and .NET stopped the host. The API was observed dying to a research-readiness probe
+  timing out. `HostedServiceFaults.IsFault` now keys on whether the stopping token was actually
+  signalled.
+* **`docker compose` silently overrode `.env`.** `environment:` entries take precedence over
+  `env_file`, so 22 `${VAR:-default}` entries replaced operator-edited values with shell values or
+  hardcoded defaults. This cost a working Alpaca credential pair (the CLI authenticated while the API
+  401'd on the same repo) and then a working operator key (blank → 401 on every operator endpoint).
+  Credentials now come from `env_file: .env`, and only container-specific literals remain under
+  `environment:`.
+
 ### Live venue results — 2026-09-01, first authenticated run
 
 Credentials authenticated for the first time. `capabilities`: `paperEnvironment true`,

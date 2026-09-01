@@ -33,7 +33,7 @@ public sealed class ResearchReadinessMonitorService(
                 research is { Ready: true, FeaturesReady: true } && artifact.Ready,
                 research is { Ready: true, ExpertsReady: true, ValidatedModelCount: > 0 } && artifact.Ready);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             readiness.RecordResearchPlane(false, false);
             logger.LogWarning(exception, "QuantDesk research readiness probe failed closed.");

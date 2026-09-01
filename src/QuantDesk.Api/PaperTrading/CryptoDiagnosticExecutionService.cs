@@ -228,7 +228,7 @@ public sealed class CryptoDiagnosticExecutionService(
         CancellationToken cancellationToken)
     {
         if (DiagnosticExecutionMath.IsTerminalExitState(record.State)) return TerminalResult(record);
-        DiagnosticExecutionResult? infrastructureFailure = VerifyLocalInfrastructure();
+        DiagnosticExecutionResult? infrastructureFailure = VerifyLocalInfrastructure(closingExposure: true);
         if (infrastructureFailure is not null) return infrastructureFailure;
         if (!store.IsAvailable()) return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
 
@@ -483,13 +483,21 @@ public sealed class CryptoDiagnosticExecutionService(
         };
     }
 
-    private DiagnosticExecutionResult? VerifyLocalInfrastructure()
+    /// <summary>
+    /// Local admission before touching the broker.
+    ///
+    /// <paramref name="closingExposure"/> selects the weaker gate, and the distinction is load-bearing:
+    /// full infrastructure readiness includes "the account is flat", which stops being true the moment
+    /// this lane fills an entry. Applying it to the exit meant a position could never be closed while it
+    /// existed. Flatness is a precondition for opening exposure, never for removing it.
+    /// </summary>
+    private DiagnosticExecutionResult? VerifyLocalInfrastructure(bool closingExposure = false)
     {
         if (!broker.IsPaperEnvironment)
             return DiagnosticExecutionResult.Blocked("ALPACA_PAPER_REQUIRED");
-        return readiness.Snapshot().InfrastructureExecutionReady
-            ? null
-            : DiagnosticExecutionResult.Blocked("INFRASTRUCTURE_NOT_READY");
+        FullSystemReadinessSnapshot snapshot = readiness.Snapshot();
+        bool ready = closingExposure ? snapshot.ExitExecutionReady : snapshot.InfrastructureExecutionReady;
+        return ready ? null : DiagnosticExecutionResult.Blocked("INFRASTRUCTURE_NOT_READY");
     }
 
     private async Task<BrokerEntryContext> ReadBrokerEntryContextAsync(
