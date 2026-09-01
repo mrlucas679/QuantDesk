@@ -442,6 +442,7 @@ public sealed class CryptoDiagnosticExecutionService(
                 FinalInternalQuantity = internalQuantity,
                 ReconciliationResult = reconciled ? "Flat" : "Mismatch",
                 GrossPaperPnl = reconciled ? DiagnosticExecutionMath.GrossPaperPnl(current) : current.GrossPaperPnl,
+                NetPaperPnl = reconciled ? DiagnosticExecutionMath.NetPaperPnl(current) : current.NetPaperPnl,
                 CompletedAt = reconciled ? clock.UtcNow : null,
                 Failure = reconciled
                     ? DiagnosticExecutionFailure.None
@@ -733,10 +734,14 @@ public sealed class CryptoDiagnosticExecutionService(
 
     private void BackfillCompletedMetrics(DiagnosticExecutionRecord record)
     {
-        if (record.GrossPaperPnl is not null) return;
+        if (record.GrossPaperPnl is not null && record.NetPaperPnl is not null) return;
         decimal? grossPaperPnl = DiagnosticExecutionMath.GrossPaperPnl(record);
         if (grossPaperPnl is null) return;
-        store.Update(record.ExperimentId, current => current with { GrossPaperPnl = grossPaperPnl });
+        store.Update(record.ExperimentId, current => current with
+        {
+            GrossPaperPnl = grossPaperPnl,
+            NetPaperPnl = DiagnosticExecutionMath.NetPaperPnl(record)
+        });
     }
 
     private static DiagnosticExecutionResult TerminalResult(DiagnosticExecutionRecord record) =>

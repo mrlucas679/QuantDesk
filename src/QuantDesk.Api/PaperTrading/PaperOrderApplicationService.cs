@@ -25,7 +25,8 @@ public sealed class PaperOrderApplicationService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
     PaperTradingOptions options,
-    RuntimeModeState runtimeMode)
+    RuntimeModeState runtimeMode,
+    FullSystemReadinessState readiness)
 {
     public async Task<PaperOrderSubmission> SubmitAsync(PaperOrderRequest request, CancellationToken cancellationToken)
     {
@@ -35,15 +36,24 @@ public sealed class PaperOrderApplicationService(
         if (!TryValidate(request, out int slot, out OrderSide side, out string? reason))
             return Reject(clientOrderId, reason!);
 
-        // EntryHalted and RiskReductionOnly both mean "stop adding exposure", not "stop trading".
-        // Every other non-Ready mode means broker truth is unknown or the system is stopping, and is
-        // refused without touching the broker at all.
+        // A manual operator order is bounded, key-authorised and notional-capped. It is admitted on
+        // *infrastructure* readiness — the same bar the diagnostic lane clears to place a real order —
+        // not on full system readiness.
+        //
+        // Requiring SystemMode.Ready meant requiring featuresReady and expertsReady, which describe the
+        // research plane and say nothing about whether a hand-placed order is safe. Since no strategy
+        // qualifies, Ready is unreachable, so the operator's manual path could never accept an order at
+        // all: an escape hatch permanently welded shut by the state of an unrelated subsystem.
         SystemMode mode = runtimeMode.Snapshot().Mode;
-        bool riskReductionOnly = mode is SystemMode.EntryHalted or SystemMode.RiskReductionOnly;
-        if (mode != SystemMode.Ready && !riskReductionOnly)
+        if (mode is SystemMode.Emergency or SystemMode.Shutdown or SystemMode.Booting or SystemMode.Degraded)
             return Reject(clientOrderId, "RUNTIME_NOT_READY");
 
         bool reducesExposure = await ReducesExposureAsync(slot, side, request.Quantity, cancellationToken);
+        if (!readiness.Snapshot().IsReadyFor(OrderClassification.DiagnosticExecution, reducesExposure))
+            return Reject(clientOrderId, "INFRASTRUCTURE_NOT_READY");
+
+        // EntryHalted and RiskReductionOnly mean "stop adding exposure", not "stop trading".
+        bool riskReductionOnly = mode is SystemMode.EntryHalted or SystemMode.RiskReductionOnly;
         if (riskReductionOnly && !reducesExposure) return Reject(clientOrderId, "ENTRY_HALTED");
 
         BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);

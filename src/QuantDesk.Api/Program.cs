@@ -125,7 +125,11 @@ builder.Services.AddSingleton(services => new RiskGovernor(
 builder.Services.AddSingleton<ExitEngine>();
 builder.Services.AddSingleton<AutonomousDecisionPipeline>();
 builder.Services.AddSingleton<AutonomousTradingState>();
-builder.Services.AddHostedService<PaperRuntimePreflightService>();
+// Registered as a singleton and then hosted from it, so /api/system/resume can ask for one
+// reconciliation pass on demand rather than waiting out the 30-second timer.
+builder.Services.AddSingleton<PaperRuntimePreflightService>();
+builder.Services.AddHostedService(services =>
+    services.GetRequiredService<PaperRuntimePreflightService>());
 builder.Services.AddHostedService<AutonomousPaperTradingService>();
 builder.Services.AddHostedService<MarketDataRuntimeService>();
 builder.Services.AddHostedService<MicrostructureEvidenceCaptureService>();
@@ -405,6 +409,66 @@ app.MapPost("/api/system/halt", (
         return Results.Unauthorized();
     runtimeMode.Transition(SystemMode.EntryHalted, "operator_halt");
     return Results.Ok(new { mode = SystemMode.EntryHalted.ToString() });
+});
+// Clearing an operator halt.
+//
+// Halt and risk-reduction are deliberately sticky: the preflight preserves them so a routine
+// reconciliation cycle cannot quietly undo a human decision. Without a way to release them, though,
+// the only route back to Ready was restarting the process — an operator could stop the system and
+// then not start it. This hands the decision back to the preflight rather than forcing Ready
+// directly, so the system resumes only if it independently reconciles.
+app.MapPost("/api/system/resume", async (
+    HttpRequest request,
+    RuntimeModeState runtimeMode,
+    PaperRuntimePreflightService preflight,
+    FullSystemReadinessState readiness,
+    OperatorKeyAuthorizer authorizer,
+    CancellationToken cancellationToken) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+
+    (SystemMode mode, string? reason) = runtimeMode.Snapshot();
+    if (mode is not (SystemMode.EntryHalted or SystemMode.RiskReductionOnly))
+        return Results.Json(new { mode = mode.ToString(), resumed = false, reason = "NOT_HALTED" });
+
+    runtimeMode.Transition(SystemMode.Syncing, "operator_resume");
+    await preflight.CheckOnceAsync(cancellationToken);
+    SystemMode resulting = runtimeMode.Snapshot().Mode;
+    FullSystemReadinessSnapshot snapshot = readiness.Snapshot();
+
+    // A bare "resumed: false" tells an operator nothing about what to fix. Name the gates that are
+    // still down, and say separately whether execution can proceed at all — full readiness includes
+    // the research plane, which is not a prerequisite for the diagnostic or manual order paths.
+    string[] blocking =
+    [
+        .. new (string Name, bool Ready)[]
+        {
+            ("marketDataHealthy", snapshot.MarketDataHealthy),
+            ("tradeUpdatesHealthy", snapshot.TradeUpdatesHealthy),
+            ("brokerReconciled", snapshot.BrokerReconciled),
+            ("portfolioKnown", snapshot.PortfolioKnown),
+            ("featuresReady", snapshot.FeaturesReady),
+            ("expertsReady", snapshot.ExpertsReady),
+            ("committeesReady", snapshot.CommitteesReady),
+            ("riskReady", snapshot.RiskReady),
+            ("reservationReady", snapshot.ReservationReady),
+            ("executionReady", snapshot.ExecutionReady),
+            ("exitEngineReady", snapshot.ExitEngineReady),
+            ("paperEndpointVerified", snapshot.PaperEndpointVerified)
+        }.Where(gate => !gate.Ready).Select(gate => gate.Name)
+    ];
+
+    return Results.Json(new
+    {
+        mode = resulting.ToString(),
+        resumed = resulting == SystemMode.Ready,
+        previous = mode.ToString(),
+        previousReason = reason,
+        infrastructureExecutionReady = snapshot.InfrastructureExecutionReady,
+        exitExecutionReady = snapshot.ExitExecutionReady,
+        blockingFullReadiness = blocking
+    });
 });
 app.MapPost("/api/system/risk-reduction", (
     HttpRequest request,

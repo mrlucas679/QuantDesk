@@ -44,6 +44,28 @@ public static class DiagnosticExecutionMath
     }
 
     /// <summary>
+    /// Realised profit after the venue's fee: what the exit received, less what the entry paid.
+    ///
+    /// <see cref="GrossPaperPnl"/> multiplies the price difference by the *exit* quantity, which
+    /// silently ignores the quantity bought and never sold. That gap is not rounding — crypto
+    /// commission is deducted **in kind**, so an entry that fills 0.000125783 BTC leaves 0.000125468 to
+    /// sell, and the missing sliver is the fee. Over 20 live round trips gross overstated the result by
+    /// 24.6 bps of notional each, and reported two losing trades as winners.
+    ///
+    /// A P&amp;L number that flatters every trade by the cost of trading is the most dangerous kind of
+    /// wrong in this system, because it is the number a search would optimise against.
+    /// </summary>
+    public static decimal? NetPaperPnl(DiagnosticExecutionRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        if (record.EntryAverageFillPrice is not decimal entryPrice ||
+            record.ExitAverageFillPrice is not decimal exitPrice ||
+            record.EntryFilledQuantity <= 0 || record.ExitFilledQuantity <= 0)
+            return null;
+        return (exitPrice * record.ExitFilledQuantity) - (entryPrice * record.EntryFilledQuantity);
+    }
+
+    /// <summary>
     /// Names the most specific reason a reconciliation failed, checked most-diagnostic first so
     /// the operator is told the actionable cause rather than a downstream symptom of it.
     /// </summary>

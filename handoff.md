@@ -1350,6 +1350,50 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Stress campaign 1, and the four gaps it found — 2026-09-01
+
+21 BTC/USD round trips ran back to back. **Every one completed and reconciled `Flat`; zero failures,
+zero reconciliation mismatches.** The execution path is reliable. What the campaign found was in the
+reporting and the gates around it.
+
+**Gap 1 — reported P&L was systematically optimistic, by exactly the fee.** `GrossPaperPnl` is
+`(exitPrice − entryPrice) × exitQuantity`, which ignores the quantity bought and never sold. Crypto
+commission is charged **in kind**, so that sliver *is* the fee. Over 20 completed trips:
+
+| | |
+| --- | --- |
+| total gross | −$0.28264 |
+| total net | **−$0.77379** |
+| fee in kind | $0.49115 — **24.6 bps per trip** |
+| winners on gross | 2 / 20 |
+| winners on net | **0 / 20** |
+
+Gross overstated the result by 174% and reported two losing trades as winners. 24.6 bps is Alpaca's
+taker fee almost exactly: the cost model was right all along, the P&L reporting was wrong. This is the
+most dangerous shape of error in the system, because it is the number a search would optimise against.
+`NetPaperPnl` is now computed and stored alongside gross — kept side by side, because the difference
+between them is the fee and is worth being able to see.
+
+**Gap 2 — an operator could halt the system but not resume it.** `/api/system/halt` and
+`/api/system/risk-reduction` exist; nothing cleared them. The preflight deliberately preserves an
+operator mode so a routine cycle cannot undo a human decision, which left process restart as the only
+way back. `/api/system/resume` hands the decision to the preflight rather than forcing `Ready`, so the
+system resumes only if it independently reconciles — and it reports which gates are still down instead
+of a bare `false`.
+
+**Gap 3 — manual operator orders required research readiness.** `SystemMode.Ready` includes
+`featuresReady` and `expertsReady`, which describe the research plane. No strategy qualifies, so `Ready`
+is unreachable, so the operator's manual order path could **never** accept an order — an escape hatch
+welded shut by the state of an unrelated subsystem. Manual orders are now admitted on
+*infrastructure* readiness, the same bar the diagnostic lane clears to place a real order, keeping the
+hard-stop modes, the risk-reduction asymmetry, the notional cap and operator-key auth.
+
+**Gap 4 — measured, not a defect: the venue settles after we declare completion.** The lane marks
+`Complete` only when its own reconciliation reads broker quantity zero, yet an independent read still
+shows the position for **~20 seconds**. Two back-to-back entry attempts are refused, the third succeeds,
+consistently. That is venue read consistency, and the harness — not the system — was wrong to count
+those refusals as failures.
+
 ### The compiler took the first admissible spread, not the best — 2026-09-01
 
 Following the spread measurement above. The compiler does gate on quoted spread

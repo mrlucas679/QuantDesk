@@ -124,14 +124,28 @@ public sealed class PaperOrderApplicationServiceTests
         return mode;
     }
 
-    private static PaperOrderApplicationService CreateService(FakeBroker broker, RuntimeModeState mode)
+    /// <summary>
+    /// Infrastructure green, research plane dark — the state the system actually runs in, since no
+    /// strategy qualifies. Manual orders must still be admissible here.
+    /// </summary>
+    private static FullSystemReadinessState InfrastructureReady()
+    {
+        var readiness = new FullSystemReadinessState();
+        readiness.RecordDeterministicRuntime(true, true, true, true, true);
+        readiness.RecordBrokerPreflight(reconciled: true, portfolioKnown: true, paperEndpointVerified: true);
+        return readiness;
+    }
+
+    private static PaperOrderApplicationService CreateService(
+        FakeBroker broker, RuntimeModeState mode, FullSystemReadinessState? readiness = null)
     {
         var resolver = new DictionaryInstrumentSymbolResolver(new Dictionary<int, string> { [0] = "SPY" });
         return new PaperOrderApplicationService(
             broker,
             resolver,
             new PaperTradingOptions(1_000, new Dictionary<int, string> { [0] = "SPY" }),
-            mode);
+            mode,
+            readiness ?? InfrastructureReady());
     }
 
     private static RuntimeModeState ReadyMode()
@@ -160,5 +174,58 @@ public sealed class PaperOrderApplicationServiceTests
 
         public Task<BrokerOrderSnapshot?> FindByClientOrderIdAsync(string clientOrderId, CancellationToken cancellationToken) =>
             Task.FromResult<BrokerOrderSnapshot?>(null);
+    }
+
+    [Fact]
+    public async Task AManualOrderIsAdmittedWhileTheResearchPlaneIsDark()
+    {
+        // The gap this closes. Requiring SystemMode.Ready meant requiring featuresReady and
+        // expertsReady, which describe the research plane. Since no strategy qualifies, Ready is
+        // unreachable, so the operator's manual path could never accept an order at all -- an escape
+        // hatch welded shut by the state of an unrelated subsystem.
+        var broker = new FakeBroker();
+        var mode = new RuntimeModeState();
+        mode.Transition(SystemMode.Syncing, "test_infra_only");
+
+        PaperOrderSubmission result = await CreateService(broker, mode).SubmitAsync(
+            new PaperOrderRequest("SPY", "buy", 1, 100, "op-1"), CancellationToken.None);
+
+        Assert.True(result.Accepted, result.ReasonCode);
+    }
+
+    [Fact]
+    public async Task LosingBrokerTruthRefusesTheOrderEvenInAPermissiveMode()
+    {
+        // Infrastructure readiness is a real gate, not a formality: without broker truth an order is
+        // sized against state nobody knows.
+        var readiness = new FullSystemReadinessState();
+        readiness.RecordDeterministicRuntime(true, true, true, true, true);
+        readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: false, paperEndpointVerified: false);
+        var mode = new RuntimeModeState();
+        mode.Transition(SystemMode.Syncing, "test_no_broker_truth");
+
+        PaperOrderSubmission result = await CreateService(new FakeBroker(), mode, readiness).SubmitAsync(
+            new PaperOrderRequest("SPY", "buy", 1, 100, "op-1"), CancellationToken.None);
+
+        Assert.False(result.Accepted);
+        Assert.Equal("INFRASTRUCTURE_NOT_READY", result.ReasonCode);
+    }
+
+    [Theory]
+    [InlineData(SystemMode.Emergency)]
+    [InlineData(SystemMode.Shutdown)]
+    [InlineData(SystemMode.Degraded)]
+    public async Task HardStopModesStillRefuseEverythingWithoutTouchingTheBroker(SystemMode stopped)
+    {
+        var broker = new FakeBroker();
+        var mode = new RuntimeModeState();
+        mode.Transition(stopped, "test_hard_stop");
+
+        PaperOrderSubmission result = await CreateService(broker, mode).SubmitAsync(
+            new PaperOrderRequest("SPY", "sell", 1, 100, "op-1"), CancellationToken.None);
+
+        Assert.False(result.Accepted);
+        Assert.Equal("RUNTIME_NOT_READY", result.ReasonCode);
+        Assert.Null(broker.Submitted);
     }
 }
