@@ -54,6 +54,29 @@ public sealed class AlpacaCredentialShapeTests
         Assert.Contains("whitespace", problem, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("<PKZK4A1B2C3D4E5F6G7H>")]
+    [InlineData("\"PKZK4A1B2C3D4E5F6G7H\"")]
+    [InlineData("[PKZK4A1B2C3D4E5F6G7H]")]
+    public void PlaceholderPunctuationIsNamedRatherThanReportedAsAStrangePrefix(string keyId)
+    {
+        // Observed for real: a key pasted with the placeholder's angle brackets still attached. The
+        // prefix rule alone would have reported a baffling "begins '<P'".
+        string? problem = AlpacaCredentialShape.DescribeSuspectCredentials(keyId, Secret);
+
+        Assert.NotNull(problem);
+        Assert.Contains("brackets or quotes", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PunctuationAroundTheSecretIsCaughtToo()
+    {
+        string? problem = AlpacaCredentialShape.DescribeSuspectCredentials(PaperKeyId, "<" + Secret + ">");
+
+        Assert.NotNull(problem);
+        Assert.Contains("brackets or quotes", problem, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void AnUnfamiliarPrefixIsFlaggedButHedged()
     {

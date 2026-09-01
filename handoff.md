@@ -1350,6 +1350,30 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Live venue results — 2026-09-01, first authenticated run
+
+Credentials authenticated for the first time. `capabilities`: `paperEnvironment true`,
+`equityTrading true`, `cryptoTrading true`, `optionsTrading true`, **`optionsTradingLevel 3`**, no
+problems. Level 3 clears the level-2 bar a debit vertical needs.
+
+`option-preflight` against SPY, read-only, at 08:42 UTC:
+
+| Stage | Result |
+| --- | --- |
+| contract discovery | **Passed — 5,792 contracts published, none excluded, 4 sampled.** Every cross-validation rule and the OCC parser fix hold against real venue data at scale. |
+| latest quotes | Feed works. Real two-sided market returned (`bp 340.26 / ap 354.68`), stamped at the previous close, so stale under the 15-minute rule. **Market closed, not broken.** |
+| greeks / IV | No `greeks` block on the sampled contract; same closed-market caveat. |
+| historical bars | **`403 OPRA agreement is not signed`** — a real entitlement gap, and the one item needing an account action. |
+
+**The one blocker left is signing the OPRA agreement** in the Alpaca dashboard. It gates historical
+option bars, which is what the option dataset export and the volatility-risk-premium family (C7) both
+wait on.
+
+The run also exposed a defect in the preflight itself: it reported stale quotes as a flat failure, so
+it would cry wolf on every run outside regular hours. It now reports how stale the freshest quote is
+and whether the market was open, because "the feed is dead" and "the market is shut" arrive as the
+same zero-usable-quotes count and call for opposite responses.
+
 **Still unknown, and only credentials will settle it:** whether the account's option data feed is
 entitled at all, whether real spreads are tight enough to clear the cost floor, and whether strike
 coverage supports the vertical widths the compiler wants.

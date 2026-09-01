@@ -101,15 +101,59 @@ public sealed class OptionDataPreflightTests
     }
 
     [Fact]
-    public async Task QuotesThatAreAllStaleFailEvenThoughTheVenueAnswered()
+    public async Task QuotesThatAreAllStaleFailButReportTheirAge()
     {
-        // A successful HTTP call that prices nothing cannot compile a defined-risk debit.
+        // A successful HTTP call that prices nothing cannot compile a defined-risk debit — but the
+        // report has to say how stale, or a reader cannot tell a dead feed from an idle one.
         var handler = new RoutingHandler { StaleQuotes = true };
 
         OptionPreflightReport report = await RunAsync(handler);
 
-        Assert.Equal(OptionPreflightOutcome.Failed, Step(report, "latest quotes").Outcome);
-        Assert.Contains("crossed, one-sided or stale",
+        OptionPreflightStep quotes = Step(report, "latest quotes");
+        Assert.Equal(OptionPreflightOutcome.Failed, quotes.Outcome);
+        Assert.Contains("1 quoted but all older than the 15-minute limit",
+            quotes.Detail, StringComparison.Ordinal);
+        Assert.Contains("6.0 hours old", quotes.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DuringTheSessionStaleQuotesAreCalledARealProblem()
+    {
+        // AsOf is 15:00Z on a Friday, inside 13:30-20:00Z.
+        var handler = new RoutingHandler { StaleQuotes = true };
+
+        OptionPreflightReport report = await RunAsync(handler);
+
+        Assert.Contains("market is open, so stale quotes here are a real problem",
+            Step(report, "latest quotes").Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OutsideTheSessionStaleQuotesAreExplainedRatherThanBlamed()
+    {
+        // The failure this fixes: run before the open and every quote is stale by design, which the
+        // report used to present as a fault. Same payload, six hours earlier.
+        // The quote must still be stale at the earlier asOf, or this would test a fresh quote.
+        var handler = new RoutingHandler
+        {
+            StaleQuotes = true,
+            StaleQuoteTimestamp = "2026-09-03T20:00:00Z"
+        };
+        OptionPreflightReport report = await RunAsync(handler, asOf: DateTimeOffset.Parse("2026-09-04T09:00:00Z"));
+
+        string detail = Step(report, "latest quotes").Detail;
+        Assert.Contains("market is closed", detail, StringComparison.Ordinal);
+        Assert.Contains("Re-run during the session", detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AVenueThatQuotesNothingIsDistinguishedFromOneThatQuotesStaleData()
+    {
+        var handler = new RoutingHandler { NoQuotes = true };
+
+        OptionPreflightReport report = await RunAsync(handler);
+
+        Assert.Contains("returned no quote for any sampled contract",
             Step(report, "latest quotes").Detail, StringComparison.Ordinal);
     }
 
@@ -127,7 +171,8 @@ public sealed class OptionDataPreflightTests
     private static OptionPreflightStep Step(OptionPreflightReport report, string name) =>
         report.Steps.Single(step => step.Name == name);
 
-    private static async Task<OptionPreflightReport> RunAsync(RoutingHandler handler)
+    private static async Task<OptionPreflightReport> RunAsync(
+        RoutingHandler handler, DateTimeOffset? asOf = null)
     {
         using var httpClient = new HttpClient(handler);
         AlpacaOptions options = Options();
@@ -136,7 +181,7 @@ public sealed class OptionDataPreflightTests
             new AlpacaLatestOptionQuoteClient(httpClient, options),
             new AlpacaOptionRiskSnapshotClient(httpClient, options),
             new AlpacaHistoricalOptionBarClient(httpClient, options));
-        return await preflight.RunAsync("SPY", Start, End, AsOf, CancellationToken.None);
+        return await preflight.RunAsync("SPY", Start, End, asOf ?? AsOf, CancellationToken.None);
     }
 
     private static AlpacaOptions Options() => new()
@@ -162,6 +207,8 @@ public sealed class OptionDataPreflightTests
         public bool IncludeAdjustedContract { get; set; }
         public bool OnlyAdjustedContracts { get; set; }
         public bool StaleQuotes { get; set; }
+        public bool NoQuotes { get; set; }
+        public string StaleQuoteTimestamp { get; set; } = "2026-09-04T09:00:00Z";
         public List<HttpMethod> Methods { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
@@ -200,9 +247,11 @@ public sealed class OptionDataPreflightTests
             "\"status\":\"active\",\"tradable\":true}";
 
         private string Quotes() =>
-            "{\"quotes\":{\"" + Symbol + "\":{\"ap\":8.2,\"as\":37,\"ax\":\"W\",\"bp\":8.0,\"bs\":42," +
-            "\"bx\":\"W\",\"c\":[\"A\"],\"t\":\"" +
-            (StaleQuotes ? "2026-09-04T09:00:00Z" : "2026-09-04T14:59:50Z") + "\"}}}";
+            NoQuotes
+                ? "{\"quotes\":{}}"
+                : "{\"quotes\":{\"" + Symbol + "\":{\"ap\":8.2,\"as\":37,\"ax\":\"W\",\"bp\":8.0," +
+                  "\"bs\":42,\"bx\":\"W\",\"c\":[\"A\"],\"t\":\"" +
+                  (StaleQuotes ? StaleQuoteTimestamp : "2026-09-04T14:59:50Z") + "\"}}}";
 
         private static string Snapshots() =>
             "{\"snapshots\":{\"" + Symbol + "\":{" +

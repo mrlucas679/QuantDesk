@@ -40,6 +40,14 @@ public static class AlpacaCredentialShape
                    "means they were pasted with surrounding characters.";
         }
 
+        // Checked before the prefix rules, which would otherwise report a baffling "begins '<P'".
+        if (IsWrapped(key) || IsWrapped(secret))
+        {
+            return "The configured credentials are wrapped in brackets or quotes, which usually means " +
+                   "a placeholder's punctuation was copied along with the value. The key and secret " +
+                   "should be bare, with nothing around them.";
+        }
+
         if (LooksLikeAccountNumber(key))
         {
             return $"The configured key ID is {key.Length} characters beginning '{key[..2]}', which is " +
@@ -58,6 +66,21 @@ public static class AlpacaCredentialShape
 
         return null;
     }
+
+    /// <summary>
+    /// A value still carrying a placeholder's punctuation — <c>&lt;PK...&gt;</c>, <c>"PK..."</c>. The
+    /// venue rejects these the same way it rejects a wrong key, so the punctuation is worth naming.
+    /// </summary>
+    private static bool IsWrapped(string value) =>
+        value.Length >= 2 &&
+        (WrappingPunctuation.Contains(value[0]) || WrappingPunctuation.Contains(value[^1]));
+
+    /// <summary>
+    /// Punctuation that never belongs in a credential, so its presence at either end is enough. No
+    /// attempt is made to pair an opening character with its closing one: a lone bracket at one end is
+    /// just as wrong, and just as worth naming.
+    /// </summary>
+    private const string WrappingPunctuation = "<>\"'[]`";
 
     private static bool LooksLikeAccountNumber(string key) =>
         key.Length <= LongestAccountNumber &&

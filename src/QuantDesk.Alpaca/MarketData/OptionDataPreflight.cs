@@ -60,6 +60,9 @@ public sealed class OptionDataPreflight(
     /// stay within one request on every endpoint.</summary>
     private const int SampleSize = 4;
 
+    /// <summary>How old a quote may be and still price a spread.</summary>
+    private static readonly TimeSpan MaximumQuoteAge = TimeSpan.FromMinutes(15);
+
     public async Task<OptionPreflightReport> RunAsync(
         string underlying,
         DateOnly expirationStart,
@@ -100,24 +103,36 @@ public sealed class OptionDataPreflight(
         steps.Add(await RunStepAsync("latest quotes", async () =>
         {
             IReadOnlyDictionary<int, OptionQuoteSnapshot> priced = await quotes.GetQuotesAsync(
-                slots, asOf, TimeSpan.FromMinutes(15), cancellationToken);
+                slots, asOf, MaximumQuoteAge, cancellationToken);
             int healthy = priced.Values.Count(quote => quote.Quality == DataQuality.Healthy);
+            if (healthy > 0)
+            {
+                return (true, $"{healthy}/{priced.Count} usable; tightest relative spread " +
+                    $"{priced.Values.Where(quote => quote.Quality == DataQuality.Healthy)
+                        .Min(quote => quote.RelativeSpread):P2}");
+            }
+
             // A quote is what makes a defined-risk debit computable, so none usable is a failure even
-            // though the venue answered successfully.
-            return (healthy > 0,
-                $"{healthy}/{priced.Count} usable" + (healthy > 0
-                    ? $"; tightest relative spread {priced.Values
-                        .Where(quote => quote.Quality == DataQuality.Healthy)
-                        .Min(quote => quote.RelativeSpread):P2}"
-                    : "; every quote was missing, crossed, one-sided or stale"));
+            // when the venue answered successfully. But "the feed is dead" and "the market is shut"
+            // both arrive as zero usable quotes, and they call for completely different responses —
+            // so say which one this is, using the age of what actually came back.
+            int quoted = priced.Values.Count(quote => quote.EventNs > 0);
+            return (false, quoted == 0
+                ? $"0/{priced.Count} usable; the venue returned no quote for any sampled contract"
+                : $"0/{priced.Count} usable; {quoted} quoted but all older than the " +
+                  $"{MaximumQuoteAge.TotalMinutes:N0}-minute limit. Newest is {DescribeAge(priced, asOf)}. " +
+                  $"{SessionNote(asOf)}");
         }));
 
         steps.Add(await RunStepAsync("greeks and implied volatility", async () =>
         {
             IReadOnlyDictionary<int, OptionRiskSnapshot> risk = await snapshots.GetSnapshotsAsync(
-                slots, asOf, TimeSpan.FromMinutes(15), cancellationToken);
+                slots, asOf, MaximumQuoteAge, cancellationToken);
             int healthy = risk.Values.Count(item => item.Quality == DataQuality.Healthy);
-            return (healthy > 0, $"{healthy}/{risk.Count} usable");
+            return (healthy > 0, healthy > 0
+                ? $"{healthy}/{risk.Count} usable"
+                : $"0/{risk.Count} usable; the venue returned no greeks block, or its quote was stale. " +
+                  SessionNote(asOf));
         }));
 
         steps.Add(await RunStepAsync("historical bars", async () =>
@@ -131,6 +146,37 @@ public sealed class OptionDataPreflight(
 
         return new OptionPreflightReport(underlying, steps);
     }
+
+    /// <summary>How stale the freshest returned quote is, in units a person reads at a glance.</summary>
+    private static string DescribeAge(
+        IReadOnlyDictionary<int, OptionQuoteSnapshot> priced, DateTimeOffset asOf)
+    {
+        long newestNs = priced.Values.Where(quote => quote.EventNs > 0).Max(quote => quote.EventNs);
+        TimeSpan age = asOf - DateTimeOffset.FromUnixTimeMilliseconds(newestNs / 1_000_000L);
+        return age < TimeSpan.FromMinutes(90)
+            ? $"{age.TotalMinutes:N0} minutes old"
+            : $"{age.TotalHours:N1} hours old";
+    }
+
+    /// <summary>
+    /// Says whether the US options market is open, because outside regular hours every quote is stale
+    /// by design and a report that omitted this would read as a fault.
+    /// </summary>
+    private static string SessionNote(DateTimeOffset asOf)
+    {
+        TimeSpan utc = asOf.UtcDateTime.TimeOfDay;
+        bool weekday = asOf.UtcDateTime.DayOfWeek is >= DayOfWeek.Monday and <= DayOfWeek.Friday;
+        bool open = weekday && utc >= RegularHoursOpenUtc && utc < RegularHoursCloseUtc;
+        return open
+            ? "The US options market is open, so stale quotes here are a real problem."
+            : "The US options market is closed (regular hours are 13:30-20:00 UTC), so stale quotes " +
+              "are expected. Re-run during the session to test this properly.";
+    }
+
+    // Approximate: ignores US daylight-saving shifts and holidays, which is enough for a sentence whose
+    // only job is to stop a closed market reading as a broken feed.
+    private static readonly TimeSpan RegularHoursOpenUtc = new(13, 30, 0);
+    private static readonly TimeSpan RegularHoursCloseUtc = new(20, 0, 0);
 
     private static OptionPreflightStep DescribeDiscovery(
         OptionContractQuery discovered, IReadOnlyList<AlpacaOptionContract> sample)
