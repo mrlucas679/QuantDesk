@@ -64,8 +64,24 @@ public static class DiagnosticAdmissionPolicy
     }
 
     /// <summary>
+    /// The largest shortfall between a filled quantity and the resulting position that is still
+    /// explained by fees rather than by exposure nobody owns.
+    ///
+    /// Alpaca charges crypto commission **in kind**: buy $10 of BTC and the position is a fraction of a
+    /// percent smaller than the quantity the fill reported. Comparing the two exactly therefore fails on
+    /// every successful crypto entry. Observed live at 0.25%; the bound is set at 0.5% so an ordinary
+    /// fee never reads as unexplained exposure, while anything an order-sized error could produce still
+    /// does.
+    /// </summary>
+    public const decimal MaximumInKindFeeShare = 0.005m;
+
+    /// <summary>
     /// True only when broker exposure matches what this experiment can account for, and no order
     /// outside the experiment is open.
+    ///
+    /// "Matches" allows the position to fall short of the fill by up to <see cref="MaximumInKindFeeShare"/>,
+    /// and not to exceed it at all. A position larger than what was filled is exposure this experiment
+    /// did not create, which is the case this check exists to catch.
     /// </summary>
     public static bool IsReconciled(DiagnosticExecutionRecord record, BrokerEntryContext context)
     {
@@ -76,7 +92,10 @@ public static class DiagnosticAdmissionPolicy
 
         decimal brokerQuantity = RelevantPositions(context.Positions).Sum(position => position.Quantity);
         decimal explainedQuantity = context.ExistingOrder?.FilledQuantity ?? record.EntryFilledQuantity;
-        return brokerQuantity == explainedQuantity;
+        if (explainedQuantity <= 0) return brokerQuantity == explainedQuantity;
+
+        decimal shortfall = explainedQuantity - brokerQuantity;
+        return shortfall >= 0 && shortfall <= explainedQuantity * MaximumInKindFeeShare;
     }
 
     /// <summary>

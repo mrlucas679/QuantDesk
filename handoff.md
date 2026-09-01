@@ -1287,7 +1287,7 @@ and a verdict recorded, so it is not re-attempted blindly.
 | G5 | **Implemented:** production contract readers, writers, stores, and manifests share canonical web/indented JSON options. CLI display formatting remains intentionally local. |
 | G6 | **Implemented for the common bar manifest:** C# and Python pin the same camel-case `dataFile`/`rowCount` contract with tests. Option-specific manifest semantics remain a separate contract. |
 | G7 | **Implemented:** pricing `OptionQuoteSnapshot` carries only quote fields; authenticated `OptionRiskSnapshot` holds IV/Greeks separately and marks missing values stale rather than fabricated. |
-| G8 | Entry halts on any broker position or order, not only the traded symbol. Scoping it safely needs position attribution, which does not exist; deliberately left rather than weakening the invariant. |
+| G8 | **Closed.** `BrokerExposureAttributor` builds the attribution that did not exist, from the lanes' own durable stores: orders attribute exactly by deterministic client order ID, positions by symbol against nonterminal records. Entry now halts on *unattributed* exposure, and abstains when the instrument it wants is already claimed by a lane. One lane holding SPY options no longer stops another trading BTC. The asymmetry is documented: a hand-placed position in a symbol a lane already trades is absorbed rather than flagged; everything in an unclaimed symbol is still foreign. A lane registered without a claim source reports its exposure as foreign, which halts entry — failing closed. |
 | G9 | **Implemented:** `AlpacaHistoricalStockBarClient` rejects null/missing payloads, unrequested symbols, malformed bars, and conflicting data rather than silently filtering them. |
 | G10 | **Implemented:** enabled autonomy requires an explicit configured execution symbol; BTC/USD remains only the disabled research-data fallback. |
 | G11 | `crypto_direction.py` is 810 lines and serves a lane the cost analysis has ruled out. |
@@ -1349,6 +1349,32 @@ real credentials tried in this repository were an Alpaca *account number* pasted
 a sentence naming that when the venue refuses. It is advisory and runs only after a refusal: Alpaca can
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
+
+### Entry attribution, and a fee that read as unexplained exposure — 2026-09-01
+
+**Entry no longer halts on any position.** The register left this open because narrowing it needed
+position attribution that did not exist. It does now: `BrokerExposureAttributor` derives claims from
+each lane's durable store — orders matched exactly by deterministic client order ID, positions by symbol
+against nonterminal records. Entry halts on *unattributed* exposure and abstains when the instrument it
+wants is already claimed. Verified by mutation: making every position attribute fails three tests,
+including the pre-existing foreign-position halt, so the narrowing did not weaken the invariant.
+
+The honest limit, stated in the code: positions carry no client order ID, so a hand-placed position in a
+symbol a lane is already trading would be absorbed rather than flagged. Everything in an unclaimed
+symbol is still foreign, and a lane registered without a claim source has its exposure treated as
+foreign — both failing closed.
+
+**The interim `Mismatch` was not cosmetic.** `IsReconciled` compared the broker position to the filled
+quantity exactly. Alpaca charges crypto commission **in kind**, so the position is always slightly
+smaller than the fill — 0.000125468 held against 0.000125783 filled. The comparison therefore failed on
+every successful crypto entry, writing `Failure = ReconciliationMismatch` and
+`UNEXPLAINED_BROKER_EXPOSURE` onto a perfectly healthy record. The code two lines above already
+acknowledged the fee in a comment, then compared exactly on the other branch. A shortfall within
+`MaximumInKindFeeShare` (0.5%, against the 0.25% observed) is now reconciled; a position *larger* than
+the fill still is not, which is the case the check exists for.
+
+Confirmed live on `CRYPTO-DIAGNOSTIC-2026-09-01-004`: `Clean` throughout the hold, `Flat` at
+completion, no failure reason, account flat afterwards.
 
 ### The deadlock was a class, not an instance — 2026-09-01
 

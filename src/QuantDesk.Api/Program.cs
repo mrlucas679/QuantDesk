@@ -44,6 +44,13 @@ builder.Services.AddSingleton(services =>
         ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "diagnostic-executions.json");
     return new DiagnosticExecutionStore(Path.GetFullPath(configured));
 });
+// Every lane that can hold exposure registers a claim source, so the entry gate can tell exposure this
+// system created from exposure nobody can account for. A lane added without one is reported as foreign,
+// which halts entry rather than trading over it.
+builder.Services.AddSingleton<IExposureClaimSource, DiagnosticExposureClaimSource>();
+builder.Services.AddSingleton<IExposureClaimSource, SpotExposureClaimSource>();
+builder.Services.AddSingleton<IExposureClaimSource, MultiLegExposureClaimSource>();
+builder.Services.AddSingleton<BrokerExposureAttributor>();
 builder.Services.AddSingleton<DiagnosticEmergencyFlatten>();
 builder.Services.AddSingleton<CryptoDiagnosticExecutionService>();
 builder.Services.AddSingleton<DiagnosticExecutionRecoveryService>();

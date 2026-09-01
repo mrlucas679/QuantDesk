@@ -241,9 +241,18 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         var spotLifecycle = new SpotExecutionLifecycle(
             broker, new SpotExecutionStore(_spotStorePath), clock, TimeSpan.FromSeconds(30));
 
+        // The lanes' own stores supply the claims, so exposure these tests create through the spot and
+        // multi-leg lifecycles is attributed exactly as it would be in production.
+        var attributor = new BrokerExposureAttributor(
+        [
+            new SpotExposureClaimSource(new SpotExecutionStore(_spotStorePath)),
+            new MultiLegExposureClaimSource(new MultiLegExecutionStore(_storePath))
+        ]);
+
         var service = new AutonomousPaperTradingService(
             broker, resolver,
             new StubEvidenceProvider(evidence ?? Evidence(100m, 100.01m, 100m, 104m)),
+            attributor,
             new OpportunityRouter(), coordinator, spotLifecycle,
             new StubCapabilityProbe(capabilities ?? Capabilities()),
             pipeline, new ResearchArtifactState(),

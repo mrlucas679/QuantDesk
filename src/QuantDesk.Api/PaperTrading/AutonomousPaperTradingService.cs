@@ -26,6 +26,7 @@ public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
     IMarketEvidenceProvider evidenceProvider,
+    BrokerExposureAttributor attributor,
     OpportunityRouter router,
     OptionExecutionCoordinator optionExecution,
     SpotExecutionLifecycle spotExecution,
@@ -131,10 +132,25 @@ public sealed class AutonomousPaperTradingService(
         BrokerAccountSnapshot account = await RequireHealthyAccountAsync(cancellationToken);
         IReadOnlyList<BrokerOrderSnapshot> openOrders = await broker.ListOpenOrdersAsync(cancellationToken);
         IReadOnlyList<BrokerPositionSnapshot> brokerPositions = await broker.ListPositionsAsync(cancellationToken);
-        if (openOrders.Count != 0 || brokerPositions.Count != 0)
+        // Exposure this system created is not a reason to halt; exposure nobody can account for is.
+        // The gate used to refuse both, so one lane holding an unrelated instrument stopped every other
+        // lane, and a genuinely foreign position was indistinguishable from our own.
+        BrokerExposureAttribution attribution = attributor.Attribute(openOrders, brokerPositions);
+        if (attribution.HasUnattributedExposure)
         {
             runtimeMode.Transition(SystemMode.EntryHalted, "broker_state_requires_reconciliation");
             state.Update("entry_halted", options.Symbol, reason: "PortfolioUnreconciled");
+            logger.LogWarning(
+                "Entry halted: {Attribution}. Nothing will trade until this is explained or closed.",
+                attribution.Describe());
+            return;
+        }
+
+        // Attributed exposure in the instrument we are about to trade is still disqualifying: a second
+        // position in the same symbol would trade over the lane that already holds it.
+        if (attribution.IsClaimed(route.Symbol))
+        {
+            state.Update("abstained", options.Symbol, reason: "SymbolAlreadyHeld");
             return;
         }
 
