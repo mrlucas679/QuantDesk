@@ -148,7 +148,8 @@ public static class PythonResearchContractReader
             RequireDouble(element, "standard_error_bps"),
             RequireDouble(element, "historical_net_edge_bps"),
             RequireDouble(element, "historical_net_edge_standard_error_bps"),
-            RequirePositiveInt(element, "historical_observations"));
+            RequirePositiveInt(element, "historical_observations"),
+            RequireDouble(element, "assumed_round_trip_cost_bps"));
 
         return uncertainty.IsValid()
             ? uncertainty

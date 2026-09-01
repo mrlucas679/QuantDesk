@@ -18,7 +18,7 @@ from numpy.typing import NDArray
 from quantdesk_research.backtest.equity_costs import CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED
 from quantdesk_research.backtest.realised_costs import resolve_round_trip_bps
 from quantdesk_research.contracts.feature_schema import FeatureSchema
-from quantdesk_research.contracts.forecast import Forecast
+from quantdesk_research.contracts.forecast import Forecast, ForecastUncertainty
 from quantdesk_research.contracts.model_artifact import (
     EvidenceProfile,
     ExitPolicyDefinition,
@@ -797,6 +797,7 @@ def publish_validated_directional_forecast(
         instrument=manifest["symbol"], as_of_time=forecast_time.to_pydatetime(),
         forecast_family="directional_return_bps", horizon_minutes=horizon_minutes,
         point_forecast=point_forecast, confidence=0.75, calibration_status="rolling_oos_pass",
+        uncertainty=_forecast_uncertainty(evaluation),
         support_domain_status="in_domain", feature_schema_hash=feature_hash,
         artifact_hash=artifact_hash, status="valid",
     )
@@ -841,3 +842,32 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _forecast_uncertainty(evaluation: DirectionEvaluation) -> ForecastUncertainty:
+    """State how wrong this forecast could be, and what the model actually earned.
+
+    Two things are being said, and they are not the same thing. ``point_forecast`` above is the
+    model's raw per-bar prediction -- gross, owing nothing to any cost assumption, which is why
+    ``assumed_round_trip_cost_bps`` is zero here and non-zero for the deterministic-rule publisher
+    whose forecast is already net. ``historical_net_edge_bps`` is what the model's trades actually
+    returned after costs across the validation window, which is the only evidence that the
+    predictions are worth acting on at all.
+
+    The standard error is the dispersion of those realised trades, not of the model's residuals. It
+    is the honest proxy: a per-bar prediction interval would describe how well the model fits, while
+    what a trading decision needs to know is how much the *outcomes* of acting on it have varied.
+    It is recovered from the same bound the promotion gates were applied against, so the published
+    figure cannot disagree with the one that qualified the model.
+    """
+    critical = NormalDist().inv_cdf(1 - 0.025)
+    standard_error = max(
+        (evaluation.test_mean_net_bps - evaluation.test_lower_confidence_net_bps) / critical, 0.0
+    )
+    return ForecastUncertainty(
+        standard_error_bps=standard_error,
+        historical_net_edge_bps=evaluation.test_mean_net_bps,
+        historical_net_edge_standard_error_bps=standard_error,
+        historical_observations=evaluation.test_trade_count,
+        assumed_round_trip_cost_bps=0.0,
+    )

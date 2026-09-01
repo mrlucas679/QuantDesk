@@ -32,7 +32,9 @@ public sealed class MultiLegExecutionLifecycle(
         decimal exitLimitPrice,
         decimal definedMaximumLoss,
         TimeSpan maximumHoldingPeriod,
-        IReadOnlyList<MultiLegExecutionLeg> entryLegs)
+        IReadOnlyList<MultiLegExecutionLeg> entryLegs,
+        PositionOwnership? ownership = null,
+        int? minimumDaysToExpiry = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -54,7 +56,9 @@ public sealed class MultiLegExecutionLifecycle(
             entry, exit, now, now)
         {
             DefinedMaximumLoss = definedMaximumLoss,
-            MaximumHoldingPeriod = maximumHoldingPeriod
+            MaximumHoldingPeriod = maximumHoldingPeriod,
+            Ownership = ownership,
+            MinimumDaysToExpiry = minimumDaysToExpiry
         });
     }
 
@@ -113,7 +117,8 @@ public sealed class MultiLegExecutionLifecycle(
         record.EntryAverageFillPrice,
         record.DefinedMaximumLoss,
         record.Ownership,
-        EarliestExpiryOf(record));
+        EarliestExpiryOf(record),
+        record.MinimumDaysToExpiry);
 
     /// <summary>
     /// The nearest expiry across the legs, or null when none of them parse as option symbols.

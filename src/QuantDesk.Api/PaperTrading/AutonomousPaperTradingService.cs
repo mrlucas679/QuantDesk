@@ -26,7 +26,7 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
-    DiagnosticExecutionStore diagnosticStore,
+    IRealisedCostSource realisedCosts,
     IMarketEvidenceProvider evidenceProvider,
     BrokerExposureAttributor attributor,
     OpportunityRouter router,
@@ -239,21 +239,23 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
 
+        // Bound here, before either branch, because both open positions and both must be able to
+        // name what licensed them. In experimental mode there is no verified artifact and the
+        // binding is null -- an honest record that no research stands behind the position, rather
+        // than a missing field.
+        PositionOwnership? ownership = experimental
+            ? null
+            : ResearchPositionOwnership.Bind(research, clock.UtcNow);
+
         // A defined-risk vertical expresses the same directional view the pipeline just approved,
         // using options instead of the underlying. The view is formed on the underlying above;
         // only the instrument differs, so the branch happens here and not earlier.
         if (options.Expression == OpportunityExpression.DefinedRiskVertical)
         {
-            await ExecuteOptionOpportunityAsync(capabilities, candidate, decision, cancellationToken);
+            await ExecuteOptionOpportunityAsync(
+                capabilities, candidate, decision, ownership, cancellationToken);
             return;
         }
-
-        // Bound here, where the artifact that licensed the trade is still in scope. In experimental
-        // mode there is no verified artifact and the binding is null -- an honest record that no
-        // research stands behind the position, rather than a missing field.
-        PositionOwnership? ownership = experimental
-            ? null
-            : ResearchPositionOwnership.Bind(research, clock.UtcNow);
 
         await ExecuteSpotOpportunityAsync(
             candidate, decision, evidence, slot, ownership, cancellationToken);
@@ -334,6 +336,7 @@ public sealed class AutonomousPaperTradingService(
         AccountCapabilities capabilities,
         TradeCandidate candidate,
         AutonomousPipelineDecision decision,
+        PositionOwnership? ownership,
         CancellationToken cancellationToken)
     {
         double expectedReturnBps = decision.Committee?.ExpectedReturnBps ?? 0d;
@@ -355,6 +358,7 @@ public sealed class AutonomousPaperTradingService(
             clock.UtcNow,
             MinimumOptionDaysToExpiry,
             MaximumOptionDaysToExpiry,
+            ownership,
             OptionStrikeBandFraction,
             cancellationToken);
 
@@ -440,26 +444,14 @@ public sealed class AutonomousPaperTradingService(
     /// <summary>
     /// What a round trip of this size has actually cost, at its upper confidence bound.
     ///
-    /// Drawn from the diagnostic lane's records, which is where the ground truth lives: they carry
-    /// account equity before and after each trip, and the venue's separate USD cash charge appears
-    /// in nothing else. The autonomous lane's own spot records deliberately cannot contribute --
-    /// they hold fills but no equity readings, so a cost derived from them would be systematically
-    /// low, which is the error this whole measurement exists to correct.
-    ///
-    /// Null when nothing has been measured at this size. That is passed through as null rather than
-    /// replaced by a modelled figure, because an unmeasured cost is not a licence to assume one.
+    /// Null when nothing has been measured at this size. Passed through as null rather than
+    /// replaced by a modelled figure, because an unmeasured cost is not a licence to assume one --
+    /// the gate falls back to the older comparison instead of inventing evidence.
     /// </summary>
-    private double? MeasuredCostUpperBoundBps()
-    {
-        RealisedCostContract? costs = RealisedCostEstimator.Estimate(
-            diagnosticStore.ListCompleted(),
-            datasetId: "alpaca-paper-realised-cost",
-            datasetVersion: "live",
-            assetClass: "crypto",
-            venue: "alpaca");
-
-        return costs?.UpperConfidenceCostBpsFor(options.OrderNotional) is { } bps ? (double)bps : null;
-    }
+    private double? MeasuredCostUpperBoundBps() =>
+        realisedCosts.Current()?.UpperConfidenceCostBpsFor(options.OrderNotional) is { } bps
+            ? (double)bps
+            : null;
 
     private static PortfolioSnapshot EmptyPortfolio(BrokerAccountSnapshot account) => new(
         0, new Usd(account.Equity), new Usd(account.Equity), new Usd(account.BuyingPower),

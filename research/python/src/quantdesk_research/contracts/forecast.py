@@ -15,12 +15,19 @@ class ForecastUncertainty(BaseModel):
 
     The consuming gate refuses a forecast that omits this rather than reading the silence as
     certainty.
+
+    ``assumed_round_trip_cost_bps`` is what keeps the arithmetic right across the language boundary.
+    ``point_forecast`` here is already net of the cost this plane assumed, so an execution plane
+    that subtracts cost again charges it twice and rejects every trade. Stating the assumption lets
+    execution add it back and substitute what a round trip actually cost -- which it is the only
+    side able to measure.
     """
 
     standard_error_bps: float
     historical_net_edge_bps: float
     historical_net_edge_standard_error_bps: float
     historical_observations: int
+    assumed_round_trip_cost_bps: float
 
 
 class Forecast(BaseModel):

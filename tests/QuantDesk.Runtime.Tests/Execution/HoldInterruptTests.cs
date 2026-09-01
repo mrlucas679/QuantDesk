@@ -1,6 +1,7 @@
 using QuantDesk.Domain.Execution;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Persistence;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Runtime.Tests.Execution;
 
@@ -100,6 +101,58 @@ public sealed class CompositeHoldInterruptTests
     private sealed class Always(bool exit, string? reason) : IHoldInterrupt
     {
         public HoldInterrupt Evaluate(in HeldPosition position) => new(exit, reason);
+    }
+}
+
+public sealed class ExpiryHoldInterruptTests
+{
+    private static readonly DateTimeOffset Now = new(2026, 9, 2, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void APositionsOwnMinimumWinsOverTheLanesFloor()
+    {
+        // MinimumDteToHold existed on the management plan and was passed as null by every compiler
+        // and read by nothing -- a rule stated in the domain and absent from the system. A position
+        // that asks for ten days gets ten, even where the lane's floor is two, because a wide spread
+        // and a tight one do not become dangerous at the same distance from expiry.
+        var interrupt = new ExpiryHoldInterrupt(new FixedClock(Now), minimumDaysToExpiry: 2);
+
+        HoldInterrupt result = interrupt.Evaluate(Option(Now.AddDays(6), minimumDays: 10));
+
+        Assert.True(result.ShouldExitNow);
+        Assert.Contains("<=10d", result.Reason);
+    }
+
+    [Fact]
+    public void TheLanesFloorAppliesWhenThePositionStatedNoMinimum()
+    {
+        var interrupt = new ExpiryHoldInterrupt(new FixedClock(Now), minimumDaysToExpiry: 2);
+
+        Assert.False(interrupt.Evaluate(Option(Now.AddDays(6), minimumDays: null)).ShouldExitNow);
+        Assert.True(interrupt.Evaluate(Option(Now.AddDays(1), minimumDays: null)).ShouldExitNow);
+    }
+
+    [Fact]
+    public void SpotHasNoExpiryAndIsNeverClosedForOne()
+    {
+        var interrupt = new ExpiryHoldInterrupt(new FixedClock(Now), minimumDaysToExpiry: 2);
+
+        HeldPosition spot = new("exec", "BTC/USD", 1m, 100m, 5m, null, EarliestLegExpiry: null);
+
+        Assert.False(interrupt.Evaluate(spot).ShouldExitNow);
+    }
+
+    private static HeldPosition Option(DateTimeOffset expiry, int? minimumDays) =>
+        new("exec", "SPY", 1m, 1.25m, 100m, null, expiry, minimumDays);
+
+    private sealed class FixedClock(DateTimeOffset now) : IRuntimeClock
+    {
+        public DateTimeOffset UtcNow => now;
+
+        public long MonotonicTimestamp => now.Ticks;
+
+        public double ElapsedMilliseconds(long fromTicks, long toTicks) =>
+            TimeSpan.FromTicks(toTicks - fromTicks).TotalMilliseconds;
     }
 }
 

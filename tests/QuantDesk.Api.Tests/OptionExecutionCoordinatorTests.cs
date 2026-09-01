@@ -25,6 +25,10 @@ namespace QuantDesk.Api.Tests;
 /// </summary>
 public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : IDisposable
 {
+    /// <summary>The publication that licensed the position, bound at reservation.</summary>
+    private static readonly PositionOwnership Ownership = new(
+        "artifact-1", "v1", "hash-abc", "spy-vertical", DateTimeOffset.UnixEpoch);
+
     private static readonly DateTimeOffset AsOf = new(2026, 9, 1, 15, 0, 0, TimeSpan.Zero);
     private const decimal Spot = 600m;
     private static readonly AccountCapabilities Enabled = new(true, true, true, true, 3);
@@ -40,7 +44,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
 
         OptionExecutionOutcome outcome = await coordinator.ExecuteAsync(
             "SPY", Enabled, "OPT-E2E-0001", Spot, expectedReturnBps: 200,
-            riskBudget: 500m, Plan(), AsOf, 7, 60, 0.05m, CancellationToken.None);
+            riskBudget: 500m, Plan(), AsOf, 7, 60, Ownership, 0.05m, CancellationToken.None);
 
         output.WriteLine(
             $"submitted={outcome.Submitted} state={outcome.State} reason={outcome.Reason} " +
@@ -70,7 +74,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
         var broker = new RecordingMultiLegBroker();
         await Coordinator(broker).ExecuteAsync(
             "SPY", Enabled, "OPT-DURABLE-0001", Spot, 200, 500m, Plan(),
-            AsOf, 7, 60, 0.05m, CancellationToken.None);
+            AsOf, 7, 60, Ownership, 0.05m, CancellationToken.None);
 
         // The record must exist on disk, and it must name the same order the broker received.
         string persisted = await File.ReadAllTextAsync(_storePath);
@@ -86,7 +90,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
             "SPY", noOptions, "OPT-PERM-0001", Spot, 200, 500m, Plan(),
-            AsOf, 7, 60, 0.05m, CancellationToken.None);
+            AsOf, 7, 60, Ownership, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
         Assert.Equal("AssetClassNotPermitted", outcome.Reason);
@@ -100,7 +104,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
             "SPY", Enabled, "OPT-BUDGET-0001", Spot, 200, riskBudget: 50m, Plan(),
-            AsOf, 7, 60, 0.05m, CancellationToken.None);
+            AsOf, 7, 60, Ownership, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
         Assert.Null(broker.LastCommand);
@@ -114,7 +118,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
             "SPY", levelOne, "OPT-LEVEL-0001", Spot, 200, 500m, Plan(),
-            AsOf, 7, 60, 0.05m, CancellationToken.None);
+            AsOf, 7, 60, Ownership, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
         Assert.Equal("AssetClassNotPermitted", outcome.Reason);
@@ -128,7 +132,7 @@ public sealed class OptionExecutionCoordinatorTests(ITestOutputHelper output) : 
 
         OptionExecutionOutcome outcome = await Coordinator(broker).ExecuteAsync(
             "SPY", Enabled, "OPT-LIVE-0001", Spot, 200, 500m, Plan(),
-            AsOf, 7, 60, 0.05m, CancellationToken.None);
+            AsOf, 7, 60, Ownership, 0.05m, CancellationToken.None);
 
         Assert.False(outcome.Submitted);
         Assert.Equal("ReservationRejected", outcome.Reason);

@@ -16,7 +16,7 @@ public sealed class MeasuredCostFloorTests
         // The live defect. The model charges Alpaca's published 50 bps schedule rate; the account
         // lost 68 bps per round trip because the venue also levies a USD cash charge that never
         // appears in a fill. Every candidate whose edge sat between the two looked profitable.
-        var floor = new MeasuredCostFloor(new FixedCostModel(50m), Dataset(68m));
+        var floor = new MeasuredCostFloor(new FixedCostModel(50m), Source(68m));
 
         PricedCost priced = floor.Price(Candidate(1000m), Market());
 
@@ -31,7 +31,7 @@ public sealed class MeasuredCostFloorTests
         // A floor, not a replacement. The spread term is read from the live quote and reflects
         // conditions now; the dataset is an average over trips taken under conditions that have
         // passed. Whichever is currently more pessimistic wins.
-        var floor = new MeasuredCostFloor(new FixedCostModel(90m), Dataset(68m));
+        var floor = new MeasuredCostFloor(new FixedCostModel(90m), Source(68m));
 
         PricedCost priced = floor.Price(Candidate(1000m), Market());
 
@@ -46,7 +46,7 @@ public sealed class MeasuredCostFloorTests
         // The number is still returned -- refusing to price would break every caller -- but it is
         // labelled, so a caller that requires measurement can abstain instead of discovering later
         // that its "cost" was an assumption nobody had checked.
-        var floor = new MeasuredCostFloor(new FixedCostModel(50m), Dataset(68m));
+        var floor = new MeasuredCostFloor(new FixedCostModel(50m), Source(68m));
 
         PricedCost priced = floor.Price(Candidate(50_000m), Market());
 
@@ -57,10 +57,12 @@ public sealed class MeasuredCostFloorTests
     [Fact]
     public void NoDatasetAtAllIsAnAssumptionNotAFreePass()
     {
-        var floor = new MeasuredCostFloor(new FixedCostModel(50m), measured: null);
+        var floor = new MeasuredCostFloor(new FixedCostModel(50m), new StubSource(null));
 
         Assert.Equal(CostBasis.Modelled, floor.Price(Candidate(1000m), Market()).Basis);
     }
+
+    private static IRealisedCostSource Source(decimal bps) => new StubSource(Dataset(bps));
 
     private static RealisedCostContract Dataset(decimal bps) => new(
         "crypto-alpaca-paper", "v1", "crypto", "alpaca", "PAPER",
@@ -113,6 +115,11 @@ public sealed class MeasuredCostFloorTests
         GapLoss3Sigma: Usd.Zero,
         GapLoss5Sigma: Usd.Zero,
         ShortConvexityScore: 0d);
+
+    private sealed class StubSource(RealisedCostContract? dataset) : IRealisedCostSource
+    {
+        public RealisedCostContract? Current() => dataset;
+    }
 
     /// <summary>A model that charges a flat bps of notional, so the arithmetic under test is visible.</summary>
     private sealed class FixedCostModel(decimal bps) : ICostModel

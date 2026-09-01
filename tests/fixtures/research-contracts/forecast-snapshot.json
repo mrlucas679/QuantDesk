@@ -16,6 +16,7 @@
   "status": "Valid",
   "support_domain_status": "InDomain",
   "uncertainty": {
+    "assumed_round_trip_cost_bps": 68.0,
     "historical_net_edge_bps": 12.5,
     "historical_net_edge_standard_error_bps": 3.1,
     "historical_observations": 412,

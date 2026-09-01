@@ -81,6 +81,7 @@ def test_passed_rule_strategy_publishes_complete_executable_bundle(tmp_path: Pat
         evaluation,
         profile,
         validation_evidence,
+        round_trip_cost_bps=68.0,
     )
 
     assert artifact.model_type == "deterministic_rule"
@@ -88,6 +89,26 @@ def test_passed_rule_strategy_publishes_complete_executable_bundle(tmp_path: Pat
     assert artifact.strategy_definition.forecast_horizon_minutes == 720
     assert artifact.strategy_definition.exit_policy.maximum_holding_minutes == 720
     assert (artifacts_root / "current-contracts.json").exists()
+
+    # The block the execution gate needs, without which the lane refuses every trade. Publishing a
+    # point forecast with no error bar reads as a claim of precision, and the execution plane cannot
+    # tell "exact" from "unstated" -- so it refuses the second rather than degrading quietly.
+    pointer = json.loads((artifacts_root / "current-contracts.json").read_text(encoding="utf-8"))
+    published = json.loads(
+        (artifacts_root / pointer["Forecast"]).read_text(encoding="utf-8")
+    )
+    uncertainty = published["uncertainty"]
+
+    assert uncertainty["historical_observations"] == evaluation.trade_count
+    assert uncertainty["historical_net_edge_bps"] == evaluation.mean_net_bps
+    # Recovered from the same two-sided bound the gates were applied against, rather than
+    # recomputed, so the published error can never disagree with the one that gated promotion.
+    assert uncertainty["standard_error_bps"] == (
+        evaluation.mean_net_bps - evaluation.lower_confidence_net_bps
+    ) / 1.96
+    # And the deduction is reversible: point_forecast is already net of this, so an execution plane
+    # that subtracts its own measured cost would otherwise charge the same cost twice.
+    assert uncertainty["assumed_round_trip_cost_bps"] == 68.0
 
 
 def test_failed_rule_strategy_cannot_publish(tmp_path: Path) -> None:
@@ -117,6 +138,7 @@ def test_failed_rule_strategy_cannot_publish(tmp_path: Path) -> None:
             evaluation,
             profile,
             {},
+            round_trip_cost_bps=68.0,
         )
 
 
@@ -135,3 +157,4 @@ def test_trend_state_remains_active_without_a_new_crossover() -> None:
 
     assert bool(frame["trend_state"].iloc[-1])
     assert not bool(frame["moving_average_trend"].iloc[-1])
+

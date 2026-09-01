@@ -14,6 +14,10 @@ namespace QuantDesk.Runtime.Execution;
 /// <c>MinimumDteToHold</c> already existed on the management plan to express this. It was passed as
 /// null by every compiler and read by nothing, so the rule was stated in the domain and absent from
 /// the system. This is what enforces it.
+///
+/// The position's own bound wins where it has one, because a wide spread and a tight one do not
+/// become dangerous at the same distance from expiry. The constructor value is the floor for
+/// positions that never stated one.
 /// </summary>
 public sealed class ExpiryHoldInterrupt(IRuntimeClock clock, int minimumDaysToExpiry) : IHoldInterrupt
 {
@@ -22,10 +26,10 @@ public sealed class ExpiryHoldInterrupt(IRuntimeClock clock, int minimumDaysToEx
         // Spot does not expire. Nothing to check, and no reason to treat it as though it did.
         if (position.EarliestLegExpiry is not { } expiry) return HoldInterrupt.None;
 
+        int floor = position.MinimumDaysToExpiry ?? minimumDaysToExpiry;
         double remaining = (expiry - clock.UtcNow).TotalDays;
-        if (remaining > minimumDaysToExpiry) return HoldInterrupt.None;
+        if (remaining > floor) return HoldInterrupt.None;
 
-        return HoldInterrupt.Now(
-            $"ApproachingExpiry:{remaining:0.0}d<={minimumDaysToExpiry}d");
+        return HoldInterrupt.Now($"ApproachingExpiry:{remaining:0.0}d<={floor}d");
     }
 }

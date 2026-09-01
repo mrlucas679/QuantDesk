@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from quantdesk_research.contracts.feature_schema import FeatureSchema
-from quantdesk_research.contracts.forecast import Forecast
+from quantdesk_research.contracts.forecast import Forecast, ForecastUncertainty
 from quantdesk_research.contracts.model_artifact import (
     EvidenceProfile,
     ExitPolicyDefinition,
@@ -37,6 +37,7 @@ def publish_validated_rule_strategy(
     evaluation: StrategyEvaluation,
     evidence_profile: EvidenceProfile,
     validation_evidence: dict[str, ValidationGateEvidence],
+    round_trip_cost_bps: float,
 ) -> ModelArtifact:
     """Publish one passed deterministic strategy with exact executable semantics."""
     if not evaluation.passed:
@@ -136,6 +137,7 @@ def publish_validated_rule_strategy(
         horizon_minutes=horizon_minutes,
         point_forecast=evaluation.mean_net_bps if active else 0.0,
         confidence=0.75,
+        uncertainty=_uncertainty(evaluation, round_trip_cost_bps),
         calibration_status="independent_validation_pass",
         support_domain_status="in_domain",
         feature_schema_hash=feature_hash,
@@ -192,3 +194,36 @@ def _load_array(path: Path) -> list[dict[str, Any]]:
     if not isinstance(document, list) or not all(isinstance(item, dict) for item in document):
         raise ValueError("Expected an array of bar objects.")
     return [{str(key): value for key, value in item.items()} for item in document]
+
+
+# The bound in StrategyEvaluation is a two-sided 95% interval on the mean: mean - 1.96 * se. The
+# standard error is recovered from it rather than recomputed, so the published figure can never
+# disagree with the one the gates were applied against.
+_TWO_SIDED_95 = 1.96
+
+
+def _uncertainty(
+    evaluation: StrategyEvaluation, round_trip_cost_bps: float
+) -> ForecastUncertainty:
+    """State how wrong this forecast could be, and what the family actually earned.
+
+    A deterministic rule has no per-bar model output distinct from its own conditional history: when
+    the rule fires, the expectation *is* the mean net return across the occasions it fired before.
+    So the current signal and the historical edge are the same estimate here, and saying so plainly
+    is the honest description. What was missing was never a second number -- it was the error bar on
+    the first one, without which a point estimate reads as a fact.
+
+    ``assumed_round_trip_cost_bps`` travels with them because ``point_forecast`` is already net of
+    it. An execution plane that subtracts its own measured cost from an already-net figure charges
+    the same cost twice and refuses every trade, so the deduction has to be reversible.
+    """
+    standard_error = max(
+        (evaluation.mean_net_bps - evaluation.lower_confidence_net_bps) / _TWO_SIDED_95, 0.0
+    )
+    return ForecastUncertainty(
+        standard_error_bps=standard_error,
+        historical_net_edge_bps=evaluation.mean_net_bps,
+        historical_net_edge_standard_error_bps=standard_error,
+        historical_observations=evaluation.trade_count,
+        assumed_round_trip_cost_bps=round_trip_cost_bps,
+    )

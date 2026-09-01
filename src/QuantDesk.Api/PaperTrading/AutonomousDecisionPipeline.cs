@@ -33,7 +33,7 @@ public sealed class AutonomousDecisionPipeline(
     ExpertCommittee committee,
     CryptoDirectionalStrategyCompiler compiler,
     CryptoResearchGate researchGate,
-    CryptoCostModel costs,
+    ICostModel costs,
     ActionabilityGate actionability,
     RiskGovernor riskGovernor,
     IRuntimeClock clock,
@@ -95,7 +95,8 @@ public sealed class AutonomousDecisionPipeline(
                 forecastUncertainty?.StandardErrorBps,
                 forecastUncertainty?.HistoricalNetEdgeBps,
                 forecastUncertainty?.HistoricalNetEdgeStandardErrorBps,
-                forecastUncertainty?.HistoricalObservations);
+                forecastUncertainty?.HistoricalObservations,
+                forecastUncertainty?.AssumedRoundTripCostBps);
 
             ForecastEdgeAssessment assessment = ForecastEdgeAssessment.Evaluate(edge, costBound);
             if (!assessment.Tradable)

@@ -115,10 +115,22 @@ builder.Services.AddSingleton(services =>
         new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration);
 });
 builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
-builder.Services.AddSingleton(services =>
+builder.Services.AddSingleton<IRealisedCostSource>(services =>
+    new DiagnosticStoreRealisedCostSource(services.GetRequiredService<DiagnosticExecutionStore>()));
+
+// The cost the decision actually gets charged.
+//
+// The modelled figure alone was Alpaca's published 50 bps schedule rate plus the live spread. The
+// account lost 68 bps per round trip, because the venue also takes a USD cash charge that appears
+// in no fill. Every candidate whose edge sat between the two looked profitable and was not. The
+// floor charges whichever of the two is more pessimistic, so a widening spread still raises the
+// charge and a fee the model has never heard of still cannot be traded through.
+builder.Services.AddSingleton<ICostModel>(services =>
 {
     CryptoFeeSchedule fees = services.GetRequiredService<CryptoFeeSchedule>();
-    return new CryptoCostModel(new BasisPoints((double)(fees.TakerBps * 2m)), new BasisPoints(10));
+    var modelled = new CryptoCostModel(
+        new BasisPoints((double)(fees.TakerBps * 2m)), new BasisPoints(10));
+    return new MeasuredCostFloor(modelled, services.GetRequiredService<IRealisedCostSource>());
 });
 builder.Services.AddSingleton(new ActionabilityGate(0.01, new Usd(0.01m)));
 builder.Services.AddSingleton(services => new RiskGovernor(
@@ -198,6 +210,7 @@ builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     services.GetRequiredService<IRuntimeClock>(),
     services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout,
     services.GetRequiredService<IHoldInterrupt>()));
+builder.Services.AddHostedService<RealisedCostPublisherService>();
 builder.Services.AddSingleton<SpotExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<SpotExecutionRecoveryService>());
@@ -364,20 +377,16 @@ app.MapGet("/api/diagnostics/{experimentId}", (
 });
 app.MapGet("/api/costs/realised", (
     HttpRequest request,
-    DiagnosticExecutionStore store,
+    IRealisedCostSource realisedCosts,
     OperatorKeyAuthorizer authorizer) =>
 {
     if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
         return Results.Unauthorized();
 
-    // Derived on read rather than cached. The dataset is only ever as good as the trips behind it,
-    // and a cached copy would keep answering after new evidence had arrived.
-    RealisedCostContract? contract = RealisedCostEstimator.Estimate(
-        store.ListCompleted(),
-        datasetId: "alpaca-paper-realised-cost",
-        datasetVersion: DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture),
-        assetClass: "crypto",
-        venue: "alpaca");
+    // The same source the decision path charges against, so what an operator reads here is what a
+    // trade is actually priced with. Derived on read: a cached copy would keep answering after new
+    // evidence had arrived.
+    RealisedCostContract? contract = realisedCosts.Current();
 
     // 404 rather than an empty dataset or a zero. Too few completed round trips is not a cost of
     // zero; it is the absence of a measurement, and the caller has to be able to tell the

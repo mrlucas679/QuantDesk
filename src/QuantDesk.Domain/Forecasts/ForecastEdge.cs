@@ -37,7 +37,9 @@ namespace QuantDesk.Domain.Forecasts;
 /// <em>upper</em> bound, because the estimate's own error must count against trading rather than
 /// for it.
 /// </summary>
-/// <param name="CurrentSignalBps">The model's point forecast for this bar.</param>
+/// <param name="CurrentSignalBps">
+/// The model's point forecast for this bar, net of <paramref name="AssumedRoundTripCostBps"/>.
+/// </param>
 /// <param name="CurrentSignalStandardErrorBps">
 /// Dispersion of that forecast. Null when the publisher did not state one, which is not the same as
 /// zero — see <see cref="ForecastEdgeAssessment"/>, which refuses rather than assuming certainty.
@@ -45,12 +47,17 @@ namespace QuantDesk.Domain.Forecasts;
 /// <param name="HistoricalNetEdgeBps">What the family earned per trade, net of costs, in research.</param>
 /// <param name="HistoricalNetEdgeStandardErrorBps">Standard error of that historical mean.</param>
 /// <param name="HistoricalObservations">Trades behind the historical figure.</param>
+/// <param name="AssumedRoundTripCostBps">
+/// The cost the research plane already deducted. Added back before the comparison so the measured
+/// cost can replace it -- without this the same cost is charged twice and nothing ever trades.
+/// </param>
 public readonly record struct ForecastEdge(
     double CurrentSignalBps,
     double? CurrentSignalStandardErrorBps,
     double? HistoricalNetEdgeBps,
     double? HistoricalNetEdgeStandardErrorBps,
-    int? HistoricalObservations)
+    int? HistoricalObservations,
+    double? AssumedRoundTripCostBps)
 {
     /// <summary>One-sided 95% normal quantile.</summary>
     public const double OneSidedNinetyFivePercent = 1.645;
@@ -64,10 +71,17 @@ public readonly record struct ForecastEdge(
     /// </summary>
     public const int MinimumHistoricalObservations = 30;
 
-    /// <summary>The current signal, discounted for how wrong it could be.</summary>
-    public double? CurrentSignalLowerBoundBps => CurrentSignalStandardErrorBps is { } error && error >= 0
-        ? CurrentSignalBps - (OneSidedNinetyFivePercent * error)
-        : null;
+    /// <summary>
+    /// The signal before research's cost assumption, discounted for how wrong it could be.
+    ///
+    /// Gross, because the caller compares it against a *measured* cost. Leaving research's
+    /// assumption embedded would charge cost twice and would also freeze a stale assumption into
+    /// every decision, when the whole reason execution measures cost is that its figure is better.
+    /// </summary>
+    public double? CurrentSignalLowerBoundBps =>
+        CurrentSignalStandardErrorBps is { } error && error >= 0 && AssumedRoundTripCostBps is { } assumed
+            ? CurrentSignalBps + assumed - (OneSidedNinetyFivePercent * error)
+            : null;
 
     /// <summary>The family's demonstrated net edge, discounted for sampling error.</summary>
     public double? HistoricalNetEdgeLowerBoundBps =>
@@ -98,7 +112,7 @@ public readonly record struct ForecastEdgeAssessment(
     /// <param name="allInCostUpperBoundBps">Measured cost at its upper confidence bound.</param>
     public static ForecastEdgeAssessment Evaluate(in ForecastEdge edge, double allInCostUpperBoundBps)
     {
-        if (edge.CurrentSignalStandardErrorBps is null)
+        if (edge.CurrentSignalStandardErrorBps is null || edge.AssumedRoundTripCostBps is null)
             return Reject("ForecastUncertaintyNotPublished", edge);
         if (edge.HistoricalNetEdgeBps is null || edge.HistoricalNetEdgeStandardErrorBps is null)
             return Reject("HistoricalNetEdgeNotPublished", edge);

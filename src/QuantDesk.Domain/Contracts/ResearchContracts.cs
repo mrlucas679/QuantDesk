@@ -147,17 +147,25 @@ public sealed record EvidenceProfileContract(
 /// earned after costs in research. Neither substitutes for the other, and a point forecast answers
 /// neither. See <see cref="QuantDesk.Domain.Forecasts.ForecastEdge"/> for what went wrong when one
 /// number was asked to serve all three.
+///
+/// <see cref="AssumedRoundTripCostBps"/> is what makes the arithmetic safe across the boundary. The
+/// research plane publishes a point forecast already net of the cost *it* assumed, so an execution
+/// plane that subtracts cost again charges it twice and rejects everything. Stating the assumption
+/// lets execution add it back and substitute its own measured figure -- which is the point, since
+/// execution is the only side that can measure what a round trip really costs.
 /// </summary>
 public sealed record ForecastUncertaintyContract(
     double StandardErrorBps,
     double HistoricalNetEdgeBps,
     double HistoricalNetEdgeStandardErrorBps,
-    int HistoricalObservations)
+    int HistoricalObservations,
+    double AssumedRoundTripCostBps)
 {
     public bool IsValid() => double.IsFinite(StandardErrorBps) && StandardErrorBps >= 0
         && double.IsFinite(HistoricalNetEdgeBps)
         && double.IsFinite(HistoricalNetEdgeStandardErrorBps) && HistoricalNetEdgeStandardErrorBps >= 0
-        && HistoricalObservations > 0;
+        && HistoricalObservations > 0
+        && double.IsFinite(AssumedRoundTripCostBps) && AssumedRoundTripCostBps >= 0;
 }
 
 public sealed record ForecastSnapshotContract(

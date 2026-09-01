@@ -126,7 +126,8 @@ public sealed class AutonomousDecisionPipelineTests
                 StandardErrorBps: 5d,
                 HistoricalNetEdgeBps: -3d,
                 HistoricalNetEdgeStandardErrorBps: 1d,
-                HistoricalObservations: 400),
+                HistoricalObservations: 400,
+                AssumedRoundTripCostBps: 0d),
             allInCostUpperBoundBps: 70d);
 
         Assert.False(result.Approved);
@@ -143,7 +144,7 @@ public sealed class AutonomousDecisionPipelineTests
             verifiedForecastBps: 100d,
             verifiedStrategyFamily: null,
             verifiedStrategyDefinition: null,
-            forecastUncertainty: new ForecastUncertaintyContract(60d, 40d, 5d, 400),
+            forecastUncertainty: new ForecastUncertaintyContract(60d, 40d, 5d, 400, 0d),
             allInCostUpperBoundBps: 70d);
 
         Assert.False(result.Approved);

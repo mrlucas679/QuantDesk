@@ -27,6 +27,19 @@ public readonly record struct PricedCost(CostEstimate Estimate, CostBasis Basis)
 }
 
 /// <summary>
+/// Supplies the current realised-cost dataset.
+///
+/// A source rather than a snapshot, because the dataset is only ever as good as the round trips
+/// behind it and a value captured at startup would keep answering after new evidence arrived. The
+/// implementation derives it on read for the same reason.
+/// </summary>
+public interface IRealisedCostSource
+{
+    /// <summary>The dataset as it stands now, or null when too little has been measured.</summary>
+    RealisedCostContract? Current();
+}
+
+/// <summary>
 /// Charges the greater of the modelled cost and what trading this size actually cost.
 ///
 /// Why a floor rather than a replacement
@@ -43,7 +56,7 @@ public readonly record struct PricedCost(CostEstimate Estimate, CostBasis Basis)
 /// quantity. Every candidate whose expected edge sat between those two numbers looked profitable
 /// and was not.
 /// </summary>
-public sealed class MeasuredCostFloor(ICostModel modelled, RealisedCostContract? measured) : ICostModel
+public sealed class MeasuredCostFloor(ICostModel modelled, IRealisedCostSource measured) : ICostModel
 {
     public CostEstimate Estimate(in TradeCandidate candidate, in InstrumentSnapshot market) =>
         Price(candidate, market).Estimate;
@@ -54,7 +67,7 @@ public sealed class MeasuredCostFloor(ICostModel modelled, RealisedCostContract?
         CostEstimate modelledEstimate = modelled.Estimate(candidate, market);
         decimal notional = candidate.Exposure.Notional.Value;
 
-        if (measured?.UpperConfidenceCostBpsFor(notional) is not { } measuredBps || notional <= 0m)
+        if (measured.Current()?.UpperConfidenceCostBpsFor(notional) is not { } measuredBps || notional <= 0m)
             return new(modelledEstimate, CostBasis.Modelled);
 
         Usd measuredTotal = new(notional * measuredBps / 10_000m);

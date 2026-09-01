@@ -72,6 +72,7 @@ public sealed class OptionExecutionCoordinator(
         DateTimeOffset asOf,
         int minimumDaysToExpiry,
         int maximumDaysToExpiry,
+        PositionOwnership? ownership,
         decimal strikeBandFraction,
         CancellationToken cancellationToken)
     {
@@ -127,7 +128,8 @@ public sealed class OptionExecutionCoordinator(
 
         if (!lifecycle.TryReserve(
                 executionId, candidate.StrategyId, quantity: 1, entryLimit, exitLimit,
-                worstCaseLoss, managementPlan.MaximumHoldingPeriod, legs))
+                worstCaseLoss, managementPlan.MaximumHoldingPeriod, legs, ownership,
+                managementPlan.MinimumDteToHold))
             return OptionExecutionOutcome.Rejected("ReservationRejected");
 
         logger.LogInformation(

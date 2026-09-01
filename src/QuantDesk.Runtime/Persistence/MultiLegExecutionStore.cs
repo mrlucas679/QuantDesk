@@ -75,6 +75,14 @@ public sealed record MultiLegExecutionRecord(
     /// <summary>The research publication that authorised this position, captured at reservation.</summary>
     public PositionOwnership? Ownership { get; init; }
 
+    /// <summary>
+    /// The management plan's MinimumDteToHold, or null when the plan did not state one.
+    ///
+    /// Persisted rather than recomputed because the plan that authorised the position is the plan
+    /// that should manage it, and a successor artifact's plan must not silently take over.
+    /// </summary>
+    public int? MinimumDaysToExpiry { get; init; }
+
     public decimal InternalOpenQuantity => Math.Max(0, EntryFilledQuantity - ExitFilledQuantity);
 
     /// <summary>

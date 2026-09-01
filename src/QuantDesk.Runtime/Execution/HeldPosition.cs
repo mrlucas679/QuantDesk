@@ -22,6 +22,11 @@ namespace QuantDesk.Runtime.Execution;
 /// held toward expiry behave nothing like the same position with weeks to run, so a rule that only
 /// watched price would miss the risk entirely.
 /// </param>
+/// <param name="MinimumDaysToExpiry">
+/// How close to expiry this specific position was authorised to be held, from its management plan,
+/// or null to fall back to the lane's configured floor. Per-position because a wide spread and a
+/// tight one do not become dangerous at the same distance from expiry.
+/// </param>
 public readonly record struct HeldPosition(
     string ExecutionId,
     string Symbol,
@@ -29,4 +34,5 @@ public readonly record struct HeldPosition(
     decimal? EntryPrice,
     decimal DefinedMaximumLoss,
     PositionOwnership? Ownership,
-    DateTimeOffset? EarliestLegExpiry);
+    DateTimeOffset? EarliestLegExpiry,
+    int? MinimumDaysToExpiry = null);
