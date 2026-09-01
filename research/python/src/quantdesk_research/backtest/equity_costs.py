@@ -97,3 +97,22 @@ COST_SCENARIOS = (BASE_COST, STRESS_COST, SEVERE_COST)
 # per-trade edge or a holding period long enough to amortise 50 bps.
 CRYPTO_TAKER_ROUND_TRIP_BPS = 50.0
 CRYPTO_MAKER_ROUND_TRIP_BPS = 30.0
+
+# Measured, not modelled. On 2026-09-01, 59 bounded BTC/USD round trips were executed against the
+# Alpaca paper venue and the cost was read from account equity before and after each one, so it owes
+# nothing to a fee schedule:
+#
+#   fill-price P&L ("gross")            11 bps   -- omits the fee entirely
+#   fill-derived P&L net of in-kind fee 36 bps   -- misses the separate USD cash charge
+#   account equity delta                68 bps   -- ground truth
+#
+# The taker constant above understates the realised cost by 18 bps because the venue charges both an
+# in-kind quantity deduction *and* a "Coin Pair Transaction Fee (USD)" cash charge, and neither the
+# fill price nor the filled quantity reveals the second one.
+#
+# Use this for any crypto hypothesis that intends to trade. The 50 bps figure remains as the
+# documented schedule rate; this is what the schedule actually costs in practice.
+CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED = 68.0
+CRYPTO_MEASURED_PROVENANCE = (
+    "59 BTC/USD paper round trips, 2026-09-01, cost taken from Alpaca account equity per trip"
+)

@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]  # pandas-stubs is not installed
 from numpy.typing import NDArray
 
+from quantdesk_research.backtest.equity_costs import CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED
 from quantdesk_research.contracts.feature_schema import FeatureSchema
 from quantdesk_research.contracts.forecast import Forecast
 from quantdesk_research.contracts.model_artifact import (
@@ -183,7 +184,7 @@ def select_threshold(
 
 def run_experiment(
     data_root: Path,
-    round_trip_cost_bps: float = 60.0,
+    round_trip_cost_bps: float = CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED,
     horizon_bars: int = 12,
     manifest_name: str = "latest-manifest.json",
     experiment_name: str = "crypto-direction",

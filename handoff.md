@@ -1350,6 +1350,35 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Research families re-examined against the measured 68 bps floor — 2026-09-01
+
+| family | charges | validated against a real fill | verdict |
+| --- | --- | --- | --- |
+| `crypto_direction` | 60 bps (schedule says 50) | **yes — 68 bps measured** | `NO_TRADE`, and by a wider margin than believed |
+| `equity_campaign`, `equity_portfolio_strategies`, `equity_relative_strength`, `strategy_ensemble`, `prospective_campaign` | 5 bps BASE / 10 STRESS / 20 SEVERE | **no — no equity has ever been traded** | conclusions rest on an unvalidated assumption |
+
+**Crypto: corrected, verdict unchanged.** `CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED = 68.0` records the
+measurement with its provenance, and `crypto_direction.run_experiment` now charges it by default instead
+of 60. The family cannot be re-run today because **no crypto dataset exists** — only
+`US_EQUITIES_RESEARCH_001` — so this is a correction that binds the next time crypto data is acquired.
+Raising the hurdle only strengthens an existing `NO_TRADE`.
+
+**Equity: the assumption is reasoned but untested, and crypto just showed how that fails.** The 5 bps
+derivation is sound and cited — penny spreads on $240–650 ETFs are 0.15–0.4 bps per crossing, regulatory
+fees are sub-basis-point, commission is zero, so ~2 bps honest and 5 bps charged is conservative. The
+danger is not the model. On crypto the *model* was roughly right (50 vs 68) while the *measurement* was
+six times wrong, because a cash charge never appears in a fill price or quantity. Alpaca equities have
+exactly that shape: SEC and TAF fees are cash charges on sells.
+
+**So the transferable rule, and the one that matters: P&L must be read from account equity, not from
+fills.** That is now implemented for the diagnostic lane via `RealisedAccountPnl`, and it is the standard
+any lane must meet before its results are believed.
+
+**Outstanding and specific:** validate the equity cost ladder with a bounded live SPY round trip,
+measuring account equity before and after exactly as the crypto measurement did. It could not be done in
+this session — US equity regular hours are 13:30–20:00 UTC and the work reached this point at ~21:15 UTC,
+an hour after the close.
+
 ### What is actually losing the money — 2026-09-01
 
 **Not the strategies. There were none.** All 59 round trips came from the diagnostic lane, which has no
