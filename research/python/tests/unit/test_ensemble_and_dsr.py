@@ -1,5 +1,6 @@
 """Selection-free ensembles, and the multiple-testing correction that was only claimed."""
 import numpy as np
+import pytest
 import pandas as pd
 
 from quantdesk_research.evaluation.deflated_sharpe import calculate_deflated_sharpe_ratio
@@ -61,5 +62,19 @@ def test_deflation_penalises_a_wider_search() -> None:
     assert many < few
 
 
-def test_a_single_trial_is_not_deflated() -> None:
-    assert calculate_deflated_sharpe_ratio(0.08, 1, 0.0009, 1000) == 1.0
+def test_a_single_trial_collapses_to_the_probabilistic_sharpe_ratio() -> None:
+    # A single trial carries no *multiple-testing* penalty, but it is not therefore certain. This
+    # previously returned exactly 1.0, which claims a Sharpe measured once on finite data is
+    # certainly positive -- the flattering error the statistic exists to prevent. With no trials to
+    # deflate against, the expected maximum under the null is zero and the result is the
+    # probabilistic Sharpe ratio: the probability the true Sharpe clears zero given sampling noise.
+    single = calculate_deflated_sharpe_ratio(0.08, 1, 0.0009, 1000)
+
+    assert 0.0 < single < 1.0
+    # And a weaker Sharpe on the same sample must be less certain, not equally certain.
+    assert calculate_deflated_sharpe_ratio(0.01, 1, 0.0009, 1000) < single
+
+
+def test_a_zero_sharpe_on_one_trial_is_a_coin_flip() -> None:
+    # The anchor that makes the scale readable: no observed edge, no claim either way.
+    assert calculate_deflated_sharpe_ratio(0.0, 1, 0.0009, 1000) == pytest.approx(0.5, abs=1e-9)

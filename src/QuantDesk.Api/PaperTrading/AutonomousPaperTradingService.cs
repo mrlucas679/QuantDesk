@@ -186,11 +186,10 @@ public sealed class AutonomousPaperTradingService(
         PortfolioSnapshot initial = EmptyPortfolio(account);
         DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
         AutonomousPipelineDecision decision = pipeline.Evaluate(
-            slot, evidence, initial, true, true,
+            slot, evidence, initial, true, true, capabilities,
             experimental ? null : (double)forecast!.PointForecast,
             experimental ? null : research.StrategyFamily,
-            experimental ? null : research.StrategyDefinition,
-            capabilities);
+            experimental ? null : research.StrategyDefinition);
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {

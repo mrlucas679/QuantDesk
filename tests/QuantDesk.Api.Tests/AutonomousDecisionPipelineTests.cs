@@ -1,5 +1,6 @@
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Domain.Capabilities;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Portfolio;
 using QuantDesk.Domain.Risk;
@@ -19,7 +20,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void AlignedExpertsWithNetEdgeProduceManagedRiskApprovedCandidate()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true);
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.True(result.Approved);
         Assert.Equal("crypto-long-momentum-v1", result.Candidate?.StrategyId);
@@ -32,7 +33,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void PositiveForecastThatCannotPayCostsIsRejected()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.40m, 100m, 100.5m), Portfolio(), true, true);
+            0, Evidence(100m, 100.40m, 100m, 100.5m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.False(result.Approved);
         Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", result.Reason);
@@ -43,7 +44,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void ResearchGateRejectionCannotReachActionabilityOrRisk()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 100.3m), Portfolio(), true, true);
+            0, Evidence(100m, 100.01m, 100m, 100.3m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.False(result.Approved);
         Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", result.Reason);
@@ -55,11 +56,51 @@ public sealed class AutonomousDecisionPipelineTests
     public void BrokerHealthFailureCannotReachApproval()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), false, true);
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), false, true, CryptoEnabled);
 
         Assert.False(result.Approved);
         Assert.Equal(RiskReason.BrokerUnhealthy.ToString(), result.Reason);
     }
+
+    [Fact]
+    public void AnAccountWithoutCryptoPermissionCannotProduceACryptoCandidate()
+    {
+        // The reason the capability argument is mandatory. This pipeline previously defaulted to a
+        // permissive set when none was supplied -- crypto and equity granted, options withheld --
+        // so an account that had never been asked what it could trade was assumed able to trade
+        // the exact thing this compiler emits. The venue would then reject the order after the
+        // reservation was taken, which is the expensive place to discover a permission.
+        var withoutCrypto = new AccountCapabilities(
+            PaperEnvironment: true,
+            EquityTrading: true,
+            CryptoTrading: false,
+            OptionsTrading: false,
+            OptionsTradingLevel: null);
+
+        AutonomousPipelineDecision result = CreatePipeline().Evaluate(
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, withoutCrypto);
+
+        Assert.False(result.Approved);
+        Assert.Equal("NoOpportunity", result.Reason);
+        Assert.Null(result.Candidate);
+        Assert.Null(result.Risk);
+    }
+
+    [Fact]
+    public void CapabilitiesAreRequiredRatherThanDefaultedWhenAbsent()
+    {
+        // A null set is a question that was never answered, not permission. Failing closed here is
+        // what keeps the absence of an answer from reading as a yes.
+        Assert.Throws<ArgumentNullException>(() => CreatePipeline().Evaluate(
+            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, null!));
+    }
+
+    private static readonly AccountCapabilities CryptoEnabled = new(
+        PaperEnvironment: true,
+        EquityTrading: true,
+        CryptoTrading: true,
+        OptionsTrading: false,
+        OptionsTradingLevel: null);
 
     private static AutonomousDecisionPipeline CreatePipeline()
     {

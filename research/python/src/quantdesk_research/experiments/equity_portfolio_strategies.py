@@ -75,7 +75,7 @@ from quantdesk_research.evaluation.hypothesis_memory import (
     HypothesisMemory,
     RejectedHypothesis,
 )
-from quantdesk_research.evaluation.pbo import calculate_pbo
+from quantdesk_research.evaluation.pbo import calculate_pbo, noise_baseline_pbo
 
 # The four ETFs below carry a mean pairwise daily-return correlation of 0.859, so they behave
 # as one asset with noise. That is why every cross-sectional family in this module is negative:
@@ -479,11 +479,16 @@ def probability_of_backtest_overfitting(
     top family genuinely best, or is it the luckiest of many? It builds the (sessions x families)
     net-return matrix the estimator expects and reports one number for the whole search.
 
-    Two caveats, both measured rather than assumed. The estimator is a leave-one-partition-out
-    jackknife, not full combinatorially symmetric cross-validation, and it is **biased low**:
-    across twelve seeds of pure noise it returns about 0.37 where the correct answer is 0.50. Read
-    it as a relative signal between searches, never quote its absolute value as a probability, and
-    never call it CSCV.
+    The estimator is now full combinatorially symmetric cross-validation over every equal-halves
+    split, replacing a leave-one-partition-out jackknife that was biased low by construction: with
+    fifteen of sixteen partitions in training, every split's selection was made on nearly the same
+    data, so the selection barely had to generalise and the measured overfitting was small by
+    arithmetic rather than by merit.
+
+    Read the result against ``noise_baseline_pbo`` for the same sample shape, never against 0.5. The
+    no-skill figure sits *above* a coin flip here because the splits are complementary — a strategy
+    lucky in the training half is arithmetically unlucky in the testing half — so 0.5 is not the
+    null and comparing to it flatters the search.
     """
     tradable = [family for family in families if family.name != BENCHMARK_NAME]
     if len(tradable) < 2:
@@ -506,6 +511,14 @@ def probability_of_backtest_overfitting(
     width = min(len(column) for column in columns)
     matrix = np.column_stack([column[-width:] for column in columns])
     return float(calculate_pbo(matrix))
+
+
+def overfitting_null_baseline(closes: pd.DataFrame, families: tuple[StrategyFamily, ...]) -> float:
+    """The PBO pure noise produces at this search's shape -- the number to compare against."""
+    tradable = sum(1 for family in families if family.name != BENCHMARK_NAME)
+    if tradable < 2:
+        return float("nan")
+    return noise_baseline_pbo(len(closes), tradable)
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -654,9 +667,15 @@ def main() -> int:
             f"probability of backtest overfitting across "
             f"{len(families) - 1} tradable families: {overfitting:.3f}"
         )
+        baseline = overfitting_null_baseline(closes, families)
+        verdict = (
+            "indistinguishable from noise"
+            if overfitting >= baseline
+            else "below the no-skill baseline"
+        )
         print(
-            "  biased low (pure noise returns ~0.37 against a correct 0.50); "
-            "use it to compare searches, not as an absolute probability."
+            f"  pure noise at this shape returns {baseline:.3f}, so this search is {verdict}. "
+            "Compare against that baseline, never against 0.5."
         )
     else:
         print(json.dumps([asdict(result) for result in results], sort_keys=True))

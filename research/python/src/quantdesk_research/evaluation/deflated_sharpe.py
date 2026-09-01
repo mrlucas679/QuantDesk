@@ -16,31 +16,43 @@ def calculate_deflated_sharpe_ratio(
     Implements Deflated Sharpe Ratio (DSR).
     Reference: Bailey and Lopez de Prado (2014)
     """
-    if n_trials <= 1:
-        return 1.0  # No multiple testing to deflate against
-
-    # Expected maximum Sharpe ratio under the null hypothesis (no skill)
-    # approximated for large N
-    expected_max_sharpe = np.sqrt(sharpe_variance) * (
-        (1 - np.euler_gamma) * stats.norm.ppf(1 - 1 / n_trials)
-        + np.euler_gamma * stats.norm.ppf(1 - 1 / (n_trials * np.e))
+    # A single trial is not evidence of skill; it is only the absence of a selection correction.
+    #
+    # This returned 1.0 -- "certainly skilled" -- whenever one strategy was tested, which inverts the
+    # meaning of the statistic. With n_trials = 1 the expected maximum Sharpe under the null is simply
+    # zero, so the deflated ratio collapses to the *probabilistic* Sharpe ratio: the probability the
+    # true Sharpe exceeds zero given this sample's length, skew and kurtosis. A short or fat-tailed
+    # sample must still be able to fail here.
+    expected_max_sharpe = (
+        0.0
+        if n_trials <= 1
+        else np.sqrt(sharpe_variance)
+        * (
+            (1 - np.euler_gamma) * stats.norm.ppf(1 - 1 / n_trials)
+            + np.euler_gamma * stats.norm.ppf(1 - 1 / (n_trials * np.e))
+        )
     )
 
     # Standard deviation of the Sharpe ratio
-    sigma_sr = np.sqrt(
-        (
-            1
-            + 0.5 * observed_sharpe**2
-            - skew * observed_sharpe
-            + (kurtosis - 3) / 4 * observed_sharpe**2
-        )
-        / (t_samples - 1)
-    )
+    if t_samples < 2:
+        raise ValueError("The deflated Sharpe ratio needs at least two observations.")
 
-    z = (observed_sharpe - expected_max_sharpe) / sigma_sr
-    dsr = stats.norm.cdf(z)
+    variance_term = (
+        1
+        + 0.5 * observed_sharpe**2
+        - skew * observed_sharpe
+        + (kurtosis - 3) / 4 * observed_sharpe**2
+    ) / (t_samples - 1)
 
-    return float(dsr)
+    # Heavy skew or kurtosis can drive the variance term non-positive, at which point the normal
+    # approximation has stopped describing the sample. Failing closed is the only honest answer:
+    # returning a high probability from a formula that no longer applies is exactly the kind of
+    # false confidence this statistic exists to remove.
+    if variance_term <= 0:
+        return 0.0
+
+    z = (observed_sharpe - expected_max_sharpe) / np.sqrt(variance_term)
+    return float(stats.norm.cdf(z))
 
 
 def calculate_dsr_from_ledger(

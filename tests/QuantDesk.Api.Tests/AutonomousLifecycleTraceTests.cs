@@ -1,6 +1,7 @@
 using System.Text;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Domain.Capabilities;
 using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Portfolio;
@@ -117,7 +118,9 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
         trace.Add("market-evidence", $"bid={evidence.Bid} ask={evidence.Ask} bars={evidence.Closes.Count}");
 
         AutonomousPipelineDecision decision = CreatePipeline(clock, costs)
-            .Evaluate(Slot, evidence, portfolio, brokerHealthy, portfolioReconciled);
+            .Evaluate(
+                Slot, evidence, portfolio, brokerHealthy, portfolioReconciled,
+                new AccountCapabilities(true, true, true, false, null));
         trace.Add("committee", decision.Committee is { } c
             ? $"actionable={c.Actionable} expectedBps={c.ExpectedReturnBps:0.00} experts={c.SupportingExperts.Count}"
             : "not reached");

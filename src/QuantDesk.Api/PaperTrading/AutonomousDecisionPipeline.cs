@@ -48,19 +48,23 @@ public sealed class AutonomousDecisionPipeline(
         PortfolioSnapshot portfolio,
         bool brokerHealthy,
         bool portfolioReconciled,
+        AccountCapabilities capabilities,
         double? verifiedForecastBps = null,
         string? verifiedStrategyFamily = null,
-        StrategyDefinitionContract? verifiedStrategyDefinition = null,
-        AccountCapabilities? capabilities = null)
+        StrategyDefinitionContract? verifiedStrategyDefinition = null)
     {
-        // Previously a literal `new AccountCapabilities(true, false, true, false, null)` was
-        // passed to the compiler on every cycle. That asserted the endpoint was PAPER without
-        // checking, and declared equity and options trading unavailable regardless of what the
-        // account actually permits — so no equity or option candidate could ever be compiled,
-        // whatever the research said. Callers now supply the probed capabilities; the fallback
-        // keeps the previous crypto-only behaviour for callers that have not been updated.
-        AccountCapabilities effectiveCapabilities =
-            capabilities ?? new AccountCapabilities(true, false, true, false, null);
+        // Capabilities are required, not defaulted.
+        //
+        // This parameter was optional, falling back to a literal
+        // `new AccountCapabilities(true, false, true, false, null)` when a caller passed nothing.
+        // That fallback asserted PAPER without checking and granted crypto permission without
+        // asking the account — a permission the venue is supposed to grant, invented locally. A
+        // caller that forgot to thread the probe through got a silent yes rather than a failure.
+        //
+        // Permission must come from the live probe or the cycle must not run. There is no safe
+        // default for "may this account trade this asset class", so there is no default.
+        ArgumentNullException.ThrowIfNull(capabilities);
+        AccountCapabilities effectiveCapabilities = capabilities;
         if (verifiedForecastBps is null)
         {
             CryptoResearchDecision research = researchGate.Evaluate(evidence);
