@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Execution;
 using System.Text.Json;
 using QuantDesk.Domain.Serialization;
 
@@ -48,6 +49,16 @@ public sealed record SpotExecutionRecord(
 
     public decimal DefinedMaximumLoss { get; init; }
     public TimeSpan MaximumHoldingPeriod { get; init; }
+
+    /// <summary>
+    /// The research publication that authorised this position, captured at reservation.
+    ///
+    /// Null for an execution opened without a verified artifact — the experimental mode, which never
+    /// claims research licensed it. A null binding is therefore not a missing field to be repaired;
+    /// it is the honest record of a position no artifact stands behind, and the artifact-retraction
+    /// interrupt correctly declines to act on one.
+    /// </summary>
+    public PositionOwnership? Ownership { get; init; }
     public decimal? EntryLimitPrice { get; init; }
     public decimal? ExitLimitPrice { get; init; }
 
@@ -72,6 +83,9 @@ public sealed record SpotExecutionRecord(
     public DateTimeOffset? ReconciledAt { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public string? FailureReason { get; init; }
+
+    /// <summary>Why the hold ended before its timer, or null when the timer ended it.</summary>
+    public string? EarlyExitReason { get; init; }
 
     /// <summary>Quantity the application believes it still holds.</summary>
     public decimal InternalOpenQuantity => Math.Max(0m, EntryFilledQuantity - ExitFilledQuantity);

@@ -33,7 +33,6 @@ public sealed class AutonomousPaperTradingService(
     IAlpacaCapabilityProbe capabilityProbe,
     AutonomousDecisionPipeline pipeline,
     ResearchArtifactState researchArtifacts,
-    ExitEngine exitEngine,
     AutonomousPaperTradingOptions options,
     RuntimeModeState runtimeMode,
     AutonomousTradingState state,
@@ -228,7 +227,15 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
 
-        await ExecuteSpotOpportunityAsync(candidate, decision, evidence, slot, cancellationToken);
+        // Bound here, where the artifact that licensed the trade is still in scope. In experimental
+        // mode there is no verified artifact and the binding is null -- an honest record that no
+        // research stands behind the position, rather than a missing field.
+        PositionOwnership? ownership = experimental
+            ? null
+            : ResearchPositionOwnership.Bind(research, clock.UtcNow);
+
+        await ExecuteSpotOpportunityAsync(
+            candidate, decision, evidence, slot, ownership, cancellationToken);
     }
 
     /// <summary>
@@ -248,6 +255,7 @@ public sealed class AutonomousPaperTradingService(
         AutonomousPipelineDecision decision,
         DirectionalMarketEvidence evidence,
         int slot,
+        PositionOwnership? ownership,
         CancellationToken cancellationToken)
     {
         decimal quantity = decimal.Round(
@@ -267,7 +275,8 @@ public sealed class AutonomousPaperTradingService(
 
         if (!spotExecution.TryReserve(
                 executionId, candidate.StrategyId, options.Symbol, slot, quantity,
-                definedMaximumLoss, candidate.ManagementPlan.MaximumHoldingPeriod))
+                definedMaximumLoss, candidate.ManagementPlan.MaximumHoldingPeriod,
+                ownership: ownership))
         {
             state.Update("abstained", options.Symbol, reason: "ReservationRejected");
             return;
@@ -291,41 +300,6 @@ public sealed class AutonomousPaperTradingService(
             "Autonomous spot entry {ClientOrderId} submitted for {Symbol} at quantity {Quantity}; " +
             "the recovery worker owns fills, the hold, and the exit.",
             record.EntryClientOrderId, options.Symbol, quantity);
-    }
-
-    private async Task ManagePositionAsync(
-        TradeCandidate candidate, OpportunityRoute route, int slot, BrokerOrderSnapshot entryFill,
-        PortfolioLedger portfolio, TradeUpdateProcessor updates, ExecutionWorker execution,
-        ReservationLedger reservations, PortfolioReservation reservation,
-        CancellationToken cancellationToken)
-    {
-        long openedTicks = clock.MonotonicTimestamp;
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
-            portfolio.MarkToMarket(new Dictionary<int, decimal> { [slot] = (evidence.Bid + evidence.Ask) / 2m });
-            PositionSnapshot position = portfolio.Snapshot().Positions.Single(item => item.InstrumentSlot == slot);
-            bool thesisValid = HasCurrentVerifiedForecast();
-            ExitEvaluation exit = exitEngine.Evaluate(candidate.ManagementPlan, openedTicks,
-                clock.MonotonicTimestamp, position.UnrealizedPnl,
-                thesisValid, regimeValid: true);
-            if (exit.ShouldExit)
-            {
-                await SubmitManagedExitAsync(candidate, slot, entryFill, portfolio, updates, execution,
-                    reservations, reservation, exit, cancellationToken);
-                return;
-            }
-            await Task.Delay(PositionMonitorInterval, cancellationToken);
-        }
-    }
-
-    private bool HasCurrentVerifiedForecast()
-    {
-        ResearchArtifactSnapshot research = researchArtifacts.Snapshot();
-        return research.Ready && research.Forecast is { } forecast &&
-            string.Equals(forecast.Instrument, options.Symbol, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(forecast.ForecastFamily, "directional_return_bps", StringComparison.OrdinalIgnoreCase) &&
-            forecast.PointForecast > 0;
     }
 
     /// <summary>
@@ -395,40 +369,6 @@ public sealed class AutonomousPaperTradingService(
             candidate.CandidateId.ToString(System.Globalization.CultureInfo.InvariantCulture),
             candidate.SourceStateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-    private async Task SubmitManagedExitAsync(
-        TradeCandidate candidate, int slot, BrokerOrderSnapshot entryFill, PortfolioLedger portfolio,
-        TradeUpdateProcessor updates, ExecutionWorker execution, ReservationLedger reservations,
-        PortfolioReservation reservation, ExitEvaluation exit, CancellationToken cancellationToken)
-    {
-        string exitClientId = DeterministicClientOrderId.Create(
-            "auto", OpportunityIdentity(candidate, slot), "exit");
-        ExecutionIntent exitIntent = CreateReservedIntent(candidate, reservation, exitClientId);
-        portfolio.RegisterOrderAttribution(exitClientId,
-            new OrderAttribution(candidate.StrategyId, candidate.ManagementPlan.ExitPolicyVersion,
-                candidate.CandidateId, 1, []));
-        ExecutionCommand exitCommand = CreateCommand(candidate, reservation.ReservationId, exitClientId,
-            entryFill.FilledQuantity, OrderSide.Sell, PositionIntent.Close, ExecutionPriority.NormalExit);
-        state.Update("submitting_exit", options.Symbol, entryFill.BrokerOrderId,
-            filledQuantity: entryFill.FilledQuantity, reason: exit.Reason.ToString());
-        BrokerSubmitResult submitted = await execution.SubmitOneAsync(
-            exitIntent, exitCommand, clock.MonotonicTimestamp, cancellationToken);
-        EnsureAcknowledged(submitted, "exit");
-        BrokerOrderSnapshot exitFill = await WaitForFillAsync(exitClientId, submitted.BrokerOrderId!, cancellationToken);
-        ApplyFill(exitIntent, execution, updates, exitFill, slot, OrderSide.Sell);
-        exitIntent.TransitionTo(ExecutionIntentState.Completed);
-        reservations.Release(reservation.ReservationId);
-        await WaitUntilFlatAsync(slot, cancellationToken);
-
-        var reconciliation = new ReconciliationService(runtimeMode).Reconcile(new ReconciliationInput(
-            new HashSet<string>(StringComparer.Ordinal) { entryFill.ClientOrderId, exitFill.ClientOrderId },
-            new Dictionary<int, decimal>(), await broker.ListOpenOrdersAsync(cancellationToken),
-            await broker.ListPositionsAsync(cancellationToken)));
-        if (!reconciliation.IsReconciled)
-            throw new InvalidOperationException("Broker and portfolio truth diverged after managed exit.");
-        state.Update("completed_flat", options.Symbol, entryFill.BrokerOrderId, exitFill.BrokerOrderId,
-            entryFill.FilledQuantity, exit.Reason.ToString());
-    }
-
     private static ExecutionIntent CreateReservedIntent(
         TradeCandidate candidate, PortfolioReservation reservation, string clientOrderId)
     {
@@ -479,30 +419,6 @@ public sealed class AutonomousPaperTradingService(
     private static PortfolioSnapshot EmptyPortfolio(BrokerAccountSnapshot account) => new(
         0, new Usd(account.Equity), new Usd(account.Equity), new Usd(account.BuyingPower),
         Usd.Zero, Usd.Zero, Usd.Zero, Usd.Zero, 0, 0, 0, 0, 0, 0, 0, []);
-
-    private async Task<BrokerOrderSnapshot> WaitForFillAsync(
-        string clientOrderId, string brokerOrderId, CancellationToken cancellationToken)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(options.FillTimeout);
-        try
-        {
-            while (true)
-            {
-                BrokerOrderSnapshot? order = await broker.FindByClientOrderIdAsync(clientOrderId, timeout.Token);
-                if (order is not null && string.Equals(order.Status, "filled", StringComparison.OrdinalIgnoreCase) &&
-                    order.FilledQuantity > 0) return order;
-                if (order is not null && order.Status is "canceled" or "expired" or "rejected" or "suspended")
-                    throw new InvalidOperationException("Paper order reached a non-fill terminal state.");
-                await Task.Delay(TimeSpan.FromMilliseconds(250), timeout.Token);
-            }
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            await broker.CancelAsync(brokerOrderId, cancellationToken);
-            throw new TimeoutException("Paper order did not fill before its deadline.");
-        }
-    }
 
     private async Task WaitUntilReadyAsync(CancellationToken cancellationToken)
     {

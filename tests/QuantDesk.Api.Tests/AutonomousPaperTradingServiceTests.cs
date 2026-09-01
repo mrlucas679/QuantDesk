@@ -256,7 +256,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new OpportunityRouter(), coordinator, spotLifecycle,
             new StubCapabilityProbe(capabilities ?? Capabilities()),
             pipeline, new ResearchArtifactState(),
-            new ExitEngine(), options, mode, state, clock,
+            options, mode, state, clock,
             NullLogger<AutonomousPaperTradingService>.Instance);
         return (service, state, mode);
     }

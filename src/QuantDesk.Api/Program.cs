@@ -173,11 +173,24 @@ builder.Services.AddSingleton(services =>
         ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "spot-executions.json");
     return new SpotExecutionStore(Path.GetFullPath(configured));
 });
+builder.Services.AddSingleton<IHeldPositionMarker>(services => new MarketStateHeldPositionMarker(
+    services.GetRequiredService<MarketStateStore>(),
+    services.GetRequiredService<IInstrumentSymbolResolver>()));
+
+// The reasons a hold may end early. Until this existed the only one was the clock: a position whose
+// research had been retracted ran to its timer, and a position past its defined maximum loss ran to
+// its timer, because that maximum sized the capital reservation but was never compared to anything.
+// Retraction is listed first so it names the exit when both fire at once.
+builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInterrupt(
+    new ArtifactRetractionHoldInterrupt(services.GetRequiredService<ResearchArtifactState>()),
+    new AdverseLossHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>())));
+
 builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     services.GetRequiredService<IBrokerExecutionGateway>(),
     services.GetRequiredService<SpotExecutionStore>(),
     services.GetRequiredService<IRuntimeClock>(),
-    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout));
+    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout,
+    services.GetRequiredService<IHoldInterrupt>()));
 builder.Services.AddSingleton<SpotExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<SpotExecutionRecoveryService>());

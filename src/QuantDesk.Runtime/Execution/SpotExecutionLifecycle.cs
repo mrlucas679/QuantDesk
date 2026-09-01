@@ -19,7 +19,8 @@ public sealed class SpotExecutionLifecycle(
     IBrokerExecutionGateway broker,
     SpotExecutionStore store,
     IRuntimeClock clock,
-    TimeSpan brokerSubmitTimeout)
+    TimeSpan brokerSubmitTimeout,
+    IHoldInterrupt? holdInterrupt = null)
 {
     /// <summary>
     /// Persists the reservation. Nothing reaches the broker until this returns true, so an
@@ -34,7 +35,8 @@ public sealed class SpotExecutionLifecycle(
         decimal definedMaximumLoss,
         TimeSpan maximumHoldingPeriod,
         decimal? entryLimitPrice = null,
-        decimal? exitLimitPrice = null)
+        decimal? exitLimitPrice = null,
+        PositionOwnership? ownership = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -69,7 +71,8 @@ public sealed class SpotExecutionLifecycle(
             DefinedMaximumLoss = definedMaximumLoss,
             MaximumHoldingPeriod = maximumHoldingPeriod,
             EntryLimitPrice = entryLimitPrice,
-            ExitLimitPrice = exitLimitPrice
+            ExitLimitPrice = exitLimitPrice,
+            Ownership = ownership
         });
     }
 
@@ -225,8 +228,21 @@ public sealed class SpotExecutionLifecycle(
     {
         // The scheduled exit is durable, so a restart mid-hold still exits at the original time
         // rather than restarting the clock.
-        if (record.ScheduledExitAt is not { } due || clock.UtcNow < due) return record;
-        SpotExecutionRecord updated = record with { State = SpotExecutionState.ExitDue };
+        // The scheduled time and the interrupts are consulted together, and an interrupt can only
+        // bring the exit forward. A faulty interrupt therefore cannot extend a hold past the
+        // deadline the reservation was taken against; the timer stays the backstop it always was.
+        bool timerDue = record.ScheduledExitAt is { } due && clock.UtcNow >= due;
+        HoldInterrupt interrupt = timerDue
+            ? HoldInterrupt.None
+            : holdInterrupt?.Evaluate(record) ?? HoldInterrupt.None;
+
+        if (!timerDue && !interrupt.ShouldExitNow) return record;
+
+        SpotExecutionRecord updated = record with
+        {
+            State = SpotExecutionState.ExitDue,
+            EarlyExitReason = interrupt.Reason,
+        };
         store.Update(updated);
         return updated;
     }

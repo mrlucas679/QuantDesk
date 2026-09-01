@@ -250,13 +250,121 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         Assert.ThrowsAny<Exception>(() => Store().ListAll());
     }
 
+    [Fact]
+    public async Task AnInterruptEndsTheHoldBeforeItsTimer()
+    {
+        // Before this, the clock was the only thing that ended a hold. A position whose research had
+        // been retracted, or one already past its defined maximum loss, ran to its timer regardless.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, new AlwaysExit("ArtifactRetracted:test"));
+        await ReachHoldingAsync(lifecycle, broker);
+
+        // No time passes at all -- the timer has 15 minutes left.
+        SpotExecutionRecord interrupted = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.ExitDue, interrupted.State);
+        Assert.Equal("ArtifactRetracted:test", interrupted.EarlyExitReason);
+    }
+
+    [Fact]
+    public async Task AnInterruptThatNeverFiresLeavesTheTimerInCharge()
+    {
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, new NeverExit());
+        await ReachHoldingAsync(lifecycle, broker);
+
+        Assert.Equal(SpotExecutionState.Holding,
+            (await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None)).State);
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+
+        Assert.Equal(SpotExecutionState.ExitDue,
+            (await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task AnInterruptCannotExtendAHoldPastItsDeadline()
+    {
+        // The safety contract. An interrupt may only pull the exit forward, so an implementation
+        // that is broken, wrong, or throwing cannot pin a position open past the deadline its
+        // reservation was taken against. Here the interrupt actively says "keep holding" and the
+        // timer overrules it.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, new NeverExit());
+        await ReachHoldingAsync(lifecycle, broker);
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        SpotExecutionRecord due = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.ExitDue, due.State);
+        Assert.Null(due.EarlyExitReason);
+    }
+
+    [Fact]
+    public async Task AThrowingInterruptCannotStrandAPositionPastItsDeadline()
+    {
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, new Throwing());
+        await ReachHoldingAsync(lifecycle, broker);
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+
+        // The timer is checked first, so the deadline is honoured without the interrupt running.
+        Assert.Equal(SpotExecutionState.ExitDue,
+            (await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public void TheAuthorisingArtifactIsPersistedWithTheReservation()
+    {
+        // A position that cannot name what licensed it is the state binding exists to prevent, and
+        // the binding has to survive a restart to be worth anything.
+        SpotExecutionLifecycle lifecycle = Build(new FakeBroker());
+        var ownership = new PositionOwnership(
+            "artifact-1", "v3", "hash-abc", "momentum", Start);
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m,
+            TimeSpan.FromMinutes(15), ownership: ownership));
+
+        // Re-read from disk, not from memory.
+        PositionOwnership? persisted = new SpotExecutionStore(_path).Find(ExecutionId)!.Ownership;
+        Assert.Equal(ownership, persisted);
+    }
+
+    private async Task ReachHoldingAsync(SpotExecutionLifecycle lifecycle, FakeBroker broker)
+    {
+        Reserve(lifecycle);
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        broker.Order = Filled(broker.LastEntryClientOrderId!, 1m, 100m);
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        SpotExecutionRecord holding = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        Assert.Equal(SpotExecutionState.Holding, holding.State);
+    }
+
+    private sealed class AlwaysExit(string reason) : IHoldInterrupt
+    {
+        public HoldInterrupt Evaluate(SpotExecutionRecord record) => HoldInterrupt.Now(reason);
+    }
+
+    private sealed class NeverExit : IHoldInterrupt
+    {
+        public HoldInterrupt Evaluate(SpotExecutionRecord record) => HoldInterrupt.None;
+    }
+
+    private sealed class Throwing : IHoldInterrupt
+    {
+        public HoldInterrupt Evaluate(SpotExecutionRecord record) =>
+            throw new InvalidOperationException("a broken interrupt must not strand a position");
+    }
+
     private bool Reserve(SpotExecutionLifecycle lifecycle) => lifecycle.TryReserve(
         ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15));
 
     private SpotExecutionStore Store() => new(_path);
 
-    private SpotExecutionLifecycle Build(FakeBroker broker) =>
-        new(broker, Store(), _clock, TimeSpan.FromSeconds(30));
+    private SpotExecutionLifecycle Build(FakeBroker broker, IHoldInterrupt? interrupt = null) =>
+        new(broker, Store(), _clock, TimeSpan.FromSeconds(30), interrupt);
 
     private static BrokerOrderSnapshot Filled(string clientOrderId, decimal quantity, decimal price) =>
         new("broker-1", clientOrderId, "filled", quantity, price);
