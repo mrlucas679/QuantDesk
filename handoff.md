@@ -1350,6 +1350,63 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Veteran audit: why the system could not find an edge — 2026-09-01
+
+Going through the application end to end looking for the reason nothing predicts. The signal
+construction is clean — `shift(1)` applied once in `build_weights`, so every weight uses closes
+through *t−1* only; the loader refuses anything but SIP bars with `adjustment=all`, so dividends are
+in. The defects are not in the plumbing. They are in the **evaluation design and the universe**, and
+both are fatal in their own right.
+
+**Defect 1 — the split handed every crisis to discovery and none to the tests.**
+
+| phase | sessions | ann return | Sharpe | max DD |
+| --- | --- | --- | --- | --- |
+| discovery | 982 | 11.33% | 0.48 | **−34.8%** |
+| validation | 491 | 25.30% | **1.56** | −11.6% |
+| holdout | 492 | 22.62% | 1.29 | −20.3% |
+
+The chronological 50/25/25 put the COVID crash and the 2022 bear market in discovery and left the
+calmest stretch of the sample as the out-of-sample test. A trend or defensive family exists to give
+up upside for protection; in a window with no crisis it pays the premium and collects nothing. A
+capped-at-zero trend strategy can only be flat or long in a bull market, so underperformance there
+is the design working, not the signal failing. **The "does not beat equal weight" gate was close to
+tautological in that window.**
+
+**Defect 2 — the universe is one asset wearing four hats.** Mean pairwise correlation of
+SPY/QQQ/IWM/DIA is **0.960**, not the 0.859 previously recorded, giving roughly **1.12 independent
+bets**. Cross-sectional strategies rank assets against each other; with 1.12 effective bets there is
+almost no dispersion to rank. That is why every `xs-` family is negative, and no model choice can
+repair it.
+
+**The fix, and what it uncovered.** `backtest/combinatorial.py` evaluates a schedule across every
+combination of held-out blocks — 8 blocks, 2 held out, 28 paths of ~449 sessions each — reporting a
+distribution instead of one path. Judged that way:
+
+| family | median Sharpe | beats benchmark |
+| --- | --- | --- |
+| **defensive-low-vol-63d** | 0.91 | **71%** |
+| equal-weight-benchmark | 0.91 | — |
+| vol-scaled-trend-252d | 0.90 | 64% |
+| ts-trend-252d | 0.88 | 46% |
+| every cross-sectional family | ≤ 0.35 | ≤ 25% |
+
+**`defensive-low-vol-63d` beats the benchmark on 71% of paths** — the low-beta premium of Frazzini
+and Pedersen. The single-window test had reported it as passing on Sharpe alone and losing on return;
+across 28 regimes it is the only family clearing a two-thirds threshold. **The evaluation method, not
+the strategy library, was hiding the one candidate the system had.**
+
+Two cautions kept in view: dispersion is wide (0.56–0.76 across paths) and the worst path is negative
+for every family including the benchmark, so this is a tilt worth testing, not a discovered edge. And
+71% on 28 overlapping paths is far from proof — the paths share data.
+
+**A methodological note worth keeping.** The first embargo attempt used the full lookback (252 days)
+against 245-session blocks and removed every observation. The guard refused rather than returning an
+empty result that would have read as "no edge". The correct embargo here is the holding period, not
+the lookback: **these families fit no parameters**, so the leakage purging normally defends against
+cannot occur — nothing is trained that could have seen the test period. What must be removed is the
+stale-weight boundary at the start of a held-out block.
+
 ### Every model run, and what they actually say — 2026-09-01
 
 All fourteen families were run on the committed SIP daily ETF panel (1,965 sessions), covering the four
