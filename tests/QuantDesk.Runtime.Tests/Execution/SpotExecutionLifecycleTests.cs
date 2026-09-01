@@ -60,6 +60,31 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
     }
 
     [Fact]
+    public void ASecondConcurrentExecutionOnTheSameSymbolIsRefused()
+    {
+        SpotExecutionLifecycle lifecycle = Build(new FakeBroker());
+        Assert.True(Reserve(lifecycle));
+
+        // A different execution id, same symbol, while the first is still open. The broker-position
+        // check cannot see an order that has not yet become a position, so the store must refuse.
+        bool second = lifecycle.TryReserve(
+            "SPOT-E2E-0002", "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15));
+
+        Assert.False(second);
+        Assert.Single(Store().ListAll());
+    }
+
+    [Fact]
+    public void ADifferentSymbolMayBeReservedConcurrently()
+    {
+        SpotExecutionLifecycle lifecycle = Build(new FakeBroker());
+        Assert.True(Reserve(lifecycle));
+
+        Assert.True(lifecycle.TryReserve(
+            "SPOT-E2E-0003", "crypto-long-momentum-v1", "ETH/USD", 1, 1m, 20m, TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
     public async Task ADuplicateExecutionIdIsRefused()
     {
         SpotExecutionLifecycle lifecycle = Build(new FakeBroker());

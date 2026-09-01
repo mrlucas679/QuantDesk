@@ -43,11 +43,21 @@ public sealed class SpotExecutionLifecycle(
         if (!broker.IsPaperEnvironment || !store.IsAvailable()) return false;
         if (quantity <= 0 || definedMaximumLoss <= 0 || maximumHoldingPeriod <= TimeSpan.Zero) return false;
 
+        // Refuse a second concurrent execution on the same symbol. The caller's broker-position
+        // check cannot cover this on its own: between submitting an order and that order becoming
+        // a visible position there is a window in which a fresh evaluation would look at a flat
+        // account and open a second position. The durable record closes that window, because it
+        // exists from the moment of reservation.
+        string normalizedSymbol = symbol.Trim().ToUpperInvariant();
+        if (store.ListNonterminal().Any(existing =>
+                string.Equals(existing.Symbol, normalizedSymbol, StringComparison.Ordinal)))
+            return false;
+
         DateTimeOffset now = clock.UtcNow;
         return store.TryCreate(new SpotExecutionRecord(
             executionId,
             strategyId,
-            symbol.Trim().ToUpperInvariant(),
+            normalizedSymbol,
             instrumentSlot,
             SpotExecutionState.EntryReserved,
             DeterministicClientOrderId.Create("spot", executionId, "entry"),

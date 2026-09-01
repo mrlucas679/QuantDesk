@@ -22,6 +22,9 @@ from quantdesk_research.contracts.model_artifact import (
     ModelArtifact,
     StrategyDefinition,
 )
+from quantdesk_research.data.manifest_keys import (
+    require_manifest_value,
+)
 from quantdesk_research.evaluation.trial_ledger import TrialLedger
 from quantdesk_research.models.contract_publication import ContractPublisher
 from quantdesk_research.models.model_registry import ModelRegistry
@@ -188,7 +191,7 @@ def run_experiment(
     """Validate a causal directional model against one immutable dataset manifest."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     train_slice, calibration_slice, test_slice = chronological_slices(len(frame), horizon_bars)
     features = frame.loc[:, FEATURE_NAMES].to_numpy(dtype=float)
@@ -277,7 +280,7 @@ def run_rolling_experiment(
     """Require two disjoint, chronological out-of-sample windows before promotion."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     if len(frame) < 1_000:
         raise ValueError("At least 1,000 complete observations are required.")
@@ -373,7 +376,7 @@ def run_rolling_persistence_baseline(
     """Evaluate a causal prior-return baseline on the identical purged rolling windows."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     target = frame["target_return"].to_numpy(dtype=float)
     predictions = frame["return_1"].to_numpy(dtype=float)
@@ -435,7 +438,7 @@ def run_rolling_low_vol_persistence_experiment(
     """Test whether momentum survives costs only in a volatility regime chosen on calibration data."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     target = frame["target_return"].to_numpy(dtype=float)
     predictions = frame["return_1"].to_numpy(dtype=float)
@@ -525,7 +528,7 @@ def run_rolling_contrarian_baseline(
     """Evaluate a causal one-bar mean-reversion signal on identical rolling windows."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     target = frame["target_return"].to_numpy(dtype=float)
     predictions = -frame["return_1"].to_numpy(dtype=float)
@@ -589,8 +592,8 @@ def run_rolling_cross_asset_lead_experiment(
     """Test whether ETH's completed return leads the next BTC return without look-ahead."""
     btc_manifest = json.loads((data_root / btc_manifest_name).read_text(encoding="utf-8"))
     eth_manifest = json.loads((data_root / eth_manifest_name).read_text(encoding="utf-8"))
-    btc_bars = json.loads((data_root / btc_manifest["dataFile"]).read_text(encoding="utf-8"))
-    eth_bars = json.loads((data_root / eth_manifest["dataFile"]).read_text(encoding="utf-8"))
+    btc_bars = json.loads((data_root / require_manifest_value(btc_manifest, "data_file")).read_text(encoding="utf-8"))
+    eth_bars = json.loads((data_root / require_manifest_value(eth_manifest, "data_file")).read_text(encoding="utf-8"))
     btc = build_frame(btc_bars, horizon_bars)[["t", "target_return"]]
     eth = build_feature_frame(eth_bars, horizon_bars)[["t", "return_1"]]
     frame = btc.merge(eth, on="t", how="inner").dropna().reset_index(drop=True)
@@ -650,8 +653,8 @@ def run_rolling_relative_strength_experiment(
     """Test whether completed ETH-versus-BTC relative strength predicts the next BTC return."""
     btc_manifest = json.loads((data_root / btc_manifest_name).read_text(encoding="utf-8"))
     eth_manifest = json.loads((data_root / eth_manifest_name).read_text(encoding="utf-8"))
-    btc_bars = json.loads((data_root / btc_manifest["dataFile"]).read_text(encoding="utf-8"))
-    eth_bars = json.loads((data_root / eth_manifest["dataFile"]).read_text(encoding="utf-8"))
+    btc_bars = json.loads((data_root / require_manifest_value(btc_manifest, "data_file")).read_text(encoding="utf-8"))
+    eth_bars = json.loads((data_root / require_manifest_value(eth_manifest, "data_file")).read_text(encoding="utf-8"))
     btc = build_frame(btc_bars, horizon_bars)[["t", "target_return", "return_1"]]
     eth = build_feature_frame(eth_bars, horizon_bars)[["t", "return_1"]].rename(
         columns={"return_1": "eth_return_1"}
@@ -711,7 +714,7 @@ def publish_validated_directional_forecast(
     if not evaluation.passed:
         raise ValueError("A failed evaluation cannot be promoted.")
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     training_frame = build_frame(bars, horizon_bars)
     features = training_frame.loc[:, FEATURE_NAMES].to_numpy(dtype=float)
     target = training_frame["target_return"].to_numpy(dtype=float)

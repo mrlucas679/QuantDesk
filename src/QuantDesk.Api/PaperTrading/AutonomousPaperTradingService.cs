@@ -15,6 +15,7 @@ using QuantDesk.Runtime.Modes;
 using QuantDesk.Runtime.Portfolio;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Reconciliation;
+using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Reservations;
 using QuantDesk.Runtime.Time;
 
@@ -27,6 +28,7 @@ public sealed class AutonomousPaperTradingService(
     IMarketEvidenceProvider evidenceProvider,
     OpportunityRouter router,
     OptionExecutionCoordinator optionExecution,
+    SpotExecutionLifecycle spotExecution,
     IAlpacaCapabilityProbe capabilityProbe,
     AutonomousDecisionPipeline pipeline,
     ResearchArtifactState researchArtifacts,
@@ -182,52 +184,69 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
 
-        var reservations = new ReservationLedger(initial);
-        if (!reservations.TryReserve(initial.Version, risk.RequiredRiskReservation,
-                risk.RequiredCapitalReservation, new Usd(options.OrderNotional), out PortfolioReservation? reservation) ||
-            reservation is null)
+        await ExecuteSpotOpportunityAsync(candidate, decision, evidence, slot, cancellationToken);
+    }
+
+    /// <summary>
+    /// Hands an approved spot view to the durable lifecycle.
+    ///
+    /// This replaced an in-memory path that reserved, submitted, and then blocked the evaluation
+    /// cycle waiting for a fill before managing the exit inline. Two things were wrong with that.
+    /// The reservation lived only in process memory, so a restart between reserving and filling
+    /// forgot the order existed. And because the cycle owned the position for its whole life, a
+    /// crash mid-hold left it with nobody to exit it.
+    ///
+    /// Now the reservation is persisted before any POST and the recovery worker advances fills,
+    /// the durable hold, the managed exit, and reconciliation. The cycle returns immediately.
+    /// </summary>
+    private async Task ExecuteSpotOpportunityAsync(
+        TradeCandidate candidate,
+        AutonomousPipelineDecision decision,
+        DirectionalMarketEvidence evidence,
+        int slot,
+        CancellationToken cancellationToken)
+    {
+        decimal quantity = decimal.Round(
+            options.OrderNotional / evidence.Ask, 8, MidpointRounding.ToZero);
+        if (quantity <= 0)
+        {
+            // Rounding to zero means the notional cannot buy a tradable unit at this price.
+            state.Update("abstained", options.Symbol, reason: "QuantityRoundedToZero");
+            return;
+        }
+
+        string executionId = DeterministicClientOrderId.Create(
+            "autospot", OpportunityIdentity(candidate, slot), "execution");
+        decimal definedMaximumLoss = decision.Risk is { } risk && risk.RequiredRiskReservation.Value > 0
+            ? risk.RequiredRiskReservation.Value
+            : options.OrderNotional;
+
+        if (!spotExecution.TryReserve(
+                executionId, candidate.StrategyId, options.Symbol, slot, quantity,
+                definedMaximumLoss, candidate.ManagementPlan.MaximumHoldingPeriod))
         {
             state.Update("abstained", options.Symbol, reason: "ReservationRejected");
             return;
         }
 
-        var portfolio = new PortfolioLedger(initial);
-        var updates = new TradeUpdateProcessor(portfolio);
-        var execution = new ExecutionWorker(broker, reservations, runtimeMode, options.FillTimeout);
-        // Derived from the opportunity, not from a random number, so an ambiguous POST can be
-        // recovered by asking the broker for this exact ID. See DeterministicClientOrderId.
-        string opportunityIdentity = OpportunityIdentity(candidate, slot);
-        string entryClientId = DeterministicClientOrderId.Create("auto", opportunityIdentity, "entry");
-        ExecutionIntent entryIntent = CreateReservedIntent(candidate, reservation, entryClientId);
-        portfolio.RegisterOrderAttribution(entryClientId,
-            new OrderAttribution(candidate.StrategyId, candidate.ManagementPlan.ExitPolicyVersion,
-                candidate.CandidateId, 1, decision.Committee?.SupportingExperts.ToArray() ?? []));
-
-        decimal quantity = decimal.Round(options.OrderNotional / evidence.Ask, 8, MidpointRounding.ToZero);
-        if (quantity <= 0) throw new InvalidOperationException("Calculated autonomous quantity is zero.");
-        ExecutionCommand entryCommand = CreateCommand(candidate, reservation.ReservationId, entryClientId,
-            quantity, OrderSide.Buy, PositionIntent.Open, ExecutionPriority.ExploitationEntry);
         state.Update("submitting_entry", options.Symbol, filledQuantity: quantity, reason: "Approved");
-        BrokerSubmitResult submitted = await execution.SubmitOneAsync(
-            entryIntent, entryCommand, clock.MonotonicTimestamp, cancellationToken);
-        EnsureAcknowledged(submitted, "entry");
-        BrokerOrderSnapshot entryFill = await WaitForFillAsync(entryClientId, submitted.BrokerOrderId!, cancellationToken);
-        ApplyFill(entryIntent, execution, updates, entryFill, slot, OrderSide.Buy);
-        entryIntent.TransitionTo(ExecutionIntentState.PositionManaging);
-        state.Update("position_managing", options.Symbol, submitted.BrokerOrderId,
-            filledQuantity: entryFill.FilledQuantity, reason: candidate.ManagementPlan.ExitPolicyVersion);
+        SpotExecutionRecord record = await spotExecution.AdvanceAsync(executionId, cancellationToken);
 
-        try
+        if (record.State is SpotExecutionState.Failed)
         {
-            await ManagePositionAsync(candidate, route, slot, entryFill, portfolio, updates, execution,
-                reservations, reservation, cancellationToken);
+            state.Update("abstained", options.Symbol, reason: record.FailureReason ?? "EntryFailed");
+            logger.LogWarning(
+                "Autonomous spot entry {ExecutionId} failed: {Reason}.",
+                executionId, record.FailureReason);
+            return;
         }
-        catch
-        {
-            runtimeMode.Transition(SystemMode.RiskReductionOnly, "position_management_failure");
-            await EmergencyCloseAsync(slot, cancellationToken);
-            throw;
-        }
+
+        state.Update("holding", options.Symbol, record.EntryBrokerOrderId,
+            filledQuantity: record.EntryFilledQuantity, reason: record.State.ToString());
+        logger.LogInformation(
+            "Autonomous spot entry {ClientOrderId} submitted for {Symbol} at quantity {Quantity}; " +
+            "the recovery worker owns fills, the hold, and the exit.",
+            record.EntryClientOrderId, options.Symbol, quantity);
     }
 
     private async Task ManagePositionAsync(

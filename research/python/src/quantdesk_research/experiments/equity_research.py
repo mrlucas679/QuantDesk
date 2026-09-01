@@ -18,6 +18,10 @@ from quantdesk_research.backtest.equity_costs import (
     BASE_COST,
     COST_SCENARIOS,
 )
+from quantdesk_research.data.manifest_keys import (
+    manifest_value,
+    require_manifest_value,
+)
 
 SYMBOLS = ("SPY", "QQQ", "IWM", "DIA")
 TRIAL_COUNT = 20
@@ -331,15 +335,15 @@ def get_candidate(number: int) -> Candidate:
 def _load_dataset(data_root: Path, symbol: str, timeframe_slug: str) -> tuple[list[JsonObject], str]:
     manifest_path = data_root / f"latest-{symbol.lower()}-{timeframe_slug}-sip.manifest.json"
     manifest = cast(JsonObject, json.loads(manifest_path.read_text(encoding="utf-8")))
-    if manifest.get("feed") != "sip" or manifest.get("adjustment") != "all":
+    if manifest_value(manifest, "feed") != "sip" or manifest_value(manifest, "adjustment") != "all":
         raise ValueError(f"Research requires SIP/all data: {manifest_path.name}.")
-    data_path = data_root / str(manifest["dataFile"])
+    data_path = data_root / str(require_manifest_value(manifest, "data_file"))
     payload = data_path.read_bytes()
     actual_hash = f"sha256:{hashlib.sha256(payload).hexdigest()}"
-    if actual_hash != manifest.get("sha256"):
+    if actual_hash != manifest_value(manifest, "sha256"):
         raise ValueError(f"Immutable dataset hash mismatch: {data_path.name}.")
     bars = json.loads(payload)
-    if not isinstance(bars, list) or len(bars) != manifest.get("rowCount"):
+    if not isinstance(bars, list) or len(bars) != manifest_value(manifest, "row_count"):
         raise ValueError(f"Immutable dataset row-count mismatch: {data_path.name}.")
     return cast(list[JsonObject], bars), actual_hash
 

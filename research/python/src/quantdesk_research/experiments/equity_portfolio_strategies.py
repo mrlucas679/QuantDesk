@@ -58,17 +58,23 @@ from typing import Any, Literal, cast
 
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
+from numpy.typing import NDArray
 
 from quantdesk_research.backtest.equity_costs import BASE_COST, STRESS_COST
 from quantdesk_research.backtest.portfolio import (
     PortfolioPerformance,
     evaluate_weight_schedule,
 )
+from quantdesk_research.data.manifest_keys import (
+    manifest_value,
+    require_manifest_value,
+)
 from quantdesk_research.evaluation.hypothesis_memory import (
     FailureReason,
     HypothesisMemory,
     RejectedHypothesis,
 )
+from quantdesk_research.evaluation.pbo import calculate_pbo
 
 # The four ETFs below carry a mean pairwise daily-return correlation of 0.859, so they behave
 # as one asset with noise. That is why every cross-sectional family in this module is negative:
@@ -257,15 +263,15 @@ def load_close_panel(
     for symbol in symbols:
         manifest_path = data_root / f"latest-{symbol.lower()}-1day-sip.manifest.json"
         manifest = cast(JsonObject, json.loads(manifest_path.read_text(encoding="utf-8")))
-        if manifest.get("feed") != "sip" or manifest.get("adjustment") != "all":
+        if manifest_value(manifest, "feed") != "sip" or manifest_value(manifest, "adjustment") != "all":
             raise ValueError(f"Portfolio research requires SIP/all bars: {manifest_path.name}.")
-        data_path = data_root / str(manifest["dataFile"])
+        data_path = data_root / str(require_manifest_value(manifest, "data_file"))
         payload = data_path.read_bytes()
         digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
-        if digest != manifest.get("sha256"):
+        if digest != manifest_value(manifest, "sha256"):
             raise ValueError(f"Immutable dataset hash mismatch: {data_path.name}.")
         bars = json.loads(payload)
-        if not isinstance(bars, list) or len(bars) != manifest.get("rowCount"):
+        if not isinstance(bars, list) or len(bars) != manifest_value(manifest, "row_count"):
             raise ValueError(f"Immutable dataset row-count mismatch: {data_path.name}.")
         frame = pd.DataFrame(cast(list[JsonObject], bars))
         frame["date"] = pd.to_datetime(frame["t"], utc=True).dt.date
@@ -408,6 +414,46 @@ def gate_reasons(
     return reasons
 
 
+def probability_of_backtest_overfitting(
+    closes: pd.DataFrame,
+    families: tuple[StrategyFamily, ...],
+    phase: Phase,
+) -> float:
+    """Estimate how likely the best-ranked family is a selection artifact.
+
+    This answers the question the campaign actually needs and nothing else here answers: is the
+    top family genuinely best, or is it the luckiest of many? It builds the (sessions x families)
+    net-return matrix the estimator expects and reports one number for the whole search.
+
+    Two caveats, both measured rather than assumed. The estimator is a leave-one-partition-out
+    jackknife, not full combinatorially symmetric cross-validation, and it is **biased low**:
+    across twelve seeds of pure noise it returns about 0.37 where the correct answer is 0.50. Read
+    it as a relative signal between searches, never quote its absolute value as a probability, and
+    never call it CSCV.
+    """
+    tradable = [family for family in families if family.name != BENCHMARK_NAME]
+    if len(tradable) < 2:
+        return float("nan")
+
+    returns = closes.pct_change().fillna(0.0)
+    columns: list[NDArray[np.float64]] = []
+    for family in tradable:
+        weights = phase_slice(build_weights(family, closes), phase)
+        phase_returns = phase_slice(returns, phase)
+        performance = evaluate_weight_schedule(
+            weights, phase_returns, BASE_COST, family.holding_days, 0.05
+        )
+        if performance.observation_count == 0:
+            return float("nan")
+        aligned_weights, aligned_returns = weights.align(phase_returns, join="inner", axis=0)
+        daily = (aligned_weights * aligned_returns).sum(axis=1).to_numpy(dtype=np.float64)
+        columns.append(daily)
+
+    width = min(len(column) for column in columns)
+    matrix = np.column_stack([column[-width:] for column in columns])
+    return float(calculate_pbo(matrix))
+
+
 def rank_by_edge_per_risk(results: list[FamilyEvaluation]) -> list[FamilyEvaluation]:
     """Order admitted families by expected net edge per unit of risk consumed."""
     return sorted(
@@ -510,8 +556,18 @@ def main() -> int:
         ]
     )
     persist_rejected_families(arguments.data_root, results)
+    overfitting = probability_of_backtest_overfitting(closes, families, arguments.phase)
     if arguments.summary:
         _print_summary(results, len(closes))
+        print()
+        print(
+            f"probability of backtest overfitting across "
+            f"{len(families) - 1} tradable families: {overfitting:.3f}"
+        )
+        print(
+            "  biased low (pure noise returns ~0.37 against a correct 0.50); "
+            "use it to compare searches, not as an absolute probability."
+        )
     else:
         print(json.dumps([asdict(result) for result in results], sort_keys=True))
     return 0 if any(result.passed for result in results) else 1

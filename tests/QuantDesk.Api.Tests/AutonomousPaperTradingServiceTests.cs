@@ -36,6 +36,8 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 9, 1, 15, 0, 0, TimeSpan.Zero);
     private readonly string _storePath = Path.Combine(
         Path.GetTempPath(), $"qd-auto-{Guid.NewGuid():N}.json");
+    private readonly string _spotStorePath = Path.Combine(
+        Path.GetTempPath(), $"qd-auto-spot-{Guid.NewGuid():N}.json");
 
     [Fact]
     public async Task AnUnroutableSymbolAbstainsAndNeverContactsTheBroker()
@@ -131,6 +133,41 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AnApprovedSpotViewIsHandedToTheDurableLifecycleNotHeldInMemory()
+    {
+        var broker = new FakeBroker();
+        (AutonomousPaperTradingService service, AutonomousTradingState state) =
+            Build(broker, evidence: Evidence(100m, 100.01m, 100m, 104m));
+
+        await service.EvaluateOpportunityAsync(CancellationToken.None);
+
+        // The record must exist on disk before the cycle returns, so a restart can resume it.
+        Assert.True(File.Exists(_spotStorePath));
+        SpotExecutionRecord record = Assert.Single(new SpotExecutionStore(_spotStorePath).ListAll());
+        Assert.Equal("BTC/USD", record.Symbol);
+        Assert.True(record.Quantity > 0);
+        Assert.StartsWith("qd-spot-", record.EntryClientOrderId, StringComparison.Ordinal);
+        Assert.Equal(1, broker.SubmitCount);
+        // The cycle hands off rather than blocking on the fill.
+        Assert.Equal("holding", state.Snapshot().State);
+    }
+
+    [Fact]
+    public async Task TheSameOpportunityNeverProducesASecondDurableRecord()
+    {
+        var broker = new FakeBroker();
+        (AutonomousPaperTradingService service, _) =
+            Build(broker, evidence: Evidence(100m, 100.01m, 100m, 104m));
+
+        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync(CancellationToken.None);
+
+        // Identity is derived from the opportunity, so a repeat cycle cannot double-submit.
+        Assert.Single(new SpotExecutionStore(_spotStorePath).ListAll());
+        Assert.Equal(1, broker.SubmitCount);
+    }
+
+    [Fact]
     public async Task AnUnhealthyAccountStopsBeforeAnyDecision()
     {
         var broker = new FakeBroker { AccountBlocked = true };
@@ -201,11 +238,13 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             broker, broker, new MultiLegExecutionStore(_storePath), clock, TimeSpan.FromSeconds(30));
         var coordinator = new OptionExecutionCoordinator(
             null!, lifecycle, NullLogger<OptionExecutionCoordinator>.Instance);
+        var spotLifecycle = new SpotExecutionLifecycle(
+            broker, new SpotExecutionStore(_spotStorePath), clock, TimeSpan.FromSeconds(30));
 
         var service = new AutonomousPaperTradingService(
             broker, resolver,
             new StubEvidenceProvider(evidence ?? Evidence(100m, 100.01m, 100m, 104m)),
-            new OpportunityRouter(), coordinator,
+            new OpportunityRouter(), coordinator, spotLifecycle,
             new StubCapabilityProbe(capabilities ?? Capabilities()),
             pipeline, new ResearchArtifactState(),
             new ExitEngine(), options, mode, state, clock,
@@ -228,6 +267,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
     public void Dispose()
     {
         if (File.Exists(_storePath)) File.Delete(_storePath);
+        if (File.Exists(_spotStorePath)) File.Delete(_spotStorePath);
     }
 
     private sealed class StubCapabilityProbe(CapabilityReport report) : IAlpacaCapabilityProbe
@@ -246,6 +286,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
 
     private sealed class FakeBroker : IBrokerExecutionGateway, IMultiLegBrokerExecutionGateway
     {
+        public int SubmitCount => Submitted.Count;
         public List<ExecutionCommand> Submitted { get; } = [];
         public IReadOnlyList<BrokerOrderSnapshot> OpenOrders { get; init; } = [];
         public IReadOnlyList<BrokerPositionSnapshot> Positions { get; init; } = [];
