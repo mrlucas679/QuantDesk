@@ -178,6 +178,20 @@ public sealed class AutonomousPaperTradingService(
 
         // Attributed exposure in the instrument we are about to trade is still disqualifying: a second
         // position in the same symbol would trade over the lane that already holds it.
+        //
+        // This lock is what limits the system to one strategy per symbol, and
+        // PortfolioIntentAggregator exists to replace it — netting several strategies' intents into
+        // one target instead of refusing the second outright. It is deliberately not wired here yet,
+        // and the precondition is worth stating so this lock is not removed on the strength of the
+        // aggregator's existence.
+        //
+        // Execution below opens a fixed OrderNotional every time; it does not move an existing
+        // position toward a target. Netting is only safe against an executor that sends the
+        // *difference* between held and wanted, which is why the aggregator exposes RequiredDelta.
+        // Remove this lock and the fixed-size path would add a second full position rather than
+        // adjusting the first — doubling exposure, which is the exact failure the lock prevents.
+        //
+        // Order of work: make spot execution delta-based, then net, then drop this.
         if (attribution.IsClaimed(route.Symbol))
         {
             state.Update("abstained", options.Symbol, reason: "SymbolAlreadyHeld");
