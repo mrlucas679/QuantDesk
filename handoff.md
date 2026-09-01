@@ -1350,6 +1350,55 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### The autonomous lane could not survive a closed market — 2026-09-02
+
+Switching the lane from BTC/USD to SPY killed it on the first cycle:
+`AUTONOMOUS_PIPELINE_FAILED`, runtime `Degraded`. The cause was
+`InvalidOperationException: Alpaca latest equity quote for 'SPY' did not contain a valid two-sided
+spread` — the equity market was closed.
+
+`ExecuteAsync` wrapped the **entire while loop** in one try. A single failed evaluation therefore
+exited the loop permanently and left the autonomous trader dead until the process restarted. The
+condition that triggers it is the most ordinary one there is: no two-sided quote outside regular
+hours, which is roughly nineteen hours of every day plus every weekend. An unreachable venue would
+have done the same.
+
+A failed cycle is now an abstention. `EvaluateOneCycleAsync` catches faults per cycle, records
+`abstained / EvidenceUnavailable`, logs a warning, and the loop continues; the outer handler still
+catches genuine structural failure. Verified live: with the market closed the lane cycles, abstains,
+and the runtime stays `Ready`.
+
+### Why the lane cannot trade crypto, measured — 2026-09-02
+
+The entry condition is `min(65-minute return, 20-minute return) > hurdle`, where
+`hurdle = spread + fees + slippage + minimum net edge`. The two cost profiles produce very different
+bars:
+
+| profile | fees | slippage | min edge | hurdle |
+| --- | --- | --- | --- | --- |
+| `spot-crypto-taker` | 50 | 10 | 10 | **spread + 70 ≈ 80 bps** |
+| `us-equity` | 1 | 2 | 5 | **spread + 8 ≈ 9 bps** |
+
+Replaying 30 days of five-minute bars through the same condition:
+
+| asset | hurdle | bars firing | entries/day |
+| --- | --- | --- | --- |
+| BTC/USD | 80 bps | **0 / 2,220** | **0.0** |
+| BTC/USD | 70 bps | 4 / 2,220 | 0.1 |
+| BTC/USD | 50 bps | 14 / 2,220 | 0.5 |
+| SPY | 9 bps | **185 / 1,804** | **6.2** |
+| SPY | 80 bps | 0 / 1,804 | 0.0 |
+
+BTC's 65-minute move distribution is p50 −1 bps, p90 30, p99 72, max 180. **The crypto hurdle sits
+above the 99th percentile of the move it requires**, so the lane on BTC/USD would abstain
+indefinitely — correctly. It is refusing to buy a 0.8% toll with a 0.3% edge.
+
+The same code on SPY clears its hurdle about six times a day. The autonomous lane was pointed at the
+one asset class whose fees make its own gate unreachable, and the fix is configuration, not code.
+
+The lane now runs on SPY, $500 per opportunity, and will begin evaluating live evidence when US
+regular hours open at 13:30 UTC.
+
 ### Autonomous lane experimental — 2026-09-02
 
 <a id="autonomous-lane-experimental-2026-09-02"></a>

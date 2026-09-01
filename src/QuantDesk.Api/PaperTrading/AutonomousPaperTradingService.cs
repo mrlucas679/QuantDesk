@@ -57,7 +57,7 @@ public sealed class AutonomousPaperTradingService(
             await WaitUntilReadyAsync(stoppingToken);
             while (!stoppingToken.IsCancellationRequested)
             {
-                await EvaluateOpportunityAsync(stoppingToken);
+                await EvaluateOneCycleAsync(stoppingToken);
                 await Task.Delay(options.CycleInterval, stoppingToken);
             }
         }
@@ -70,6 +70,35 @@ public sealed class AutonomousPaperTradingService(
             state.Update("failed", options.Symbol, reason: "AUTONOMOUS_PIPELINE_FAILED");
             runtimeMode.Transition(SystemMode.Degraded, "autonomous_pipeline_failed");
             logger.LogError(exception, "Autonomous paper runtime failed closed.");
+        }
+    }
+
+    /// <summary>
+    /// Runs one evaluation, and treats a failed one as an abstention rather than the end of the lane.
+    ///
+    /// The try used to wrap the whole loop, so a single failed cycle exited it permanently and left the
+    /// autonomous trader dead until the process restarted. The condition that exposed it is the most
+    /// ordinary one there is: outside regular hours SPY has no two-sided quote, the evidence provider
+    /// throws, and the lane stopped for good — for roughly nineteen hours of every day, and every
+    /// weekend.
+    ///
+    /// An unreachable venue or an unquotable market is a reason to skip this cycle and look again in a
+    /// minute. It is not a reason to stop trading forever, and not to do so under a state of "failed"
+    /// that reads like a defect in the strategy.
+    /// </summary>
+    private async Task EvaluateOneCycleAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await EvaluateOpportunityAsync(stoppingToken);
+        }
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, stoppingToken))
+        {
+            state.Update("abstained", options.Symbol, reason: "EvidenceUnavailable");
+            logger.LogWarning(
+                exception,
+                "Autonomous cycle abstained for {Symbol}: market evidence was unavailable. The lane continues.",
+                options.Symbol);
         }
     }
 
