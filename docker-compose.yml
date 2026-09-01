@@ -1,4 +1,32 @@
 services:
+  # Populates the research-data volume from the datasets committed to this repository, then exits.
+  # Without it a fresh machine starts with an empty volume and every research service has nothing
+  # to read, which is the difference between "clone and run" and "clone, then hunt for data".
+  # Re-running is safe: existing files are not overwritten.
+  quantdesk-dataset-seed:
+    image: alpine:3.20
+    # BusyBox cp -n silently copies nothing, so idempotency is an explicit emptiness check
+    # rather than a no-clobber flag. A dataset already present is left untouched.
+    command:
+      - sh
+      - -c
+      - >-
+        set -e;
+        for dataset in /seed-source/*/; do
+          name=$$(basename "$$dataset");
+          if [ -d "/seed-target/$$name" ] && [ -n "$$(ls -A "/seed-target/$$name" 2>/dev/null)" ]; then
+            echo "dataset already present: $$name";
+          else
+            mkdir -p "/seed-target/$$name";
+            cp -r "$$dataset". "/seed-target/$$name/";
+            echo "seeded dataset: $$name ($$(ls -1 "/seed-target/$$name" | wc -l) files)";
+          fi;
+        done
+    volumes:
+      - ./research/python/data:/seed-source:ro
+      - quantdesk-research-data:/seed-target
+    restart: "no"
+
   quantdesk-research:
     build:
       context: research/python
@@ -24,6 +52,9 @@ services:
     volumes:
       - quantdesk-research-data:/app/data
       - quantdesk-research-artifacts:/app/artifacts
+    depends_on:
+      quantdesk-dataset-seed:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   quantdesk-research-worker:
@@ -74,6 +105,10 @@ services:
       # Alpaca rejected a $5 BTC/USD diagnostic below its $10 minimum on 2026-08-31.
       QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL: ${QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL:-10}
       QUANTDESK_DIAGNOSTIC_STORE_PATH: /app/runtime-data/diagnostic-executions.json
+      # Durable execution records for the multi-leg and spot lanes. Both live on the runtime-data
+      # volume so recovery survives a container restart rather than only a process restart.
+      QUANTDESK_MLEG_STORE_PATH: /app/runtime-data/mleg-executions.json
+      QUANTDESK_SPOT_STORE_PATH: /app/runtime-data/spot-executions.json
       QUANTDESK_AUTONOMOUS_ENABLED: ${QUANTDESK_AUTONOMOUS_ENABLED:-false}
       QUANTDESK_AUTONOMOUS_MODE: ${QUANTDESK_AUTONOMOUS_MODE:-ExperimentalPaper}
       QUANTDESK_EXPERIMENT_ID: ${QUANTDESK_EXPERIMENT_ID:-EXP-001}
@@ -86,7 +121,11 @@ services:
       # No execution symbol is implicit. Disabled research services retain their own BTC/USD
       # dataset fallback, but enabling autonomy requires an explicit chosen symbol.
       QUANTDESK_AUTONOMOUS_SYMBOL: ${QUANTDESK_AUTONOMOUS_SYMBOL:-}
-      QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL: ${QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL:-20}
+      # Spot holds the instrument; DefinedRiskVertical expresses the view as a debit spread.
+      QUANTDESK_AUTONOMOUS_EXPRESSION: ${QUANTDESK_AUTONOMOUS_EXPRESSION:-Spot}
+      # Also the hard cap on what one opportunity can lose. A vertical needs 500; at 20 every
+      # spread is refused as uneconomic once per-contract fees are counted.
+      QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL: ${QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL:-500}
       # This is a long safety expiry, not an entry/exit timer. Thesis, regime, and loss rules manage exits.
       QUANTDESK_AUTONOMOUS_MAX_HOLDING_HOURS: ${QUANTDESK_AUTONOMOUS_MAX_HOLDING_HOURS:-2}
       QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS: ${QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS:-30}
@@ -95,6 +134,10 @@ services:
       QUANTDESK_RESEARCH_DATA_ROOT: /app/research-data
       QUANTDESK_RESEARCH_ARTIFACT_ROOT: /app/research-artifacts
       QUANTDESK_RESEARCH_LOOKBACK_DAYS: ${QUANTDESK_RESEARCH_LOOKBACK_DAYS:-180}
+      QUANTDESK_EQUITY_LOOKBACK_DAYS: ${QUANTDESK_EQUITY_LOOKBACK_DAYS:-730}
+      QUANTDESK_EQUITY_RESEARCH_SYMBOLS: ${QUANTDESK_EQUITY_RESEARCH_SYMBOLS:-SPY,QQQ,IWM,DIA}
+      # Research requires SIP and rejects anything else; IEX is the default because SIP is paid.
+      QUANTDESK_EQUITY_RESEARCH_FEED: ${QUANTDESK_EQUITY_RESEARCH_FEED:-iex}
       # Bound authenticated quote collection while building the next point-in-time research dataset.
       QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS: ${QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS:-5}
     volumes:
@@ -111,7 +154,6 @@ volumes:
     name: quantdesk-runtime-data
   quantdesk-research-data:
     name: quantdesk-research-data
-    external: true
   quantdesk-research-artifacts:
     name: quantdesk-research-artifacts
     external: true

@@ -153,6 +153,20 @@ builder.Services.AddSingleton(services => new MultiLegExecutionLifecycle(
     services.GetRequiredService<MultiLegExecutionStore>(),
     services.GetRequiredService<IRuntimeClock>(),
     services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout));
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_SPOT_STORE_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "spot-executions.json");
+    return new SpotExecutionStore(Path.GetFullPath(configured));
+});
+builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
+    services.GetRequiredService<IBrokerExecutionGateway>(),
+    services.GetRequiredService<SpotExecutionStore>(),
+    services.GetRequiredService<IRuntimeClock>(),
+    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout));
+builder.Services.AddSingleton<SpotExecutionRecoveryService>();
+builder.Services.AddHostedService(services =>
+    services.GetRequiredService<SpotExecutionRecoveryService>());
 builder.Services.AddSingleton<MultiLegExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<MultiLegExecutionRecoveryService>());
