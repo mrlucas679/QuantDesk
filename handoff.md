@@ -1350,6 +1350,60 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Two model-plane improvements, and the number that ends the argument — 2026-09-01
+
+**Improvement 1 — stop selecting, start combining.** The campaign ranked fourteen families and took
+the winner. That is *pure selection bias*: with fourteen candidates on a 3.9-year slice the winner is
+largely the luckiest, which is precisely what a probability of backtest overfitting of 0.50 has been
+reporting. Two ensembles now exist whose membership is decided by a structural attribute declared
+before any result is seen — `ensemble-all` takes every hypothesis family, `ensemble-directional`
+takes the long-only ones. Neither consults a result, so neither can be overfitted.
+
+Across the 28 held-out paths:
+
+| family | median Sharpe | beats benchmark | selection bias |
+| --- | --- | --- | --- |
+| **ensemble-directional** | **0.97** | **75%** | none — membership is structural |
+| defensive-low-vol-63d | 0.91 | 71% | chosen after seeing results |
+| ensemble-all | 0.90 | 75% | none |
+| best single trend family | 0.90 | 64% | chosen after seeing results |
+
+The blend beats the best cherry-picked family *without making a choice*. The gross book is
+renormalised after averaging, because dollar-neutral and long-only constituents partly cancel and an
+un-renormalised ensemble would run a smaller book and report a flattered risk-adjusted return for
+that reason alone.
+
+**Improvement 2 — the multiple-testing control that was claimed but absent.** The campaign docstring
+stated the deflated Sharpe ratio was "reported alongside as the explicit multiple-testing
+diagnostic". It was computed nowhere. `deflated_sharpe.py` existed and was never imported — a stated
+control that did not exist in the code path, which is worse than no control because it invites
+belief. It is now computed for every family.
+
+**And it settles the question.** Deflating for sixteen trials on the discovery slice:
+
+| family | Sharpe | DSR |
+| --- | --- | --- |
+| vol-scaled-trend-126d | 0.604 | **0.181** |
+| ensemble-directional | 0.552 | 0.155 |
+| equal-weight-benchmark | 0.457 | 0.115 |
+
+**Nothing survives at DSR > 0.95. The best family has an 18% probability its true Sharpe is even
+positive** once the search width is accounted for. That is the honest state of the evidence, and it
+is consistent with everything else measured: PBO 0.50, 1.12 independent bets, 3.9 years of discovery.
+
+**The conclusion a veteran would draw.** The models are not broken and the strategy library is not
+missing a family — it already contains the highest-evidence mechanisms in the literature. The
+evidence base is simply too thin to distinguish any of them from the luckiest of sixteen draws. The
+binding constraints, in order:
+
+1. **Universe.** 0.960 correlation, 1.12 independent bets. This caps everything, and widening it to
+   the sector ETFs is the single highest-value change available.
+2. **Sample.** 3.9 years of discovery cannot support sixteen trials. Deflation is unforgiving here
+   and correctly so.
+3. **Cost.** 80 bps measured per crypto round trip kills every high-turnover family outright.
+
+Trading anything from this evidence base would be trading a coin flip with a known toll attached.
+
 ### Veteran audit: why the system could not find an edge — 2026-09-01
 
 Going through the application end to end looking for the reason nothing predicts. The signal

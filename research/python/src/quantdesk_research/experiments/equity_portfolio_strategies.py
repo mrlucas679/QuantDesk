@@ -69,6 +69,7 @@ from quantdesk_research.data.manifest_keys import (
     manifest_value,
     require_manifest_value,
 )
+from quantdesk_research.evaluation.deflated_sharpe import calculate_deflated_sharpe_ratio
 from quantdesk_research.evaluation.hypothesis_memory import (
     FailureReason,
     HypothesisMemory,
@@ -94,6 +95,9 @@ SHARPE_GATE = 0.5
 Phase = Literal["discovery", "validation", "holdout"]
 JsonObject = dict[str, Any]
 WeightBuilder = Callable[[pd.DataFrame, pd.DataFrame], pd.DataFrame]
+# (family, closes, returns) -> unshifted weights. The family is passed explicitly rather than
+# captured, so the builders can be shared between single-family evaluation and the ensembles.
+MechanismBuilder = Callable[["StrategyFamily", pd.DataFrame, pd.DataFrame], pd.DataFrame]
 
 
 @dataclass(frozen=True)
@@ -156,6 +160,15 @@ FAMILIES: tuple[StrategyFamily, ...] = (
     StrategyFamily("vol-scaled-trend-252d", "volatility-scaled-trend", 252, 21, False),
     StrategyFamily("defensive-low-vol-63d", "defensive-low-volatility", 63, 21, False),
     StrategyFamily("equal-weight-benchmark", "equal-weight-benchmark", 1, 1, False),
+    # Ensembles. Membership is decided by a structural attribute declared before any result is
+    # seen -- never by in-sample performance -- so these carry no selection bias at all.
+    #
+    # This matters because picking the single best family is *pure* selection bias: with fourteen
+    # candidates, the winner of a 3.9-year discovery slice is largely the luckiest one, which is
+    # what a probability of backtest overfitting of 0.50 has been saying. Averaging every candidate
+    # makes no choice, so there is nothing to overfit.
+    StrategyFamily("ensemble-all", "ensemble-all", 1, 21, False),
+    StrategyFamily("ensemble-directional", "ensemble-directional", 1, 21, False),
 )
 
 MECHANISM_CATALOGUE: tuple[MechanismCatalogueEntry, ...] = (
@@ -177,27 +190,30 @@ def build_weights(family: StrategyFamily, closes: pd.DataFrame) -> pd.DataFrame:
     applied once, here, for every family.
     """
     signal_returns = closes.pct_change()
-    builders: dict[str, WeightBuilder] = {
-        "cross-sectional-momentum": lambda c, r: _cross_sectional(
-            c.pct_change(family.lookback_days), long_strongest=True
-        ),
-        "cross-sectional-reversal": lambda c, r: _cross_sectional(
-            c.pct_change(family.lookback_days), long_strongest=False
-        ),
-        "time-series-trend": lambda c, r: _time_series_trend(
-            c.pct_change(family.lookback_days)
-        ),
-        "volatility-scaled-trend": lambda c, r: _volatility_scaled_trend(
-            c.pct_change(family.lookback_days), r
-        ),
-        "defensive-low-volatility": lambda c, r: _defensive_low_volatility(
-            r, family.lookback_days
-        ),
-        "equal-weight-benchmark": lambda c, r: _equal_weight(c),
-    }
-    raw = builders[family.mechanism](closes, signal_returns)
+    raw = _MECHANISM_BUILDERS[family.mechanism](family, closes, signal_returns)
     rebalanced = _hold_for(raw, family.holding_days)
     return rebalanced.shift(1).fillna(0.0)
+
+
+# One definition of each mechanism, shared by `build_weights` and by the ensembles. Keeping two
+# copies would let a constituent drift from the family of the same name, so an ensemble could end
+# up averaging something that was never evaluated on its own.
+_MECHANISM_BUILDERS: dict[str, MechanismBuilder] = {
+    "cross-sectional-momentum": lambda f, c, r: _cross_sectional(
+        c.pct_change(f.lookback_days), long_strongest=True
+    ),
+    "cross-sectional-reversal": lambda f, c, r: _cross_sectional(
+        c.pct_change(f.lookback_days), long_strongest=False
+    ),
+    "time-series-trend": lambda f, c, r: _time_series_trend(c.pct_change(f.lookback_days)),
+    "volatility-scaled-trend": lambda f, c, r: _volatility_scaled_trend(
+        c.pct_change(f.lookback_days), r
+    ),
+    "defensive-low-volatility": lambda f, c, r: _defensive_low_volatility(r, f.lookback_days),
+    "equal-weight-benchmark": lambda f, c, r: _equal_weight(c),
+    "ensemble-all": lambda f, c, r: _ensemble(c, market_neutral_only=None),
+    "ensemble-directional": lambda f, c, r: _ensemble(c, market_neutral_only=False),
+}
 
 
 def _cross_sectional(signal: pd.DataFrame, long_strongest: bool) -> pd.DataFrame:
@@ -238,6 +254,44 @@ def _equal_weight(closes: pd.DataFrame) -> pd.DataFrame:
     available = closes.notna().astype(float)
     count = available.sum(axis=1)
     return available.div(count.where(count > 0), axis=0).fillna(0.0)
+
+
+def _ensemble(closes: pd.DataFrame, market_neutral_only: bool | None) -> pd.DataFrame:
+    """Average the weight schedules of every constituent family, choosing none of them.
+
+    ``market_neutral_only`` selects membership by a *structural* property fixed before any
+    evaluation: ``None`` takes every hypothesis family, ``False`` takes the long-only ones. Neither
+    consults a result, so no in-sample information enters the choice.
+
+    The gross book is renormalised after averaging. Dollar-neutral and long-only schedules partly
+    cancel when blended, and without renormalisation the ensemble would quietly run a smaller book
+    than its constituents and report a flattered risk-adjusted return for that reason alone.
+    """
+    members = [
+        family
+        for family in FAMILIES
+        if family.mechanism not in ("equal-weight-benchmark", "ensemble-all", "ensemble-directional")
+        and (market_neutral_only is None or family.market_neutral == market_neutral_only)
+    ]
+    if not members:
+        raise ValueError("An ensemble needs at least one constituent family.")
+
+    signal_returns = closes.pct_change()
+    total = _member_weights(members[0], closes, signal_returns)
+    for family in members[1:]:
+        total = total.add(_member_weights(family, closes, signal_returns), fill_value=0.0)
+    averaged = total / float(len(members))
+
+    gross = averaged.abs().sum(axis=1)
+    return averaged.div(gross.where(gross > 0), axis=0).fillna(0.0)
+
+
+def _member_weights(
+    family: StrategyFamily, closes: pd.DataFrame, signal_returns: pd.DataFrame
+) -> pd.DataFrame:
+    """One constituent's pre-shift schedule, including its own rebalancing cadence."""
+    raw = _MECHANISM_BUILDERS[family.mechanism](family, closes, signal_returns)
+    return _hold_for(raw, family.holding_days)
 
 
 def _hold_for(weights: pd.DataFrame, holding_days: int) -> pd.DataFrame:
@@ -452,6 +506,42 @@ def probability_of_backtest_overfitting(
     width = min(len(column) for column in columns)
     matrix = np.column_stack([column[-width:] for column in columns])
     return float(calculate_pbo(matrix))
+
+
+TRADING_DAYS_PER_YEAR = 252
+
+
+def deflated_sharpe_by_family(results: list[FamilyEvaluation]) -> dict[str, float]:
+    """Probability each family's Sharpe survives the fact that many families were tried.
+
+    The campaign's own docstring claimed the deflated Sharpe ratio was "reported alongside as the
+    explicit multiple-testing diagnostic". It was not computed anywhere -- a stated control that did
+    not exist in the code path, which is worse than no control because it invites belief.
+
+    Bailey and Lopez de Prado's construction asks: given ``n`` trials whose Sharpes have this much
+    spread, how high would the *best* Sharpe be under no skill at all? A family is only interesting
+    to the extent it exceeds that expected maximum, and with sixteen families on 3.9 years the
+    expected maximum under the null is not small.
+
+    Sharpes are converted to per-observation units first, because the deflation is expressed in the
+    same frequency as the sample count. Skewness and excess kurtosis are left at their normal
+    defaults; the portfolio evidence does not carry them yet, so this reads slightly optimistic for
+    a return series with fat tails.
+    """
+    daily = {
+        item.name: float(item.base["sharpe"]) / math.sqrt(TRADING_DAYS_PER_YEAR)
+        for item in results
+    }
+    spread = float(np.var(list(daily.values()))) if len(daily) > 1 else 0.0
+    return {
+        item.name: calculate_deflated_sharpe_ratio(
+            observed_sharpe=daily[item.name],
+            n_trials=len(results),
+            sharpe_variance=spread,
+            t_samples=int(item.base["observation_count"]),
+        )
+        for item in results
+    }
 
 
 def rank_by_edge_per_risk(results: list[FamilyEvaluation]) -> list[FamilyEvaluation]:
