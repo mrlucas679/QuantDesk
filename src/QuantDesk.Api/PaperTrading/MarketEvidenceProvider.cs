@@ -15,9 +15,19 @@ namespace QuantDesk.Api.PaperTrading;
 /// underlying, and the spread is only the instrument used to express it — pricing the option chain
 /// is a separate step owned by <see cref="OptionVerticalOpportunityService"/>.
 /// </summary>
+/// <summary>
+/// Supplies directional evidence for a route. An interface because the autonomous evaluation cycle
+/// depends on it, and the money path must be substitutable to be testable at all.
+/// </summary>
+public interface IMarketEvidenceProvider
+{
+    Task<DirectionalMarketEvidence> GetEvidenceAsync(
+        OpportunityRoute route, CancellationToken cancellationToken);
+}
+
 public sealed class MarketEvidenceProvider(
     AlpacaLatestCryptoQuoteClient cryptoQuotes,
-    AlpacaLatestEquityQuoteClient equityQuotes)
+    AlpacaLatestEquityQuoteClient equityQuotes) : IMarketEvidenceProvider
 {
     public Task<DirectionalMarketEvidence> GetEvidenceAsync(
         OpportunityRoute route, CancellationToken cancellationToken)

@@ -24,7 +24,7 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
-    MarketEvidenceProvider evidenceProvider,
+    IMarketEvidenceProvider evidenceProvider,
     OpportunityRouter router,
     OptionExecutionCoordinator optionExecution,
     IAlpacaCapabilityProbe capabilityProbe,
@@ -70,7 +70,7 @@ public sealed class AutonomousPaperTradingService(
         }
     }
 
-    private async Task EvaluateOpportunityAsync(CancellationToken cancellationToken)
+    internal async Task EvaluateOpportunityAsync(CancellationToken cancellationToken)
     {
         bool experimental = options.Mode == AutonomousTradingMode.ExperimentalPaper;
         if (runtimeMode.Snapshot().Mode != SystemMode.Ready && !experimental)
@@ -78,14 +78,23 @@ public sealed class AutonomousPaperTradingService(
             state.Update("entry_halted", options.Symbol, reason: "RuntimeNotReady");
             return;
         }
-        if (!symbols.TryResolveBySymbol(options.Symbol, out int slot))
-            throw new InvalidOperationException("Autonomous symbol is not mapped to an instrument slot.");
         // Route first: an unsupported symbol must never inherit another asset class's cost model,
-        // order policy, or permission check.
+        // order policy, or permission check. Routing also precedes slot resolution, because an
+        // unroutable symbol is a configuration abstention, not a runtime fault — throwing here
+        // would trip the catch-all and degrade the whole runtime over a bad setting.
         if (!router.TryRoute(options.Symbol, out OpportunityRoute? route, out string routeReason) ||
             route is null)
         {
             state.Update("abstained", options.Symbol, reason: routeReason);
+            return;
+        }
+
+        if (!symbols.TryResolveBySymbol(options.Symbol, out int slot))
+        {
+            state.Update("abstained", options.Symbol, reason: "SymbolNotMappedToInstrumentSlot");
+            logger.LogWarning(
+                "Autonomous symbol {Symbol} routed to {AssetClass} but is not mapped to an instrument slot.",
+                options.Symbol, route.AssetClass);
             return;
         }
 
@@ -143,6 +152,24 @@ public sealed class AutonomousPaperTradingService(
                     ? (decimal)committee.ExpectedReturnBps
                     : null);
             logger.LogInformation("Autonomous decision for {Symbol}: {Reason}.", options.Symbol, decision.Reason);
+            return;
+        }
+
+        // Refuse an order too small to pay its own costs. Fixed venue charges do not shrink with
+        // order size, so below a certain notional the broker takes more than the edge can win and
+        // the trade loses whichever way the market moves.
+        decimal grossEdgeBps = decision.Committee is { } edge
+            ? (decimal)Math.Abs(edge.ExpectedReturnBps)
+            : 0m;
+        if (!route.Costs.IsEconomicallyViable(
+                options.OrderNotional, grossEdgeBps, spreadBps: 0m, out string viability))
+        {
+            state.Update("abstained", options.Symbol, reason: viability);
+            logger.LogInformation(
+                "Autonomous opportunity for {Symbol} refused as uneconomic at {Notional}: {Reason}. " +
+                "Minimum viable notional is {Minimum}.",
+                options.Symbol, options.OrderNotional, viability,
+                route.Costs.MinimumViableNotionalUsd(grossEdgeBps));
             return;
         }
 

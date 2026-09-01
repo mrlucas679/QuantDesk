@@ -187,6 +187,8 @@ builder.Services.AddHttpClient<AlpacaLatestEquityQuoteClient>(client =>
 });
 builder.Services.AddSingleton<OpportunityRouter>();
 builder.Services.AddSingleton<MarketEvidenceProvider>();
+builder.Services.AddSingleton<IMarketEvidenceProvider>(services =>
+    services.GetRequiredService<MarketEvidenceProvider>());
 // A defined-risk vertical's whole safety property is that the debit paid is the maximum loss, so
 // the risk budget per spread is the hard cap on what one options opportunity can cost. It is
 // derived from the same notional envelope the spot lane uses rather than invented here.

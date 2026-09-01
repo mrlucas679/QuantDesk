@@ -110,6 +110,21 @@ public sealed class OptionExecutionCoordinator(
         if (worstCaseLoss > riskBudget)
             return OptionExecutionOutcome.Rejected("EntryLimitExceedsRiskBudget");
 
+        // A vertical pays OCC and regulatory fees per contract per side, which do not shrink with
+        // order size. Below a certain debit those fixed cents exceed the edge the spread can win,
+        // making the trade a loss whichever way the underlying moves. Refuse rather than pay the
+        // broker to take a position with no upside left.
+        if (!ExecutionCostProfile.UsEquityOption.IsEconomicallyViable(
+                worstCaseLoss, (decimal)Math.Abs(expectedReturnBps), spreadBps: 0m, out string viability))
+        {
+            logger.LogInformation(
+                "Option opportunity refused as uneconomic at {Notional}: {Reason}. Minimum viable is {Minimum}.",
+                worstCaseLoss, viability,
+                ExecutionCostProfile.UsEquityOption.MinimumViableNotionalUsd(
+                    (decimal)Math.Abs(expectedReturnBps)));
+            return OptionExecutionOutcome.Rejected(viability);
+        }
+
         if (!lifecycle.TryReserve(
                 executionId, candidate.StrategyId, quantity: 1, entryLimit, exitLimit,
                 worstCaseLoss, managementPlan.MaximumHoldingPeriod, legs))
