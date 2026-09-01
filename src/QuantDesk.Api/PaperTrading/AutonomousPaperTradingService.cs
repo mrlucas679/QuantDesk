@@ -479,9 +479,27 @@ public sealed class AutonomousPaperTradingService(
         }
     }
 
+    /// <summary>
+    /// Last-resort close. Reports every way it can fail, including the quiet one.
+    ///
+    /// A broker refusal comes back as a rejected <see cref="BrokerSubmitResult"/> rather than an
+    /// exception, so discarding the return value meant a refused emergency close looked identical to a
+    /// successful one — silence in the logs and an open position nobody was told about. On the path
+    /// that exists precisely for when everything else has failed, that is the worst possible default.
+    /// </summary>
     private async Task EmergencyCloseAsync(int slot, CancellationToken cancellationToken)
     {
-        try { await broker.ClosePositionAsync(slot, cancellationToken); }
+        try
+        {
+            BrokerSubmitResult result = await broker.ClosePositionAsync(slot, cancellationToken);
+            if (result.State == BrokerSubmitState.Acknowledged) return;
+            logger.LogCritical(
+                "Emergency paper position close for {Symbol} was not acknowledged: state={State}, reason={Reason}, brokerRequestId={RequestId}. The position may still be open.",
+                options.Symbol,
+                result.State,
+                result.ReasonCode ?? "none",
+                result.RequestId ?? "none");
+        }
         catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             logger.LogCritical(exception, "Emergency paper position close failed for {Symbol}.", options.Symbol);

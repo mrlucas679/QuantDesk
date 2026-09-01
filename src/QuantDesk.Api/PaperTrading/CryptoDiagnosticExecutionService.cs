@@ -495,9 +495,9 @@ public sealed class CryptoDiagnosticExecutionService(
     {
         if (!broker.IsPaperEnvironment)
             return DiagnosticExecutionResult.Blocked("ALPACA_PAPER_REQUIRED");
-        FullSystemReadinessSnapshot snapshot = readiness.Snapshot();
-        bool ready = closingExposure ? snapshot.ExitExecutionReady : snapshot.InfrastructureExecutionReady;
-        return ready ? null : DiagnosticExecutionResult.Blocked("INFRASTRUCTURE_NOT_READY");
+        return readiness.Snapshot().IsReadyFor(OrderClassification.DiagnosticExecution, closingExposure)
+            ? null
+            : DiagnosticExecutionResult.Blocked("INFRASTRUCTURE_NOT_READY");
     }
 
     private async Task<BrokerEntryContext> ReadBrokerEntryContextAsync(

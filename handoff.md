@@ -1201,9 +1201,9 @@ nothing in this repository has yet contacted the live venue or placed a trade.**
 | # | Item |
 | --- | --- |
 | B1 | **Closed.** `AutonomousPaperTradingServiceTests` covers the orchestration in 10 tests. Testing it required introducing `IMarketEvidenceProvider`, which is a design improvement rather than a test workaround — the money path had no seam. |
-| B2 | `ExecutionAdmissionPolicy` has zero tests — it is an admission gate. |
-| B3 | `CryptoFeeSchedule` has zero tests — it is the provenance of the numbers that decide admissibility. |
-| B4 | `MarketEvidenceProvider` has zero tests. |
+| B2 | **Closed, and it was worse than untested.** `ExecutionAdmissionPolicy` had tests but *no production caller* — a class that reads like the system's central admission gate, DI-registered and never invoked. Its rules also restated the readiness check a second time, and the copy was wrong for closes. The rule now lives once on `FullSystemReadinessSnapshot.IsReadyFor`, the policy adds only reason codes, and the diagnostic lane calls it. |
+| B3 | **Closed.** `CryptoFeeScheduleTests` covers it. |
+| B4 | Still thin: exercised through `AutonomousPaperTradingServiceTests` via `IMarketEvidenceProvider`, with no tests on the concrete provider's own parsing. |
 | B5 | `BlackScholes`, `OptionChainValidator`, `ExecutionJournalReplay`, and `PythonResearchContractReader` are each referenced by exactly one test file. |
 | B6 | Duplicate-prevention is proven only across sequential restart, never with two store/lifecycle instances racing. |
 | B7 | Atomic store behaviour under interrupted writes and corrupted JSON is unproven for the MLeg store. |
@@ -1294,7 +1294,7 @@ and a verdict recorded, so it is not re-attempted blindly.
 | G12 | 74 files in `Docs/`; at least `Docs/AUTONOMOUS_TRADING_CONNECTION_AUDIT.md` predates the routing work. Docs drift is caught by no test. |
 | G13 | Test-name-to-source mapping is unreliable, so coverage gaps cannot be checked mechanically. |
 | G15 | **Strict `mypy` covers `src` only.** `mypy src` reports "no issues found in 85 source files"; `mypy .` finds 51 errors, all of them in `tests/` (mostly missing annotations). The claim "mypy strict, clean" is true and narrower than it sounds — the test suite is not type-checked. |
-| G16 | **There is no CI workflow for the Python plane at all.** `.github/workflows/` contains `dotnet.yml` and nothing else, so ruff, mypy, and the 143 Python tests run only when someone runs them by hand. Everything the research plane asserts is unguarded between sessions. |
+| G16 | **Closed.** `.github/workflows/python.yml` runs `uv sync --frozen`, ruff, `mypy src`, and pytest on every push and pull request. `--frozen` makes an out-of-date `uv.lock` a CI failure rather than a silent re-resolve. Every step verified green locally before committing. |
 | G14 | **Implemented:** the diagnostic minimum quantity is the named `DiagnosticExecutionOptions.MinimumCryptoQuantity` invariant, not a composition-root magic literal. |
 
 ### Option clients against real venue shapes — 2026-09-01
@@ -1349,6 +1349,27 @@ real credentials tried in this repository were an Alpaca *account number* pasted
 a sentence naming that when the venue refuses. It is advisory and runs only after a refusal: Alpaca can
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
+
+### The deadlock was a class, not an instance — 2026-09-01
+
+Auditing outward from the stranded position found the same mistake in three more places. All share one
+shape: **a flatness or full-readiness requirement applied to the act of removing exposure.**
+
+* **`ExecutionAdmissionPolicy` restated the readiness rule and got the exit case wrong for all three
+  order classifications** — including `QualifiedStrategy => Ready`, which would have blocked a real
+  strategy's exit exactly as the diagnostic lane's was blocked. It was also dead: DI-registered, tested,
+  and never called by production code, so it read like a central safety gate while enforcing nothing.
+  The rule now exists once, on `FullSystemReadinessSnapshot.IsReadyFor`.
+* **`EntryHalted` and `RiskReductionOnly` were honoured nowhere.** Both mode names promise that closing
+  still works; only `ExecutionWorker` implemented it. The operator's manual order endpoint rejected
+  every order whenever the mode was not `Ready` — and the preflight enters `EntryHalted` automatically
+  the instant any position exists, so holding a position locked the operator out of closing it.
+* **A refused emergency close was silent.** `ClosePositionAsync` reports a broker refusal as a rejected
+  result rather than an exception, and the autonomous lane discarded the return value. On the path that
+  exists for when everything else has failed, a refusal looked exactly like success.
+
+Also fixed while auditing: operator orders were submitted with `PositionIntent.Open` hardcoded, so
+every manual close was journalled as an opening trade.
 
 ### A completed crypto round trip, and the deadlock it exposed — 2026-09-01
 

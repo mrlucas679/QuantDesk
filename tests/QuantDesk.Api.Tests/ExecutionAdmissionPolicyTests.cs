@@ -21,7 +21,7 @@ public sealed class ExecutionAdmissionPolicyTests
         FullSystemReadinessSnapshot readiness = Readiness(
             infrastructureReady, researchReady, fullyReady);
 
-        bool admitted = _policy.IsAdmitted(classification, readiness, out string reason);
+        bool admitted = _policy.IsAdmitted(classification, readiness, closingExposure: false, out string reason);
 
         Assert.True(admitted);
         Assert.Equal(expectedReason, reason);
@@ -34,7 +34,7 @@ public sealed class ExecutionAdmissionPolicyTests
     public void RejectsWhenTheRequiredReadinessDomainIsNotMet(
         OrderClassification classification, string expectedReason)
     {
-        bool admitted = _policy.IsAdmitted(classification, Readiness(false, false, false), out string reason);
+        bool admitted = _policy.IsAdmitted(classification, Readiness(false, false, false), closingExposure: false, out string reason);
 
         Assert.False(admitted);
         Assert.Equal(expectedReason, reason);
@@ -55,4 +55,36 @@ public sealed class ExecutionAdmissionPolicyTests
         ExitEngineReady: ready,
         PaperEndpointVerified: infrastructureReady || researchReady || ready,
         UpdatedAt: DateTimeOffset.UtcNow);
+
+    [Theory]
+    [InlineData(OrderClassification.DiagnosticExecution)]
+    [InlineData(OrderClassification.StrategyForwardResearch)]
+    [InlineData(OrderClassification.QualifiedStrategy)]
+    public void EveryClassificationMayCloseWhileTheAccountIsNotFlat(OrderClassification classification)
+    {
+        // brokerReconciled means "the account is flat", so it is false precisely while a position that
+        // needs closing exists. Requiring it to close was a deadlock; requiring research or strategy
+        // readiness to close would be a stranger one, since neither is a reason to keep a position.
+        var readiness = new FullSystemReadinessState();
+        readiness.RecordDeterministicRuntime(true, true, true, true, true);
+        readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: true, paperEndpointVerified: true);
+
+        bool admitted = _policy.IsAdmitted(
+            classification, readiness.Snapshot(), closingExposure: true, out string reason);
+
+        Assert.True(admitted, reason);
+    }
+
+    [Theory]
+    [InlineData(OrderClassification.DiagnosticExecution)]
+    [InlineData(OrderClassification.QualifiedStrategy)]
+    public void LosingBrokerTruthStillRefusesAClose(OrderClassification classification)
+    {
+        var readiness = new FullSystemReadinessState();
+        readiness.RecordDeterministicRuntime(true, true, true, true, true);
+        readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: false, paperEndpointVerified: false);
+
+        Assert.False(_policy.IsAdmitted(
+            classification, readiness.Snapshot(), closingExposure: true, out _));
+    }
 }

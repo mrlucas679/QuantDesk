@@ -1,3 +1,5 @@
+using QuantDesk.Domain.Execution;
+
 namespace QuantDesk.Api.PaperTrading;
 
 public sealed record FullSystemReadinessSnapshot(
@@ -41,6 +43,34 @@ public sealed record FullSystemReadinessSnapshot(
 
     /// <summary>Research readiness adds candidate and model-plane evidence to infrastructure.</summary>
     public bool StrategyResearchReady => InfrastructureExecutionReady && FeaturesReady && ExpertsReady;
+
+    /// <summary>
+    /// Whether this readiness state admits an order of the given classification.
+    ///
+    /// The single definition of that rule. It previously existed twice — once in
+    /// <see cref="ExecutionAdmissionPolicy"/>, which nothing called, and once inline in the diagnostic
+    /// lane — and the two disagreed about the exit case. Duplicated admission rules are how the
+    /// closing-a-position deadlock survived: fixing one copy left the other wrong.
+    ///
+    /// <paramref name="closingExposure"/> collapses every classification onto
+    /// <see cref="ExitExecutionReady"/>, because the reason to admit a close does not depend on why the
+    /// position was opened. Research readiness, market-data health and strategy qualification are
+    /// preconditions for taking a position; none of them is a reason to keep one that must be closed.
+    /// </summary>
+    public bool IsReadyFor(OrderClassification classification, bool closingExposure)
+    {
+        if (closingExposure) return classification is OrderClassification.DiagnosticExecution
+            or OrderClassification.StrategyForwardResearch or OrderClassification.QualifiedStrategy
+            && ExitExecutionReady;
+
+        return classification switch
+        {
+            OrderClassification.DiagnosticExecution => InfrastructureExecutionReady,
+            OrderClassification.StrategyForwardResearch => StrategyResearchReady,
+            OrderClassification.QualifiedStrategy => Ready,
+            _ => false
+        };
+    }
 
     public bool Ready => MarketDataHealthy && TradeUpdatesHealthy && BrokerReconciled &&
         PortfolioKnown && FeaturesReady && ExpertsReady && CommitteesReady && RiskReady &&
