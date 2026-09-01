@@ -1350,6 +1350,29 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Live option spreads, measured during the session — 2026-09-01 17:40Z
+
+The last unknown before an options trade, answered with real quotes on SPY (mid 761.91), 40
+near-the-money calls inside 21 days:
+
+| | relative spread |
+| --- | --- |
+| tightest | **0.61%** (`SPY260901C00749000`, 13.03/13.11) |
+| median | **3.93%** |
+| widest | 133% (deep OTM, penny options) |
+
+A vertical crosses the spread on both legs in both directions, so the round-trip slippage is roughly
+**twice the relative spread**: ~1.2% of premium at the tight end, ~8% at the median, before the
+~$0.05/contract fees. **Only near-ATM front-expiry contracts are tradable at all** — strike selection
+dominates the economics, and a compiler that picks by strike distance without checking quoted spread
+will pick unsellable contracts most of the time.
+
+Finding this required fixing the preflight, which reported a live quote as `-0 minutes old` and marked
+it stale during an open market. `asOf` was captured once at the start of the run and reused, but
+contract discovery pages through 5,792 contracts first, so quotes were judged against a reference time a
+minute in the past. Freshness is now read at the moment of each read. Greeks still return no block from
+the venue; that remains open.
+
 ### Entry attribution, and a fee that read as unexplained exposure — 2026-09-01
 
 **Entry no longer halts on any position.** The register left this open because narrowing it needed

@@ -54,8 +54,11 @@ public sealed class OptionDataPreflight(
     AlpacaOptionContractClient contracts,
     AlpacaLatestOptionQuoteClient quotes,
     AlpacaOptionRiskSnapshotClient snapshots,
-    AlpacaHistoricalOptionBarClient bars)
+    AlpacaHistoricalOptionBarClient bars,
+    TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
+
     /// <summary>How many discovered contracts to price. Enough to be representative, small enough to
     /// stay within one request on every endpoint.</summary>
     private const int SampleSize = 4;
@@ -102,8 +105,13 @@ public sealed class OptionDataPreflight(
 
         steps.Add(await RunStepAsync("latest quotes", async () =>
         {
+            // Freshness is judged against the moment of the read, not the moment the run began.
+            // Discovery pages through thousands of contracts first, so a single run-start timestamp is
+            // already a minute stale by the time quotes arrive — which reported a live quote as being
+            // "-0 minutes old" and marked it unusable during an open market.
+            DateTimeOffset readAt = _clock.GetUtcNow();
             IReadOnlyDictionary<int, OptionQuoteSnapshot> priced = await quotes.GetQuotesAsync(
-                slots, asOf, MaximumQuoteAge, cancellationToken);
+                slots, readAt, MaximumQuoteAge, cancellationToken);
             int healthy = priced.Values.Count(quote => quote.Quality == DataQuality.Healthy);
             if (healthy > 0)
             {
@@ -120,19 +128,20 @@ public sealed class OptionDataPreflight(
             return (false, quoted == 0
                 ? $"0/{priced.Count} usable; the venue returned no quote for any sampled contract"
                 : $"0/{priced.Count} usable; {quoted} quoted but all older than the " +
-                  $"{MaximumQuoteAge.TotalMinutes:N0}-minute limit. Newest is {DescribeAge(priced, asOf)}. " +
-                  $"{SessionNote(asOf)}");
+                  $"{MaximumQuoteAge.TotalMinutes:N0}-minute limit. Newest is {DescribeAge(priced, readAt)}. " +
+                  $"{SessionNote(readAt)}");
         }));
 
         steps.Add(await RunStepAsync("greeks and implied volatility", async () =>
         {
+            DateTimeOffset readAt = _clock.GetUtcNow();
             IReadOnlyDictionary<int, OptionRiskSnapshot> risk = await snapshots.GetSnapshotsAsync(
-                slots, asOf, MaximumQuoteAge, cancellationToken);
+                slots, readAt, MaximumQuoteAge, cancellationToken);
             int healthy = risk.Values.Count(item => item.Quality == DataQuality.Healthy);
             return (healthy > 0, healthy > 0
                 ? $"{healthy}/{risk.Count} usable"
                 : $"0/{risk.Count} usable; the venue returned no greeks block, or its quote was stale. " +
-                  SessionNote(asOf));
+                  SessionNote(readAt));
         }));
 
         steps.Add(await RunStepAsync("historical bars", async () =>

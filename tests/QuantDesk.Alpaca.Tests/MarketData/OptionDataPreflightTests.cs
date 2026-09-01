@@ -176,13 +176,15 @@ public sealed class OptionDataPreflightTests
     {
         using var httpClient = new HttpClient(handler);
         AlpacaOptions options = Options();
+        // Both the bar client's real-time boundary and the preflight's freshness reads use a clock, so
+        // the test owns that clock or they disagree with the fixture's timestamps about "now".
+        var clock = new FixedTime(asOf ?? AsOf);
         var preflight = new OptionDataPreflight(
             new AlpacaOptionContractClient(httpClient, options),
             new AlpacaLatestOptionQuoteClient(httpClient, options),
             new AlpacaOptionRiskSnapshotClient(httpClient, options),
-            // The bar client holds its window behind Alpaca's real-time boundary using its own clock,
-            // so the test has to own that clock too or the two disagree about "now".
-            new AlpacaHistoricalOptionBarClient(httpClient, options, new FixedTime(asOf ?? AsOf)));
+            new AlpacaHistoricalOptionBarClient(httpClient, options, clock),
+            clock);
         return await preflight.RunAsync("SPY", Start, End, asOf ?? AsOf, CancellationToken.None);
     }
 
