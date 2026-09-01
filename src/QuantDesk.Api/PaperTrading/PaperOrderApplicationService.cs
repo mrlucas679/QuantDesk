@@ -32,10 +32,19 @@ public sealed class PaperOrderApplicationService(
         ArgumentNullException.ThrowIfNull(request);
         string clientOrderId = NormalizeClientOrderId(request.ClientOrderId);
         if (clientOrderId.Length == 0) return Reject(string.Empty, "INVALID_CLIENT_ORDER_ID");
-        if (runtimeMode.Snapshot().Mode != SystemMode.Ready)
-            return Reject(clientOrderId, "RUNTIME_NOT_READY");
         if (!TryValidate(request, out int slot, out OrderSide side, out string? reason))
             return Reject(clientOrderId, reason!);
+
+        // EntryHalted and RiskReductionOnly both mean "stop adding exposure", not "stop trading".
+        // Every other non-Ready mode means broker truth is unknown or the system is stopping, and is
+        // refused without touching the broker at all.
+        SystemMode mode = runtimeMode.Snapshot().Mode;
+        bool riskReductionOnly = mode is SystemMode.EntryHalted or SystemMode.RiskReductionOnly;
+        if (mode != SystemMode.Ready && !riskReductionOnly)
+            return Reject(clientOrderId, "RUNTIME_NOT_READY");
+
+        bool reducesExposure = await ReducesExposureAsync(slot, side, request.Quantity, cancellationToken);
+        if (riskReductionOnly && !reducesExposure) return Reject(clientOrderId, "ENTRY_HALTED");
 
         BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
         if (account is null || account.TradingBlocked || account.AccountBlocked ||
@@ -56,7 +65,7 @@ public sealed class PaperOrderApplicationService(
             clientOrderId,
             slot,
             side,
-            PositionIntent.Open,
+            reducesExposure ? PositionIntent.Close : PositionIntent.Open,
             ExecutionOrderType.Limit,
             ExecutionTimeInForce.Day,
             request.Quantity,
@@ -71,6 +80,26 @@ public sealed class PaperOrderApplicationService(
             result.BrokerOrderId,
             result.ReasonCode,
             result.RequestId);
+    }
+
+    /// <summary>
+    /// True when the order moves the position toward flat without crossing through it.
+    ///
+    /// An order larger than the position is not risk reduction: closing 2 of a 1-lot long opens a short.
+    /// Treating it as a close would let an operator open new exposure through the one path that stays
+    /// available while entry is halted.
+    /// </summary>
+    private async Task<bool> ReducesExposureAsync(
+        int slot, OrderSide side, decimal quantity, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
+        decimal held = positions
+            .Where(position => position.InstrumentSlot == slot)
+            .Sum(position => position.Quantity);
+
+        if (held > 0) return side == OrderSide.Sell && quantity <= held;
+        if (held < 0) return side == OrderSide.Buy && quantity <= -held;
+        return false;
     }
 
     public Task<IReadOnlyList<BrokerOrderSnapshot>> ListOpenAsync(CancellationToken cancellationToken) =>

@@ -2,6 +2,7 @@ using QuantDesk.Alpaca.Mapping;
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Runtime;
+using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Modes;
 
 namespace QuantDesk.Api.Tests;
@@ -54,6 +55,75 @@ public sealed class PaperOrderApplicationServiceTests
         Assert.Null(broker.Submitted);
     }
 
+    [Theory]
+    [InlineData("sell", 1, true)]    // closes part of a 2-lot long
+    [InlineData("sell", 2, true)]    // closes it exactly
+    [InlineData("sell", 3, false)]   // would cross through flat into a short
+    [InlineData("buy", 1, false)]    // adds to the long
+    public async Task WhileEntryIsHaltedOnlyRiskReducingOrdersAreAccepted(
+        string side, decimal quantity, bool expectedAccepted)
+    {
+        // The preflight enters EntryHalted the instant any position exists, so rejecting every order in
+        // that mode locked an operator out of closing the very position that caused the halt.
+        var broker = new FakeBroker { Positions = [new BrokerPositionSnapshot("SPY", 0, 2m, 500m)] };
+        PaperOrderApplicationService service = CreateService(broker, HaltedMode());
+
+        PaperOrderSubmission result = await service.SubmitAsync(
+            new PaperOrderRequest("SPY", side, quantity, 500m, "op-1"), CancellationToken.None);
+
+        Assert.Equal(expectedAccepted, result.Accepted);
+        if (!expectedAccepted) Assert.Equal("ENTRY_HALTED", result.ReasonCode);
+    }
+
+    [Fact]
+    public async Task AClosingOrderIsSubmittedWithClosingIntent()
+    {
+        // The intent was hardcoded to Open, so every operator close was journalled as an opening trade.
+        var broker = new FakeBroker { Positions = [new BrokerPositionSnapshot("SPY", 0, 2m, 500m)] };
+        PaperOrderApplicationService service = CreateService(broker, ReadyMode());
+
+        await service.SubmitAsync(
+            new PaperOrderRequest("SPY", "sell", 2m, 500m, "op-1"), CancellationToken.None);
+
+        Assert.Equal(PositionIntent.Close, broker.Submitted!.PositionIntent);
+    }
+
+    [Fact]
+    public async Task ClosingAShortCountsAsRiskReduction()
+    {
+        var broker = new FakeBroker { Positions = [new BrokerPositionSnapshot("SPY", 0, -2m, 500m)] };
+        PaperOrderApplicationService service = CreateService(broker, HaltedMode());
+
+        PaperOrderSubmission result = await service.SubmitAsync(
+            new PaperOrderRequest("SPY", "buy", 2m, 500m, "op-1"), CancellationToken.None);
+
+        Assert.True(result.Accepted, result.ReasonCode);
+    }
+
+    [Fact]
+    public async Task AModeWhereBrokerTruthIsUnknownStillRefusesEverything()
+    {
+        // EntryHalted means "stop adding exposure". Degraded means "we do not know the state at all",
+        // and sizing a close against unknown state is worse than not closing.
+        var broker = new FakeBroker { Positions = [new BrokerPositionSnapshot("SPY", 0, 2m, 500m)] };
+        var mode = new RuntimeModeState();
+        mode.Transition(SystemMode.Degraded, "test_degraded");
+        PaperOrderApplicationService service = CreateService(broker, mode);
+
+        PaperOrderSubmission result = await service.SubmitAsync(
+            new PaperOrderRequest("SPY", "sell", 2m, 500m, "op-1"), CancellationToken.None);
+
+        Assert.False(result.Accepted);
+        Assert.Equal("RUNTIME_NOT_READY", result.ReasonCode);
+    }
+
+    private static RuntimeModeState HaltedMode()
+    {
+        var mode = new RuntimeModeState();
+        mode.Transition(SystemMode.EntryHalted, "test_halted");
+        return mode;
+    }
+
     private static PaperOrderApplicationService CreateService(FakeBroker broker, RuntimeModeState mode)
     {
         var resolver = new DictionaryInstrumentSymbolResolver(new Dictionary<int, string> { [0] = "SPY" });
@@ -74,6 +144,10 @@ public sealed class PaperOrderApplicationServiceTests
     private sealed class FakeBroker : IBrokerExecutionGateway
     {
         public ExecutionCommand? Submitted { get; private set; }
+        public IReadOnlyList<BrokerPositionSnapshot> Positions { get; set; } = [];
+
+        public Task<IReadOnlyList<BrokerPositionSnapshot>> ListPositionsAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Positions);
 
         public Task<BrokerAccountSnapshot?> GetAccountAsync(CancellationToken cancellationToken) =>
             Task.FromResult<BrokerAccountSnapshot?>(new("account", "ACTIVE", 100_000, 100_000, false, false));
