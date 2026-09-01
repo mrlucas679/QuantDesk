@@ -17,7 +17,7 @@ internal static class QuantDeskCli
     {
         if (args.Length != 1)
         {
-            Console.Error.WriteLine("Usage: quantdesk capabilities|stream-test|paper-order-smoke");
+            Console.Error.WriteLine("Usage: quantdesk capabilities|stream-test|paper-order-smoke|option-preflight");
             return 2;
         }
 
@@ -28,9 +28,11 @@ internal static class QuantDeskCli
                 return await VerifyMarketDataStreamAsync(options, cancellationToken);
             if (string.Equals(args[0], "paper-order-smoke", StringComparison.OrdinalIgnoreCase))
                 return await VerifyPaperOrderLifecycleAsync(options, cancellationToken);
+            if (string.Equals(args[0], "option-preflight", StringComparison.OrdinalIgnoreCase))
+                return await VerifyOptionDataAsync(options, cancellationToken);
             if (!string.Equals(args[0], "capabilities", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine("Usage: quantdesk capabilities|stream-test|paper-order-smoke");
+                Console.Error.WriteLine("Usage: quantdesk capabilities|stream-test|paper-order-smoke|option-preflight");
                 return 2;
             }
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
@@ -49,9 +51,12 @@ internal static class QuantDeskCli
             Console.Error.WriteLine(exception.Message);
             return 2;
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException exception)
         {
-            Console.Error.WriteLine("The Alpaca paper API could not be reached.");
+            // Print the message rather than a generic line. The clients now carry the venue's own
+            // status, endpoint and error text, and swallowing it here would throw away the only thing
+            // that says whether this is an outage, a bad key, or an unentitled feed.
+            Console.Error.WriteLine(exception.Message);
             return 1;
         }
         catch (TaskCanceledException)
@@ -59,6 +64,35 @@ internal static class QuantDeskCli
             Console.Error.WriteLine("The Alpaca paper API request timed out.");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Exercises every option data path against the live venue, read-only, and prints what each one
+    /// returned. This is the command to run the moment credentials exist: no option client in this
+    /// repository has ever been run against Alpaca, so the first contact should produce a report
+    /// rather than a stack trace.
+    /// </summary>
+    private static async Task<int> VerifyOptionDataAsync(
+        AlpacaOptions options, CancellationToken cancellationToken)
+    {
+        string underlying = Environment.GetEnvironmentVariable("QUANTDESK_PREFLIGHT_UNDERLYING") ?? "SPY";
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var preflight = new OptionDataPreflight(
+            new AlpacaOptionContractClient(httpClient, options),
+            new AlpacaLatestOptionQuoteClient(httpClient, options),
+            new AlpacaOptionRiskSnapshotClient(httpClient, options),
+            new AlpacaHistoricalOptionBarClient(httpClient, options));
+
+        DateTimeOffset asOf = DateTimeOffset.UtcNow;
+        DateOnly today = DateOnly.FromDateTime(asOf.UtcDateTime);
+        OptionPreflightReport report = await preflight.RunAsync(
+            underlying, today, today.AddDays(45), asOf, cancellationToken);
+
+        Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        }));
+        return report.Passed ? 0 : 1;
     }
 
     private static async Task<int> VerifyMarketDataStreamAsync(AlpacaOptions options, CancellationToken cancellationToken)

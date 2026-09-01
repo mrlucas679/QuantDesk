@@ -1227,7 +1227,7 @@ and a verdict recorded, so it is not re-attempted blindly.
 | C9 | Persist rejected hypotheses. | **Done** — `persist_rejected_families` writes typed rejections. |
 | C10 | Execution-mode-aware crypto cost scenarios. | **Done** — conservative-stress, taker, maker, and observed-realised kept distinct, with observed costs unable to relax qualification. |
 | C11 | Historical expired-contract discovery against Alpaca. | Open. Blocked on credentials. |
-| C12 | Option feed remains `UNVERIFIED`. | Open. Blocked on credentials. |
+| C12 | Option feed remains `UNVERIFIED`. | Open, but now answerable in one command: `quantdesk option-preflight` reports every option data path read-only. Still blocked on credentials to run it. |
 
 **Closed by research, do not re-attempt without new evidence:**
 
@@ -1309,7 +1309,8 @@ the first live call.
 | 1 | **Implied volatility was read from the wrong place.** The snapshot client looked for `implied_volatility` inside `greeks`; Alpaca sends `impliedVolatility` beside it. The absent property deserializes to an `Undefined` `JsonElement`, and `GetString()` throws on one of those rather than returning null. | Every option risk snapshot throws on the first real response. Not a degraded reading — an exception out of the risk lane. |
 | 2 | **A quote stamped ahead of the caller's clock was refused outright.** The freshness test required the venue timestamp to be strictly in the past. | The venue stamps to the nanosecond from its own clock. A local clock trailing by milliseconds marks every healthy quote stale and silently refuses every spread — an entire lane disabled by ordinary NTP drift, with nothing in the logs but "stale". Now a bounded skew is tolerated and a large one is still refused. |
 | 3 | **One non-standard contract destroyed the whole chain.** An adjusted root, a non-standard multiplier or deliverable size, or an unrecognised exercise style threw and failed the entire acquisition. | A single adjusted contract costs every standard contract beside it — on a real chain, nearly all of them. Now those are *excluded with a stated reason* and carried on `OptionContractQuery.Excluded`, while genuine self-contradiction (strike, expiration, or type disagreeing with the OCC symbol) still fails the whole query, because that means the feed cannot be trusted. |
-| 4 | **Venue error bodies were discarded.** Every market-data client called `EnsureSuccessStatusCode()`. | The first live call with an unentitled account raises "Response status code does not indicate success: 403 (Forbidden)" and nothing else. Alpaca puts the actual explanation in the body. All ten market-data call sites now report status, endpoint, and the venue's own code and message — and a test asserts the API secret never appears in that message. |
+| 4 | **Adjusted contracts failed OCC parsing outright.** `OccOptionSymbol` allowed only `[A-Z]` in the root, but a corporate action is encoded as a *numbered* root — `SPY1`, `AAPL1` — with the underlying still `SPY`. | Every adjusted contract was reported as "an invalid option symbol", which is wrong twice: the symbol is valid, and callers reading an unparseable symbol as a corrupt feed discard the whole chain over one ordinary contract. It also made the exclusion path in defect 3 unreachable for the exact case it was written for. Root is now `[A-Z][A-Z0-9]{0,5}`; the trailing fifteen characters are fixed-width, so a digit-bearing root stays unambiguous. |
+| 5 | **Venue error bodies were discarded.** Every market-data client called `EnsureSuccessStatusCode()`. | The first live call with an unentitled account raises "Response status code does not indicate success: 403 (Forbidden)" and nothing else. Alpaca puts the actual explanation in the body. All ten market-data call sites now report status, endpoint, and the venue's own code and message — and a test asserts the API secret never appears in that message. |
 
 The distinction drawn in defect 3 is the general lesson, and it is worth stating on its own: **a
 response that contradicts itself and a contract this system cannot price are different failures.**
@@ -1320,6 +1321,19 @@ was merely brittle.
 An empty contract snapshot now says which of the two happened — "the venue returned none" versus
 "all N returned contracts were excluded, first: ..." — because those call for opposite responses and
 the count alone cannot distinguish them.
+
+`quantdesk option-preflight` now exercises all four option paths against the live venue, read-only,
+and prints what each returned. A stage that fails does not stop the ones that do not depend on it —
+learning that contracts resolve but quotes are unentitled is a different situation from learning that
+nothing works, and finding out one call at a time wastes the scarcest thing here, which is attempts
+against a venue nobody has reached yet. The CLI's `HttpRequestException` handler was also printing a
+generic "could not be reached" line, which would have thrown away the venue diagnostics the clients
+now carry.
+
+Defect 4 is worth noting for how it was found: the preflight fixture used a realistic adjusted symbol,
+the test failed, and the first reading was that the fixture was malformed. It was not. That is the
+same pattern as the other four — testing against what the venue actually sends, rather than against
+what the parser already expects.
 
 **Still unknown, and only credentials will settle it:** whether the account's option data feed is
 entitled at all, whether real spreads are tight enough to clear the cost floor, and whether strike
