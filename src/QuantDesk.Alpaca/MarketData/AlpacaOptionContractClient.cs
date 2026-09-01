@@ -9,15 +9,28 @@ namespace QuantDesk.Alpaca.MarketData;
 
 /// <summary>
 /// Discovers active or expired Alpaca option contracts for research acquisition and execution selection.
-/// Every published contract is cross-validated against its OCC symbol and the requested filter, so an
-/// unrequested, adjusted, non-standard, or self-inconsistent contract fails the acquisition instead of
-/// silently entering a dataset or a selection universe.
+/// Every published contract is cross-validated against its OCC symbol and the requested filter, so nothing
+/// enters a dataset or a selection universe that the caller did not ask for and cannot reproduce.
+///
+/// Two kinds of disagreement are answered differently, because they mean different things.
+///
+/// A contract that contradicts itself or the request — an unparseable symbol, a strike or expiration that
+/// disagrees with its own OCC encoding, a status or underlying the caller did not ask for — means the feed
+/// or the filter is wrong, and the whole acquisition fails. Publishing part of a broken response would put
+/// data of unknown provenance into a research dataset.
+///
+/// A contract that is internally consistent but not standard-form tradable — adjusted after a corporate
+/// action, or carrying a non-standard deliverable — is excluded and reported on
+/// <see cref="OptionContractQuery.Excluded"/>. These occur normally in a real chain, and failing the whole
+/// query over one of them would have meant a single adjusted contract silently costing the caller the
+/// other several hundred. Excluded is never the same as unnoticed: every exclusion is named with its reason.
 /// </summary>
 public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOptions options)
 {
     private const int ContractsPerPage = 1000;
     private const int MaximumPages = 1000;
     private const int StandardMultiplier = 100;
+    private const string Endpoint = "/v2/options/contracts";
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     public async Task<OptionContractQuery> ListAsync(
@@ -37,11 +50,12 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
             throw new ArgumentException("Contract status must be active or inactive.", nameof(status));
 
         var contracts = new Dictionary<string, AlpacaOptionContract>(StringComparer.Ordinal);
+        var excluded = new Dictionary<string, OptionContractExclusion>(StringComparer.Ordinal);
         var requestUris = new List<string>();
         var cursor = new AlpacaPageCursor(MaximumPages, "option-contract");
         while (cursor.HasMorePages)
         {
-            string requestUri = new Uri(options.BaseUrl, "/v2/options/contracts").AbsoluteUri +
+            string requestUri = new Uri(options.BaseUrl, Endpoint).AbsoluteUri +
                 $"?underlying_symbols={Uri.EscapeDataString(normalizedUnderlying)}" +
                 $"&status={status}" +
                 $"&expiration_date_gte={expirationStart:yyyy-MM-dd}" +
@@ -52,16 +66,22 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
             request.Headers.Add("APCA-API-KEY-ID", options.KeyId);
             request.Headers.Add("APCA-API-SECRET-KEY", options.SecretKey);
             using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            OptionContractsResponse? payload = await response.Content.ReadFromJsonAsync<OptionContractsResponse>(
-                JsonOptions, cancellationToken);
-            if (payload?.OptionContracts is null)
-                throw new InvalidDataException("Alpaca option-contract response was empty.");
+            OptionContractsResponse payload = await AlpacaMarketDataResponse.ReadAsync<OptionContractsResponse>(
+                response, Endpoint, JsonOptions, cancellationToken);
+            if (payload.OptionContracts is null)
+                throw new InvalidDataException("Alpaca option-contract response omitted its contracts payload.");
 
             foreach (OptionContractWire wire in payload.OptionContracts)
             {
-                AlpacaOptionContract contract = Validate(
+                ContractAdmission admission = Admit(
                     wire, normalizedUnderlying, expirationStart, expirationEnd, status);
+                if (admission.Exclusion is OptionContractExclusion exclusion)
+                {
+                    excluded[exclusion.Symbol] = exclusion;
+                    continue;
+                }
+
+                AlpacaOptionContract contract = admission.Contract!;
                 if (contracts.TryGetValue(contract.Symbol, out AlpacaOptionContract? existing) && existing != contract)
                 {
                     throw new InvalidDataException(
@@ -84,11 +104,19 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
                 .ThenBy(contract => contract.Strike)
                 .ThenBy(contract => contract.Right)
                 .ToArray(),
-            requestUris);
+            requestUris,
+            excluded.Values.OrderBy(exclusion => exclusion.Symbol, StringComparer.Ordinal).ToArray());
     }
 
-    /// <summary>Rejects any contract that disagrees with its OCC symbol or falls outside the request.</summary>
-    private static AlpacaOptionContract Validate(
+    /// <summary>
+    /// Decides whether one wire contract can be published, excluded, or must fail the acquisition.
+    ///
+    /// Checks run in a deliberate order: everything that would mean the response itself is untrustworthy
+    /// is settled first and throws, and only then are the standard-form questions asked, whose answer is
+    /// an exclusion. That ordering matters — a contract has to be established as internally consistent
+    /// before "we simply cannot trade this one" is a safe thing to conclude about it.
+    /// </summary>
+    private static ContractAdmission Admit(
         OptionContractWire wire,
         string requestedUnderlying,
         DateOnly expirationStart,
@@ -108,19 +136,10 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
         }
 
         string underlyingSymbol = Normalize(wire.UnderlyingSymbol);
-        string rootSymbol = Normalize(wire.RootSymbol);
         if (!string.Equals(underlyingSymbol, requestedUnderlying, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
                 $"Option contract '{symbol}' has underlying '{underlyingSymbol}', not '{requestedUnderlying}'.");
-        }
-
-        if (!string.Equals(rootSymbol, requestedUnderlying, StringComparison.Ordinal) ||
-            !string.Equals(occ.Underlying, requestedUnderlying, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException(
-                $"Option contract '{symbol}' is adjusted or non-standard: root '{rootSymbol}' does not " +
-                $"match underlying '{requestedUnderlying}'.");
         }
 
         DateOnly expiration = ParseExpiration(wire.ExpirationDate, symbol);
@@ -152,7 +171,25 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
                 $"Option contract '{symbol}' reports strike {strike} but its OCC symbol encodes {occ.Strike}.");
         }
 
-        return new AlpacaOptionContract(
+        // The response is trustworthy from here on. What remains is whether this particular contract is
+        // one whose economics the defined-risk arithmetic can express.
+        string rootSymbol = Normalize(wire.RootSymbol);
+        if (!string.Equals(rootSymbol, requestedUnderlying, StringComparison.Ordinal) ||
+            !string.Equals(occ.Underlying, requestedUnderlying, StringComparison.Ordinal))
+        {
+            return ContractAdmission.Exclude(
+                symbol,
+                $"adjusted or non-standard: root '{rootSymbol}' does not match underlying '{requestedUnderlying}'");
+        }
+
+        if (!TryParseStyle(wire.Style, out OptionExerciseStyle style))
+            return ContractAdmission.Exclude(symbol, $"unsupported exercise style '{wire.Style}'");
+        if (!TryParseStandardSize(wire.Multiplier, out int multiplier))
+            return ContractAdmission.Exclude(symbol, NonStandard("multiplier", wire.Multiplier));
+        if (!TryParseStandardSize(wire.Size, out int contractSize))
+            return ContractAdmission.Exclude(symbol, NonStandard("deliverable size", wire.Size));
+
+        return ContractAdmission.Publish(new AlpacaOptionContract(
             wire.Id,
             symbol,
             requestedUnderlying,
@@ -160,12 +197,15 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
             expiration,
             strike,
             right,
-            ParseStyle(wire.Style, symbol),
-            ParseStandardSize(wire.Multiplier, symbol, "multiplier"),
-            ParseStandardSize(wire.Size, symbol, "size"),
+            style,
+            multiplier,
+            contractSize,
             requestedStatus,
-            wire.Tradable);
+            wire.Tradable));
     }
+
+    private static string NonStandard(string field, string? value) =>
+        $"non-standard {field} '{value}'; only {StandardMultiplier} can be priced as a defined-risk spread";
 
     private static string Normalize(string? value) => (value ?? string.Empty).Trim().ToUpperInvariant();
 
@@ -182,12 +222,15 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
         _ => throw new InvalidDataException($"Option contract '{symbol}' has unsupported type '{value}'.")
     };
 
-    private static OptionExerciseStyle ParseStyle(string? value, string symbol) => Normalize(value) switch
+    private static bool TryParseStyle(string? value, out OptionExerciseStyle style)
     {
-        "AMERICAN" => OptionExerciseStyle.American,
-        "EUROPEAN" => OptionExerciseStyle.European,
-        _ => throw new InvalidDataException($"Option contract '{symbol}' has unsupported style '{value}'.")
-    };
+        switch (Normalize(value))
+        {
+            case "AMERICAN": style = OptionExerciseStyle.American; return true;
+            case "EUROPEAN": style = OptionExerciseStyle.European; return true;
+            default: style = default; return false;
+        }
+    }
 
     private static decimal ParsePositiveDecimal(string? value, string symbol, string field) =>
         decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal parsed) && parsed > 0
@@ -195,17 +238,28 @@ public sealed class AlpacaOptionContractClient(HttpClient httpClient, AlpacaOpti
             : throw new InvalidDataException($"Option contract '{symbol}' has an invalid {field} '{value}'.");
 
     /// <summary>
-    /// Requires the standard 100-share multiplier and deliverable size. A non-standard value signals an
-    /// adjusted contract whose defined maximum loss and per-contract economics would be miscomputed.
+    /// Accepts only the standard 100-share multiplier and deliverable size. A non-standard value signals a
+    /// contract adjusted by a corporate action, whose maximum loss and per-contract economics this system
+    /// would compute wrongly — so it is excluded rather than priced.
     /// </summary>
-    private static int ParseStandardSize(string? value, string symbol, string field)
+    private static bool TryParseStandardSize(string? value, out int size)
     {
-        decimal parsed = ParsePositiveDecimal(value, symbol, field);
-        return parsed == StandardMultiplier
-            ? StandardMultiplier
-            : throw new InvalidDataException(
-                $"Option contract '{symbol}' has non-standard {field} '{value}'; " +
-                $"only {StandardMultiplier} is supported.");
+        size = 0;
+        if (!decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal parsed) ||
+            parsed != StandardMultiplier)
+            return false;
+        size = StandardMultiplier;
+        return true;
+    }
+
+    /// <summary>One contract's fate: published, or excluded with a stated reason.</summary>
+    private readonly record struct ContractAdmission(
+        AlpacaOptionContract? Contract,
+        OptionContractExclusion? Exclusion)
+    {
+        public static ContractAdmission Publish(AlpacaOptionContract contract) => new(contract, null);
+        public static ContractAdmission Exclude(string symbol, string reason) =>
+            new(null, new OptionContractExclusion(symbol, reason));
     }
 
     private sealed record OptionContractsResponse(
@@ -237,7 +291,17 @@ public sealed record OptionContractQuery(
     DateOnly ExpirationEnd,
     string Status,
     IReadOnlyList<AlpacaOptionContract> Contracts,
-    IReadOnlyList<string> RequestUris);
+    IReadOnlyList<string> RequestUris,
+    IReadOnlyList<OptionContractExclusion> Excluded);
+
+/// <summary>
+/// A contract the venue returned that this system will not trade, with the reason it was set aside.
+///
+/// Carried on the query rather than logged and forgotten: if a chain comes back entirely excluded, the
+/// difference between "the venue returned nothing" and "the venue returned only adjusted contracts" is
+/// the whole diagnosis, and it is only available here.
+/// </summary>
+public sealed record OptionContractExclusion(string Symbol, string Reason);
 
 /// <summary>An Alpaca option contract whose broker payload agrees with its OCC symbol.</summary>
 public sealed record AlpacaOptionContract(

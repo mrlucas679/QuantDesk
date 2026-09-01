@@ -54,9 +54,17 @@ public sealed class OptionResearchDatasetExporter(
             underlying, expirationStart, expirationEnd, status, cancellationToken);
         if (query.Contracts.Count is 0)
         {
+            // An empty chain and a chain that was entirely excluded look identical from the count alone,
+            // and they call for opposite responses: widen the request, or accept that this underlying has
+            // no standard-form contracts to trade. Name which one happened.
+            string cause = query.Excluded.Count is 0
+                ? "the venue returned none"
+                : $"all {query.Excluded.Count} returned contracts were excluded, first: " +
+                  string.Join("; ", query.Excluded.Take(3).Select(item => $"{item.Symbol} ({item.Reason})"));
             throw new InvalidOperationException(
-                $"Alpaca returned no {status} {query.Underlying} contracts expiring " +
-                $"{expirationStart:yyyy-MM-dd}..{expirationEnd:yyyy-MM-dd}; refusing to publish an empty snapshot.");
+                $"No publishable {status} {query.Underlying} contracts expiring " +
+                $"{expirationStart:yyyy-MM-dd}..{expirationEnd:yyyy-MM-dd}: {cause}. " +
+                "Refusing to publish an empty snapshot.");
         }
 
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(query.Contracts, JsonOptions);

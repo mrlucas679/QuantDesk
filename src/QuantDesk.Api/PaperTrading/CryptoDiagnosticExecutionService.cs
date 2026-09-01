@@ -17,7 +17,8 @@ public sealed class CryptoDiagnosticExecutionService(
     IBrokerExecutionGateway broker,
     DiagnosticExecutionOptions options,
     IInstrumentSymbolResolver symbols,
-    IRuntimeClock clock)
+    IRuntimeClock clock,
+    DiagnosticEmergencyFlatten emergencyFlatten)
 {
     public async Task<DiagnosticExecutionResult> PrepareAsync(
         string experimentId,
@@ -40,7 +41,7 @@ public sealed class CryptoDiagnosticExecutionService(
             if (store.Find(normalizedExperimentId) is not null)
                 return DiagnosticExecutionResult.Blocked("DUPLICATE_DIAGNOSTIC_RESERVATION");
         }
-        catch (Exception exception) when (IsPersistenceFailure(exception))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsPersistenceFailure(exception))
         {
             return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
         }
@@ -52,7 +53,7 @@ public sealed class CryptoDiagnosticExecutionService(
                 entryClientOrderId: null,
                 cancellationToken);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
@@ -92,7 +93,7 @@ public sealed class CryptoDiagnosticExecutionService(
             if (!store.TryCreateReservation(record, entryId, exitId, emergencyId))
                 return DiagnosticExecutionResult.Blocked("DUPLICATE_DIAGNOSTIC_RESERVATION");
         }
-        catch (Exception exception) when (IsPersistenceFailure(exception))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsPersistenceFailure(exception))
         {
             return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
         }
@@ -100,9 +101,15 @@ public sealed class CryptoDiagnosticExecutionService(
         return DiagnosticExecutionResult.Ready(experimentId, entryId, exitId);
     }
 
+    /// <summary>
+    /// Advances the lifecycle by one step from whatever the durable record and broker truth say.
+    ///
+    /// The instrument slot is resolved here rather than accepted from the caller: the symbol is fixed for
+    /// this lane, and a caller-supplied slot was only ever overwritten, which made the parameter a lie
+    /// about who decided which instrument was traded.
+    /// </summary>
     public async Task<DiagnosticExecutionResult> AdvanceAsync(
         string experimentId,
-        int instrumentSlot,
         decimal quantity,
         CancellationToken cancellationToken)
     {
@@ -111,13 +118,13 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             record = store.Find(experimentId);
         }
-        catch (Exception exception) when (IsPersistenceFailure(exception))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsPersistenceFailure(exception))
         {
             return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
         }
 
         if (record is null) return DiagnosticExecutionResult.Blocked("DIAGNOSTIC_NOT_FOUND");
-        if (!symbols.TryResolveBySymbol(DiagnosticExecutionOptions.RequiredSymbol, out instrumentSlot))
+        if (!symbols.TryResolveBySymbol(DiagnosticExecutionOptions.RequiredSymbol, out int instrumentSlot))
             return DiagnosticExecutionResult.Blocked("BTC_USD_INSTRUMENT_UNAVAILABLE");
         if (record.State == "Complete")
         {
@@ -125,10 +132,10 @@ public sealed class CryptoDiagnosticExecutionService(
             return Ready(store.Find(record.ExperimentId)!);
         }
         if (record.State is "EmergencyFlattenReserved" or "EmergencyFlattenAccepted")
-            return await EmergencyFlattenAsync(record.ExperimentId, instrumentSlot, cancellationToken);
+            return await EmergencyFlattenAsync(record.ExperimentId, cancellationToken);
         if (record.State is "Holding" or "EntryFilled") return AdvanceHolding(record);
         if (record.State == "Reconciling")
-            return await ReconcileFinalAsync(record, instrumentSlot, cancellationToken);
+            return await ReconcileFinalAsync(record, cancellationToken);
         if (DiagnosticExecutionMath.IsExitLifecycleState(record.State))
             return await AdvanceExitAsync(record, instrumentSlot, cancellationToken);
         if (DiagnosticExecutionMath.IsTerminalEntryState(record.State)) return TerminalResult(record);
@@ -144,7 +151,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             context = await ReadBrokerEntryContextAsync(record.EntryClientOrderId, cancellationToken);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
@@ -155,7 +162,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             return await ContinueEntryAsync(record, context, instrumentSlot, quantity, cancellationToken);
         }
-        catch (Exception exception) when (IsPersistenceFailure(exception))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsPersistenceFailure(exception))
         {
             return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
         }
@@ -209,7 +216,7 @@ public sealed class CryptoDiagnosticExecutionService(
             });
             return Ready(store.Find(record.ExperimentId)!);
         }
-        catch (Exception exception) when (IsPersistenceFailure(exception))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsPersistenceFailure(exception))
         {
             return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
         }
@@ -230,7 +237,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             context = await ReadBrokerEntryContextAsync(record.ExitClientOrderId, cancellationToken);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
@@ -241,7 +248,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             return await ContinueExitAsync(record, context, instrumentSlot, cancellationToken);
         }
-        catch (Exception exception) when (IsPersistenceFailure(exception))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsPersistenceFailure(exception))
         {
             return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
         }
@@ -269,7 +276,7 @@ public sealed class CryptoDiagnosticExecutionService(
                 brokerPositionQuantity);
             DiagnosticExecutionRecord persisted = store.Find(record.ExperimentId)!;
             return persisted.State == "Reconciling"
-                ? await ReconcileFinalAsync(persisted, instrumentSlot, cancellationToken)
+                ? await ReconcileFinalAsync(persisted, cancellationToken)
                 : tracked;
         }
         if (record.ExitSubmissionAttemptedAt is not null)
@@ -318,7 +325,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             submitted = await broker.SubmitAsync(command, cancellationToken);
         }
-        catch (Exception exception) when (IsAmbiguousSubmission(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsAmbiguousSubmission(exception, cancellationToken))
         {
             return await RecoverAmbiguousExitSubmissionAsync(record, cancellationToken);
         }
@@ -357,7 +364,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             existing = await broker.FindByClientOrderIdAsync(record.ExitClientOrderId!, cancellationToken);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             existing = null;
         }
@@ -381,7 +388,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             existing = await broker.FindByClientOrderIdAsync(record.ExitClientOrderId!, cancellationToken);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
@@ -404,10 +411,10 @@ public sealed class CryptoDiagnosticExecutionService(
             DiagnosticExecutionResult tracked = PersistExitBrokerOrder(record, order, brokerQuantity);
             DiagnosticExecutionRecord persisted = store.Find(record.ExperimentId)!;
             return persisted.State == "Reconciling"
-                ? await ReconcileFinalAsync(persisted, instrumentSlot: 0, cancellationToken)
+                ? await ReconcileFinalAsync(persisted, cancellationToken)
                 : tracked;
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
@@ -415,7 +422,6 @@ public sealed class CryptoDiagnosticExecutionService(
 
     private async Task<DiagnosticExecutionResult> ReconcileFinalAsync(
         DiagnosticExecutionRecord record,
-        int instrumentSlot,
         CancellationToken cancellationToken)
     {
         try
@@ -449,150 +455,32 @@ public sealed class CryptoDiagnosticExecutionService(
             DiagnosticExecutionRecord persisted = store.Find(record.ExperimentId)!;
             return reconciled ? Ready(persisted) : TerminalResult(persisted);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
     }
 
+    /// <summary>
+    /// Runs the emergency flatten and translates its outcome into this lane's result vocabulary.
+    ///
+    /// The sub-lifecycle deliberately does not reconcile: it reports that exposure is gone, and the
+    /// decision to reconcile — which belongs to whoever owns the record's final state — is made here.
+    /// </summary>
     public async Task<DiagnosticExecutionResult> EmergencyFlattenAsync(
         string experimentId,
-        int instrumentSlot,
         CancellationToken cancellationToken)
     {
-        DiagnosticExecutionRecord? record = store.Find(experimentId);
-        if (record is null) return DiagnosticExecutionResult.Blocked("DIAGNOSTIC_NOT_FOUND");
-        if (!symbols.TryResolveBySymbol(DiagnosticExecutionOptions.RequiredSymbol, out instrumentSlot))
-            return DiagnosticExecutionResult.Blocked("BTC_USD_INSTRUMENT_UNAVAILABLE");
-        if (!broker.IsPaperEnvironment) return DiagnosticExecutionResult.Blocked("ALPACA_PAPER_REQUIRED");
-        if (string.IsNullOrWhiteSpace(record.EmergencyClientOrderId))
-            return DiagnosticExecutionResult.Blocked("EMERGENCY_CLIENT_ID_UNAVAILABLE");
+        DiagnosticEmergencyFlattenResult result = await emergencyFlatten.FlattenAsync(
+            experimentId, cancellationToken);
 
-        try
+        return result.Outcome switch
         {
-            BrokerOrderSnapshot? existing = await broker.FindByClientOrderIdAsync(
-                record.EmergencyClientOrderId,
-                cancellationToken);
-            if (existing is not null)
-                return await TrackEmergencyOrderAsync(record, existing, instrumentSlot, cancellationToken);
-
-            IReadOnlyList<BrokerOrderSnapshot> openOrders = await broker.ListOpenOrdersForSymbolAsync(
-                DiagnosticExecutionOptions.RequiredSymbol,
-                cancellationToken);
-            foreach (BrokerOrderSnapshot order in openOrders.Where(order => DiagnosticAdmissionPolicy.IsDiagnosticOrder(record, order)))
-                await broker.CancelAsync(order.BrokerOrderId, cancellationToken);
-
-            IReadOnlyList<BrokerOrderSnapshot> remainingOrders = await broker.ListOpenOrdersForSymbolAsync(
-                DiagnosticExecutionOptions.RequiredSymbol,
-                cancellationToken);
-            if (remainingOrders.Any(order => DiagnosticAdmissionPolicy.IsDiagnosticOrder(record, order)))
-                return FailEmergency(record, "EMERGENCY_CANCEL_UNCONFIRMED");
-
-            IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
-            decimal brokerQuantity = DiagnosticAdmissionPolicy.RelevantPositions(positions).Sum(position => position.Quantity);
-            if (brokerQuantity == 0)
-            {
-                store.Update(experimentId, current => current with
-                {
-                    State = "Reconciling"
-                });
-                return await ReconcileFinalAsync(store.Find(experimentId)!, instrumentSlot, cancellationToken);
-            }
-            if (brokerQuantity < 0) return FailEmergency(record, "EMERGENCY_SHORT_EXPOSURE_UNSUPPORTED");
-            if (record.EmergencySubmissionAttemptedAt is not null)
-                return FailEmergency(record, "EMERGENCY_SUBMISSION_UNKNOWN");
-
-            if (!store.TryClaimEmergencySubmission(
-                    experimentId,
-                    brokerQuantity,
-                    clock.UtcNow,
-                    out DiagnosticExecutionRecord? claimed))
-                return DiagnosticExecutionResult.Blocked("EMERGENCY_SUBMISSION_UNKNOWN");
-
-            return await SubmitEmergencyFlattenAsync(claimed!, instrumentSlot, cancellationToken);
-        }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
-        {
-            return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
-        }
-    }
-
-    private async Task<DiagnosticExecutionResult> SubmitEmergencyFlattenAsync(
-        DiagnosticExecutionRecord record,
-        int instrumentSlot,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            BrokerSubmitResult result = await broker.SubmitAsync(
-                DiagnosticCommandFactory.EmergencyFlatten(record, instrumentSlot, clock.UtcNow),
-                cancellationToken);
-            if (result.State == BrokerSubmitState.Rejected)
-                return FailEmergency(record, result.ReasonCode ?? "EMERGENCY_REJECTED");
-            if (result.State != BrokerSubmitState.Acknowledged || string.IsNullOrWhiteSpace(result.BrokerOrderId))
-                return await RecoverEmergencySubmissionAsync(record, instrumentSlot, cancellationToken);
-
-            store.Update(record.ExperimentId, current => current with
-            {
-                State = "EmergencyFlattenAccepted",
-                EmergencyBrokerOrderId = result.BrokerOrderId,
-                Failure = DiagnosticExecutionFailure.None,
-                FailureReason = null
-            });
-            return Ready(store.Find(record.ExperimentId)!);
-        }
-        catch (Exception exception) when (IsAmbiguousSubmission(exception, cancellationToken))
-        {
-            return await RecoverEmergencySubmissionAsync(record, instrumentSlot, cancellationToken);
-        }
-    }
-
-    private async Task<DiagnosticExecutionResult> RecoverEmergencySubmissionAsync(
-        DiagnosticExecutionRecord record,
-        int instrumentSlot,
-        CancellationToken cancellationToken)
-    {
-        BrokerOrderSnapshot? existing = await broker.FindByClientOrderIdAsync(
-            record.EmergencyClientOrderId!,
-            cancellationToken);
-        return existing is null
-            ? FailEmergency(record, "EMERGENCY_SUBMISSION_UNKNOWN")
-            : await TrackEmergencyOrderAsync(record, existing, instrumentSlot, cancellationToken);
-    }
-
-    private async Task<DiagnosticExecutionResult> TrackEmergencyOrderAsync(
-        DiagnosticExecutionRecord record,
-        BrokerOrderSnapshot order,
-        int instrumentSlot,
-        CancellationToken cancellationToken)
-    {
-        string status = order.Status.Trim().ToLowerInvariant();
-        if (status is "rejected" or "canceled" or "expired")
-            return FailEmergency(record, $"EMERGENCY_{status.ToUpperInvariant()}");
-
-        store.Update(record.ExperimentId, current => current with
-        {
-            State = status == "filled" ? "Reconciling" : "EmergencyFlattenAccepted",
-            EmergencyBrokerOrderId = order.BrokerOrderId,
-            EmergencyFilledQuantity = order.FilledQuantity,
-            Failure = DiagnosticExecutionFailure.None,
-            FailureReason = null
-        });
-        DiagnosticExecutionRecord persisted = store.Find(record.ExperimentId)!;
-        return status == "filled"
-            ? await ReconcileFinalAsync(persisted, instrumentSlot, cancellationToken)
-            : Ready(persisted);
-    }
-
-    private DiagnosticExecutionResult FailEmergency(DiagnosticExecutionRecord record, string reason)
-    {
-        store.Update(record.ExperimentId, current => current with
-        {
-            State = "EmergencyFlattenFailed",
-            Failure = DiagnosticExecutionFailure.EmergencyFlattenFailed,
-            FailureReason = reason
-        });
-        return DiagnosticExecutionResult.Blocked(reason);
+            DiagnosticEmergencyFlattenOutcome.Flat =>
+                await ReconcileFinalAsync(store.Find(experimentId)!, cancellationToken),
+            DiagnosticEmergencyFlattenOutcome.Working => Ready(store.Find(experimentId)!),
+            _ => DiagnosticExecutionResult.Blocked(result.ReasonCode!)
+        };
     }
 
     private DiagnosticExecutionResult? VerifyLocalInfrastructure()
@@ -632,7 +520,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             submitted = await broker.SubmitAsync(command, cancellationToken);
         }
-        catch (Exception exception) when (IsAmbiguousSubmission(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsAmbiguousSubmission(exception, cancellationToken))
         {
             return await RecoverAmbiguousSubmissionAsync(record, cancellationToken);
         }
@@ -671,7 +559,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             existing = await broker.FindByClientOrderIdAsync(record.EntryClientOrderId!, cancellationToken);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             existing = null;
         }
@@ -695,7 +583,7 @@ public sealed class CryptoDiagnosticExecutionService(
         {
             existing = await broker.FindByClientOrderIdAsync(record.EntryClientOrderId!, cancellationToken);
         }
-        catch (Exception exception) when (IsInfrastructureFailure(exception, cancellationToken))
+        catch (Exception exception) when (DiagnosticFailureClassification.IsInfrastructureFailure(exception, cancellationToken))
         {
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
@@ -851,18 +739,6 @@ public sealed class CryptoDiagnosticExecutionService(
             record.ExperimentId,
             record.EntryClientOrderId!,
             record.ExitClientOrderId!);
-
-    private static bool IsAmbiguousSubmission(Exception exception, CancellationToken cancellationToken) =>
-        !cancellationToken.IsCancellationRequested &&
-        exception is TimeoutException or TaskCanceledException or HttpRequestException or IOException;
-
-    private static bool IsInfrastructureFailure(Exception exception, CancellationToken cancellationToken) =>
-        !cancellationToken.IsCancellationRequested &&
-        exception is TimeoutException or TaskCanceledException or HttpRequestException or IOException or JsonException;
-
-    private static bool IsPersistenceFailure(Exception exception) =>
-        exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or
-            JsonException or NotSupportedException;
 
     private static string ClientId(string experimentId, string leg)
     {

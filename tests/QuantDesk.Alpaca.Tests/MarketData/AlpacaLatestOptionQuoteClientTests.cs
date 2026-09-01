@@ -107,6 +107,92 @@ public sealed class AlpacaLatestOptionQuoteClientTests
         Assert.Empty(handler.Requests);
     }
 
+    [Fact]
+    public async Task ReadsAFullVenueShapedQuoteRatherThanATrimmedStandIn()
+    {
+        // Alpaca sends bid/ask sizes, exchange codes and a condition list alongside the prices. A
+        // fixture carrying only the fields the parser happens to read proves nothing about the venue.
+        var handler = new StubHandler(Quotes((CallSymbol,
+            "{\"ap\":8.2,\"as\":37,\"ax\":\"W\",\"bp\":8.0,\"bs\":42,\"bx\":\"W\"," +
+            "\"c\":[\"A\"],\"t\":\"2026-08-31T14:59:59.123456789Z\"}")));
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaLatestOptionQuoteClient(httpClient, Options());
+
+        IReadOnlyDictionary<int, OptionQuoteSnapshot> quotes = await client.GetQuotesAsync(
+            new Dictionary<string, int> { [CallSymbol] = 11 }, AsOf, MaximumAge, CancellationToken.None);
+
+        Assert.Equal(DataQuality.Healthy, quotes[11].Quality);
+        Assert.Equal(8.0, quotes[11].Bid);
+        Assert.Equal(8.2, quotes[11].Ask);
+    }
+
+    [Theory]
+    [InlineData("2026-08-31T15:00:00.5000000Z", DataQuality.Healthy)]  // half a second of clock drift
+    [InlineData("2026-08-31T15:00:10.0000000Z", DataQuality.Stale)]    // ten seconds is not drift
+    public async Task AQuoteStampedAheadOfTheCallersClockIsBelievedOnlyWithinASmallSkew(
+        string timestamp, DataQuality expected)
+    {
+        // The venue stamps from its own clock. Refusing anything not strictly in the past would let a
+        // few milliseconds of ordinary drift mark every healthy quote stale and disable the lane.
+        var handler = new StubHandler(Quotes((CallSymbol,
+            "{\"bp\":8.0,\"ap\":8.2,\"t\":\"" + timestamp + "\"}")));
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaLatestOptionQuoteClient(httpClient, Options());
+
+        IReadOnlyDictionary<int, OptionQuoteSnapshot> quotes = await client.GetQuotesAsync(
+            new Dictionary<string, int> { [CallSymbol] = 11 }, AsOf, MaximumAge, CancellationToken.None);
+
+        Assert.Equal(expected, quotes[11].Quality);
+    }
+
+    [Fact]
+    public async Task AQuoteMissingItsPricesIsStaleRatherThanAThrow()
+    {
+        // An absent price deserializes to an Undefined JsonElement; reading a string from one throws.
+        var handler = new StubHandler(Quotes((CallSymbol, """{"t":"2026-08-31T15:00:00Z"}""")));
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaLatestOptionQuoteClient(httpClient, Options());
+
+        IReadOnlyDictionary<int, OptionQuoteSnapshot> quotes = await client.GetQuotesAsync(
+            new Dictionary<string, int> { [CallSymbol] = 11 }, AsOf, MaximumAge, CancellationToken.None);
+
+        Assert.Equal(DataQuality.Stale, quotes[11].Quality);
+    }
+
+    [Fact]
+    public async Task AVenueRefusalReportsTheStatusAndTheVenuesOwnExplanation()
+    {
+        var handler = new StubHandler(
+            """{"code":40110000,"message":"subscription does not permit querying option data"}""",
+            HttpStatusCode.Forbidden);
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaLatestOptionQuoteClient(httpClient, Options());
+
+        HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetQuotesAsync(
+                new Dictionary<string, int> { [CallSymbol] = 11 }, AsOf, MaximumAge, CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.Forbidden, failure.StatusCode);
+        Assert.Contains("v1beta1/options/quotes/latest", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("code 40110000", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("subscription does not permit", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ARefusalMessageNeverCarriesTheApiSecret()
+    {
+        var handler = new StubHandler("""{"message":"forbidden"}""", HttpStatusCode.Forbidden);
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaLatestOptionQuoteClient(httpClient, Options());
+
+        HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetQuotesAsync(
+                new Dictionary<string, int> { [CallSymbol] = 11 }, AsOf, MaximumAge, CancellationToken.None));
+
+        Assert.DoesNotContain("test-secret", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-key", failure.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>Builds a quotes payload without raw-string brace ambiguity.</summary>
     private static string Quotes(params (string Symbol, string Quote)[] entries) =>
         "{\"quotes\":{" +
@@ -121,7 +207,8 @@ public sealed class AlpacaLatestOptionQuoteClientTests
         SecretKey = "test-secret"
     };
 
-    private sealed class StubHandler(string body) : HttpMessageHandler
+    private sealed class StubHandler(string body, HttpStatusCode status = HttpStatusCode.OK)
+        : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];
 
@@ -129,7 +216,7 @@ public sealed class AlpacaLatestOptionQuoteClientTests
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return Task.FromResult(new HttpResponseMessage(status)
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             });

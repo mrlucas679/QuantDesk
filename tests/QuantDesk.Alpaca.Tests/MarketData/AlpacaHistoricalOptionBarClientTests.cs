@@ -109,6 +109,87 @@ public sealed class AlpacaHistoricalOptionBarClientTests
         Assert.Equal(2, handler.Requests.Count);
     }
 
+    [Fact]
+    public async Task ABarWithoutAVwapIsKeptWithTheValueLeftUnreported()
+    {
+        // A thin option can produce a bar the venue does not weight. Recording that as a zero vwap
+        // would assert a price the venue never quoted, and rejecting the bar would drop real trades.
+        var handler = new PagedHandler(
+            """
+            {"bars":{"SPY260904C00650000":[
+              {"t":"2026-08-31T14:00:00Z","o":1,"h":2,"l":1,"c":1.5,"v":10}]},
+             "next_page_token":null}
+            """);
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options());
+
+        OptionBarQuery query = await client.GetBarsAsync(
+            ["SPY260904C00650000"],
+            DateTimeOffset.Parse("2026-08-31T14:00:00Z"),
+            DateTimeOffset.Parse("2026-08-31T15:00:00Z"),
+            "5Min",
+            CancellationToken.None);
+
+        HistoricalOptionBar bar = Assert.Single(query.Bars["SPY260904C00650000"]);
+        Assert.Null(bar.Vwap);
+        Assert.Null(bar.TradeCount);
+        Assert.Equal(1.5m, bar.Close);
+    }
+
+    [Fact]
+    public async Task AReportedButNonPositiveVwapIsStillRejected()
+    {
+        // Absent means unreported; zero means the venue stated a price that cannot be true.
+        await AssertRejectsAsync(
+            """
+            {"bars":{"SPY260904C00650000":[
+              {"t":"2026-08-31T14:00:00Z","o":1,"h":2,"l":1,"c":1.5,"v":10,"n":2,"vw":0}]},
+             "next_page_token":null}
+            """);
+    }
+
+    [Fact]
+    public async Task AnEmptyBarsPayloadYieldsAnEmptySeriesRatherThanAFailure()
+    {
+        // Alpaca answers a window with no trading by omitting bars entirely.
+        var handler = new PagedHandler("""{"bars":null,"next_page_token":null}""");
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options());
+
+        OptionBarQuery query = await client.GetBarsAsync(
+            ["SPY260904C00650000"],
+            DateTimeOffset.Parse("2026-08-31T14:00:00Z"),
+            DateTimeOffset.Parse("2026-08-31T15:00:00Z"),
+            "5Min",
+            CancellationToken.None);
+
+        Assert.Empty(query.Bars["SPY260904C00650000"]);
+    }
+
+    [Fact]
+    public async Task AVenueRefusalReportsTheStatusAndTheVenuesOwnExplanation()
+    {
+        var handler = new PagedHandler(
+            HttpStatusCode.Unauthorized,
+            """{"code":40110000,"message":"invalid or missing credentials"}""");
+        using var httpClient = new HttpClient(handler);
+        var client = new AlpacaHistoricalOptionBarClient(httpClient, Options());
+
+        HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetBarsAsync(
+                ["SPY260904C00650000"],
+                DateTimeOffset.Parse("2026-08-31T14:00:00Z"),
+                DateTimeOffset.Parse("2026-08-31T15:00:00Z"),
+                "5Min",
+                CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, failure.StatusCode);
+        Assert.Contains("v1beta1/options/bars", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("code 40110000", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("invalid or missing credentials", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-secret", failure.Message, StringComparison.Ordinal);
+    }
+
     private static async Task AssertRejectsAsync(string page)
     {
         var handler = new PagedHandler(page);
@@ -131,9 +212,20 @@ public sealed class AlpacaHistoricalOptionBarClientTests
         SecretKey = "test-secret"
     };
 
-    private sealed class PagedHandler(params string[] pages) : HttpMessageHandler
+    private sealed class PagedHandler : HttpMessageHandler
     {
+        private readonly HttpStatusCode _status;
+        private readonly string[] _pages;
         private int _index;
+
+        public PagedHandler(params string[] pages) : this(HttpStatusCode.OK, pages) { }
+
+        public PagedHandler(HttpStatusCode status, params string[] pages)
+        {
+            _status = status;
+            _pages = pages;
+        }
+
         public List<Uri> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
@@ -141,8 +233,8 @@ public sealed class AlpacaHistoricalOptionBarClientTests
             CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
-            string page = pages[Math.Min(_index++, pages.Length - 1)];
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            string page = _pages[Math.Min(_index++, _pages.Length - 1)];
+            return Task.FromResult(new HttpResponseMessage(_status)
             {
                 Content = new StringContent(page, Encoding.UTF8, "application/json")
             });

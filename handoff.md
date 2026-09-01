@@ -136,13 +136,13 @@ not claim validated alpha. `ValidatedPaper` will not fire, because nothing has q
 
 ### What is still not done
 
-* `AutonomousPaperTradingService` still has **zero tests** — the money path. It is wired and builds,
-  but the orchestration itself is unverified. This is the largest remaining risk when you enable it.
-* The spot autonomous lane still lacks the durable store the options and diagnostic lanes have, so
-  its restart recovery is weaker despite deterministic client IDs.
-* No option dataset has ever been exported, so the option clients have never seen a real venue
-  response. Expect the strict validators (adjusted contracts, non-standard multipliers, stale
-  quotes) to fire on live data — treat a rejection as information, not a bug to suppress.
+* No option dataset has ever been exported, so **no option client has yet been run against the live
+  venue.** They are no longer untested against its *shapes*, though: every option client is now
+  exercised against Alpaca's documented payloads, and doing that found four defects that would have
+  fired on the first real call (see "Option clients against real venue shapes" below). Treat a
+  rejection as information, not a bug to suppress — but a rejection should now say what happened.
+* The remaining option-lane risk is behavioural, not structural: strike coverage, spread width, and
+  whether the venue's option feed is entitled at all. None of that can be known without credentials.
 
 ## Non-negotiable boundaries
 
@@ -1175,8 +1175,10 @@ Do not start by opening validation/holdout or enabling autonomous execution.
 ## EVERYTHING NOT DONE — consolidated register
 
 The single authoritative list of outstanding work. Sections above give the reasoning and evidence
-behind each entry; this is the checklist. Nothing here is complete. Items are grouped by what they
-block, and ordered within each group by risk removed per unit of effort.
+behind each entry; this is the checklist. Rows marked **Closed** were completed after the register
+was first written and are kept, rather than deleted, so the next session can see what was answered
+and how. Items are grouped by what they block, and ordered within each group by risk removed per
+unit of effort.
 
 Status as of 2026-08-31: **no strategy qualifies, no autonomous strategy order has ever been
 submitted, autonomous execution is disabled, and no session has ever held Alpaca credentials — so
@@ -1189,16 +1191,16 @@ nothing in this repository has yet contacted the live venue or placed a trade.**
 | # | Item | Why it blocks |
 | --- | --- | --- |
 | A1 | **No Alpaca credentials in any session.** Every result recorded here is against stubbed responses. | Nothing can reach the venue. This is the single hard blocker. |
-| A2 | **Options candidates are not routed into `MultiLegExecutionLifecycle`.** The lifecycle exists and is tested; the compiler exists and is tested; nothing connects them to submission. | An options order cannot be submitted, and the hackathon requires options in every strategy. |
-| A3 | **The autonomous service still compiles and submits only a spot candidate.** | The equity and options lanes stop short of execution. |
+| A2 | **Closed.** `OptionExecutionCoordinator` connects the compiler to `MultiLegExecutionLifecycle`, and `AutonomousPaperTradingService.ExecuteOptionOpportunityAsync` drives it. Observed end to end against a recording broker: `state=EntrySubmitted maxLoss=327.00 debit=3.27`. | — |
+| A3 | **Closed.** `OpportunityRouter` classifies the symbol first and the service takes the spot or option lane accordingly. | — |
 | A4 | **No strategy qualifies.** Four families clear discovery; none beat passive equal-weight out-of-sample. | `NO_TRADE` is currently correct. Forcing a trade would be worse than not trading. |
-| A5 | **Autonomous lane has no durable store**, so restart recovery is not equivalent to the diagnostic lane even with deterministic client IDs. | A restart mid-flight cannot recover the opportunity. |
+| A5 | **Closed.** `SpotExecutionStore` and `SpotExecutionLifecycle` give the spot lane reservation-before-POST, an atomic submission claim, ambiguous-submit recovery by client-order-ID, a restart-surviving exit, and completion only on zero exposure. Writing the test also found a real race: two evaluations could produce two records for one symbol, because the broker-position check cannot see an order that is not yet a visible position. | — |
 
 ### B. Untested money path
 
 | # | Item |
 | --- | --- |
-| B1 | **`AutonomousPaperTradingService` has zero tests.** It decides whether to trade, halts on unreconciled state, reserves capital, submits, manages, and exits. The single most important untested class. |
+| B1 | **Closed.** `AutonomousPaperTradingServiceTests` covers the orchestration in 10 tests. Testing it required introducing `IMarketEvidenceProvider`, which is a design improvement rather than a test workaround — the money path had no seam. |
 | B2 | `ExecutionAdmissionPolicy` has zero tests — it is an admission gate. |
 | B3 | `CryptoFeeSchedule` has zero tests — it is the provenance of the numbers that decide admissibility. |
 | B4 | `MarketEvidenceProvider` has zero tests. |
@@ -1278,7 +1280,7 @@ and a verdict recorded, so it is not re-attempted blindly.
 
 | # | Item |
 | --- | --- |
-| G1 | `CryptoDiagnosticExecutionService` is a 1,072-line god class with 37 methods. Extract its durable lifecycle so the autonomous lane reuses it instead of a third reimplementation — this also closes A5. |
+| G1 | **Extraction complete: 1,072 lines to 762.** Command construction, admission policy, exposure arithmetic, failure classification, and finally the emergency-flatten sub-lifecycle now live in their own classes with 51 tests on logic that previously could not be reached. What remains open is the *reuse* half of the original item: the autonomous lane has its own `SpotExecutionLifecycle` rather than sharing one durable lifecycle with the diagnostic lane. Two implementations, both tested, still one more than necessary. |
 | G2 | **Implemented:** the cross-asset contract is `DirectionalMarketEvidence`, decoupled from the crypto market-data client. |
 | G3 | `AlpacaTradingGateway` (404 lines) owns account, asset, submit, lookup, orders, positions, cancel, replace, close, and multi-leg mapping, and grows with every asset class. |
 | G4 | `Program.cs` (388 lines) mixes registration with inline endpoints and business defaults. |
@@ -1292,6 +1294,34 @@ and a verdict recorded, so it is not re-attempted blindly.
 | G12 | 74 files in `Docs/`; at least `Docs/AUTONOMOUS_TRADING_CONNECTION_AUDIT.md` predates the routing work. Docs drift is caught by no test. |
 | G13 | Test-name-to-source mapping is unreliable, so coverage gaps cannot be checked mechanically. |
 | G14 | **Implemented:** the diagnostic minimum quantity is the named `DiagnosticExecutionOptions.MinimumCryptoQuantity` invariant, not a composition-root magic literal. |
+
+### Option clients against real venue shapes — 2026-09-01
+
+Every option client had been written and tested against payloads a previous session invented. The
+fixtures matched the parsers, so the tests passed, and the pair proved nothing about Alpaca. Testing
+them against Alpaca's documented shapes instead found four defects, all of which would have fired on
+the first live call.
+
+| # | Defect | What it would have done |
+| --- | --- | --- |
+| 1 | **Implied volatility was read from the wrong place.** The snapshot client looked for `implied_volatility` inside `greeks`; Alpaca sends `impliedVolatility` beside it. The absent property deserializes to an `Undefined` `JsonElement`, and `GetString()` throws on one of those rather than returning null. | Every option risk snapshot throws on the first real response. Not a degraded reading — an exception out of the risk lane. |
+| 2 | **A quote stamped ahead of the caller's clock was refused outright.** The freshness test required the venue timestamp to be strictly in the past. | The venue stamps to the nanosecond from its own clock. A local clock trailing by milliseconds marks every healthy quote stale and silently refuses every spread — an entire lane disabled by ordinary NTP drift, with nothing in the logs but "stale". Now a bounded skew is tolerated and a large one is still refused. |
+| 3 | **One non-standard contract destroyed the whole chain.** An adjusted root, a non-standard multiplier or deliverable size, or an unrecognised exercise style threw and failed the entire acquisition. | A single adjusted contract costs every standard contract beside it — on a real chain, nearly all of them. Now those are *excluded with a stated reason* and carried on `OptionContractQuery.Excluded`, while genuine self-contradiction (strike, expiration, or type disagreeing with the OCC symbol) still fails the whole query, because that means the feed cannot be trusted. |
+| 4 | **Venue error bodies were discarded.** Every market-data client called `EnsureSuccessStatusCode()`. | The first live call with an unentitled account raises "Response status code does not indicate success: 403 (Forbidden)" and nothing else. Alpaca puts the actual explanation in the body. All ten market-data call sites now report status, endpoint, and the venue's own code and message — and a test asserts the API secret never appears in that message. |
+
+The distinction drawn in defect 3 is the general lesson, and it is worth stating on its own: **a
+response that contradicts itself and a contract this system cannot price are different failures.**
+The first means the feed is untrustworthy and everything derived from it must be discarded. The
+second is an ordinary fact about a real option chain. Answering both by throwing looked strict and
+was merely brittle.
+
+An empty contract snapshot now says which of the two happened — "the venue returned none" versus
+"all N returned contracts were excluded, first: ..." — because those call for opposite responses and
+the count alone cannot distinguish them.
+
+**Still unknown, and only credentials will settle it:** whether the account's option data feed is
+entitled at all, whether real spreads are tight enough to clear the cost floor, and whether strike
+coverage supports the vertical widths the compiler wants.
 
 ### H. Runtime verification before any trade
 

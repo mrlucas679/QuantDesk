@@ -43,7 +43,6 @@ public sealed class DiagnosticExecutionRecoveryService(
             {
                 await diagnostics.AdvanceAsync(
                     record.ExperimentId,
-                    instrumentSlot: 0,
                     record.RequestedQuantity,
                     cancellationToken);
             }

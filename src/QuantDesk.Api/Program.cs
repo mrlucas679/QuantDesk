@@ -44,6 +44,7 @@ builder.Services.AddSingleton(services =>
         ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "diagnostic-executions.json");
     return new DiagnosticExecutionStore(Path.GetFullPath(configured));
 });
+builder.Services.AddSingleton<DiagnosticEmergencyFlatten>();
 builder.Services.AddSingleton<CryptoDiagnosticExecutionService>();
 builder.Services.AddSingleton<DiagnosticExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
@@ -372,7 +373,7 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
     }
     if (reserved.State == "EntryReserved" && reserved.EntrySubmissionAttemptedAt is null)
         result = await diagnostics.AdvanceAsync(
-            experimentId, 0, DiagnosticExecutionOptions.MinimumCryptoQuantity, cancellationToken);
+            experimentId, DiagnosticExecutionOptions.MinimumCryptoQuantity, cancellationToken);
     else if (reserved.State == "ReconciliationFailed")
     {
         store.Update(experimentId, current => current with
@@ -381,10 +382,10 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
             Failure = DiagnosticExecutionFailure.None,
             FailureReason = null
         });
-        result = await diagnostics.AdvanceAsync(experimentId, 0, 0, cancellationToken);
+        result = await diagnostics.AdvanceAsync(experimentId, 0, cancellationToken);
     }
     else if (reserved.State == "Complete" && reserved.GrossPaperPnl is null)
-        result = await diagnostics.AdvanceAsync(experimentId, 0, 0, cancellationToken);
+        result = await diagnostics.AdvanceAsync(experimentId, 0, cancellationToken);
     return Results.Json(new { result, record = store.Find(experimentId) }, statusCode:
         result.Allowed ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
 });

@@ -45,7 +45,8 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
             options.DataUri($"v2/stocks/quotes/latest?symbols={Uri.EscapeDataString(symbol)}&feed=iex");
         using var request = AuthenticatedRequest(requestUri);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await AlpacaMarketDataResponse.EnsureSuccessAsync(
+            response, "v2/stocks/quotes/latest", cancellationToken);
         EquityQuoteResponse? payload = await response.Content.ReadFromJsonAsync<EquityQuoteResponse>(
             JsonOptions, cancellationToken);
         if (payload?.Quotes is null ||
@@ -72,7 +73,7 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
             "&limit=100&sort=asc&feed=iex&adjustment=all";
         using var request = AuthenticatedRequest(requestUri);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await AlpacaMarketDataResponse.EnsureSuccessAsync(response, "v2/stocks/bars", cancellationToken);
         EquityBarsResponse? payload = await response.Content.ReadFromJsonAsync<EquityBarsResponse>(
             JsonOptions, cancellationToken);
         if (payload?.Bars is null || !payload.Bars.TryGetValue(symbol, out IReadOnlyList<EquityBar>? bars))
@@ -102,11 +103,23 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
         return request;
     }
 
-    private static bool TryReadDecimal(JsonElement element, out decimal value) =>
-        element.ValueKind == JsonValueKind.Number
-            ? element.TryGetDecimal(out value)
-            : decimal.TryParse(
-                element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    /// <summary>
+    /// Reads a value the venue may send as a JSON number or a string. Every other kind is refused
+    /// up front: an absent property deserializes to a default <see cref="JsonElement"/> of kind
+    /// <see cref="JsonValueKind.Undefined"/>, and <c>GetString</c> throws on that rather than
+    /// returning null, so an unsent field would fail the read instead of being treated as missing.
+    /// </summary>
+    private static bool TryReadDecimal(JsonElement element, out decimal value)
+    {
+        value = 0;
+        return element.ValueKind switch
+        {
+            JsonValueKind.Number => element.TryGetDecimal(out value),
+            JsonValueKind.String => decimal.TryParse(
+                element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value),
+            _ => false
+        };
+    }
 
     private sealed record EquityQuoteResponse(
         [property: JsonPropertyName("quotes")] IReadOnlyDictionary<string, EquityQuote>? Quotes);

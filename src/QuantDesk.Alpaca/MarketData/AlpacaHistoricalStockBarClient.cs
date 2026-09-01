@@ -49,7 +49,7 @@ public sealed class AlpacaHistoricalStockBarClient(HttpClient httpClient, Alpaca
             request.Headers.Add("APCA-API-KEY-ID", options.KeyId);
             request.Headers.Add("APCA-API-SECRET-KEY", options.SecretKey);
             using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            await AlpacaMarketDataResponse.EnsureSuccessAsync(response, "v2/stocks/bars", cancellationToken);
             StockBarsResponse? payload = await response.Content.ReadFromJsonAsync<StockBarsResponse>(JsonOptions, cancellationToken);
             if (payload?.Bars is null)
                 throw new InvalidOperationException("Alpaca stock-bars response omitted its bars payload.");

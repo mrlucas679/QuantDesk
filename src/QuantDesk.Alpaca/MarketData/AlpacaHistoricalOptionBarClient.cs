@@ -15,6 +15,7 @@ public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, Alpac
 {
     private const int MaximumSymbolsPerRequest = 100;
     private const int MaximumPages = 10_000;
+    private const string Endpoint = "v1beta1/options/bars";
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<HistoricalOptionBar>> EmptyBars =
@@ -43,7 +44,7 @@ public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, Alpac
         string querySymbols = string.Join(',', normalized);
         while (cursor.HasMorePages)
         {
-            string requestUri = options.DataUri("v1beta1/options/bars") +
+            string requestUri = options.DataUri(Endpoint) +
                 $"?symbols={Uri.EscapeDataString(querySymbols)}&timeframe={Uri.EscapeDataString(timeframe)}" +
                 $"&start={Uri.EscapeDataString(start.ToString("O"))}&end={Uri.EscapeDataString(end.ToString("O"))}" +
                 "&limit=10000&sort=asc" +
@@ -53,10 +54,8 @@ public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, Alpac
             request.Headers.Add("APCA-API-KEY-ID", options.KeyId);
             request.Headers.Add("APCA-API-SECRET-KEY", options.SecretKey);
             using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            OptionBarsResponse? payload = await response.Content.ReadFromJsonAsync<OptionBarsResponse>(
-                JsonOptions, cancellationToken);
-            if (payload is null) throw new InvalidDataException("Alpaca option-bars response was empty.");
+            OptionBarsResponse payload = await AlpacaMarketDataResponse.ReadAsync<OptionBarsResponse>(
+                response, Endpoint, JsonOptions, cancellationToken);
             foreach ((string symbol, IReadOnlyList<HistoricalOptionBar> bars) in
                 payload.Bars ?? EmptyBars)
             {
@@ -102,9 +101,15 @@ public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, Alpac
                 $"{start:O}..{end:O}.");
         }
 
-        if (bar.Open <= 0 || bar.High <= 0 || bar.Low <= 0 || bar.Close <= 0 || bar.Vwap <= 0)
+        if (bar.Open <= 0 || bar.High <= 0 || bar.Low <= 0 || bar.Close <= 0)
             throw new InvalidDataException($"Option bar for '{symbol}' at {bar.Timestamp:O} has a non-positive price.");
-        if (bar.Volume < 0 || bar.TradeCount < 0)
+
+        // Volume-weighted price and trade count are reported per bar rather than guaranteed, and a thin
+        // option can produce a bar without them. Absent is not the same as zero, so they are validated
+        // only when the venue actually sent them — a bar with real OHLC is not corrupt for lacking a vwap.
+        if (bar.Vwap is <= 0)
+            throw new InvalidDataException($"Option bar for '{symbol}' at {bar.Timestamp:O} has a non-positive vwap.");
+        if (bar.Volume < 0 || bar.TradeCount is < 0)
             throw new InvalidDataException($"Option bar for '{symbol}' at {bar.Timestamp:O} has negative activity.");
         if (bar.Low > bar.High || bar.Open > bar.High || bar.Close > bar.High ||
             bar.Open < bar.Low || bar.Close < bar.Low)
@@ -115,7 +120,7 @@ public sealed class AlpacaHistoricalOptionBarClient(HttpClient httpClient, Alpac
     }
 
     private sealed record OptionBarsResponse(
-        [property: JsonPropertyName("bars")] IReadOnlyDictionary<string, IReadOnlyList<HistoricalOptionBar>> Bars,
+        [property: JsonPropertyName("bars")] IReadOnlyDictionary<string, IReadOnlyList<HistoricalOptionBar>>? Bars,
         [property: JsonPropertyName("next_page_token")] string? NextPageToken);
 }
 
@@ -130,6 +135,11 @@ public sealed record OptionBarQuery(
     IReadOnlyDictionary<string, IReadOnlyList<HistoricalOptionBar>> Bars,
     IReadOnlyList<string> RequestUris);
 
+/// <summary>
+/// One option bar as the venue reported it. <see cref="Vwap"/> and <see cref="TradeCount"/> are nullable
+/// because the venue may omit them on a thin bar, and a dataset that recorded those as zero would be
+/// asserting a fact the venue never stated.
+/// </summary>
 public sealed record HistoricalOptionBar(
     [property: JsonPropertyName("t")] DateTimeOffset Timestamp,
     [property: JsonPropertyName("o")] decimal Open,
@@ -137,5 +147,5 @@ public sealed record HistoricalOptionBar(
     [property: JsonPropertyName("l")] decimal Low,
     [property: JsonPropertyName("c")] decimal Close,
     [property: JsonPropertyName("v")] decimal Volume,
-    [property: JsonPropertyName("n")] long TradeCount,
-    [property: JsonPropertyName("vw")] decimal Vwap);
+    [property: JsonPropertyName("n")] long? TradeCount,
+    [property: JsonPropertyName("vw")] decimal? Vwap);

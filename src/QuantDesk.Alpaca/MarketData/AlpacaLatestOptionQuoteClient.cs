@@ -23,6 +23,7 @@ namespace QuantDesk.Alpaca.MarketData;
 public sealed class AlpacaLatestOptionQuoteClient(HttpClient httpClient, AlpacaOptions options)
 {
     private const int MaximumSymbolsPerRequest = 100;
+    private const string Endpoint = "v1beta1/options/quotes/latest";
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     /// <summary>
@@ -56,16 +57,14 @@ public sealed class AlpacaLatestOptionQuoteClient(HttpClient httpClient, AlpacaO
             normalized[parsed.BrokerSymbol] = slot;
         }
 
-        string requestUri = options.DataUri("v1beta1/options/quotes/latest") +
+        string requestUri = options.DataUri(Endpoint) +
             $"?symbols={Uri.EscapeDataString(string.Join(',', normalized.Keys))}";
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
         request.Headers.Add("APCA-API-KEY-ID", options.KeyId);
         request.Headers.Add("APCA-API-SECRET-KEY", options.SecretKey);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        OptionQuotesResponse? payload = await response.Content.ReadFromJsonAsync<OptionQuotesResponse>(
-            JsonOptions, cancellationToken);
-        if (payload is null) throw new InvalidDataException("Alpaca option-quote response was empty.");
+        OptionQuotesResponse payload = await AlpacaMarketDataResponse.ReadAsync<OptionQuotesResponse>(
+            response, Endpoint, JsonOptions, cancellationToken);
 
         var snapshots = new Dictionary<int, OptionQuoteSnapshot>();
         foreach ((string symbol, int slot) in normalized)
@@ -98,8 +97,7 @@ public sealed class AlpacaLatestOptionQuoteClient(HttpClient httpClient, AlpacaO
 
         // A zero or negative offer, a crossed book, or a one-sided market cannot price a spread.
         bool usable = ask > 0 && bid >= 0 && bid <= ask;
-        TimeSpan age = asOf - timestamp;
-        bool fresh = age >= TimeSpan.Zero && age <= maximumQuoteAge;
+        bool fresh = QuoteFreshness.IsFresh(timestamp, asOf, maximumQuoteAge);
         double mid = usable ? (bid + ask) / 2d : 0d;
         double relativeSpread = usable && mid > 0 ? (ask - bid) / mid : double.PositiveInfinity;
 
@@ -112,11 +110,22 @@ public sealed class AlpacaLatestOptionQuoteClient(HttpClient httpClient, AlpacaO
     private static OptionQuoteSnapshot Unusable(int slot) =>
         new(slot, 0d, 0d, 0d, double.PositiveInfinity, 0L, DataQuality.Stale);
 
+    /// <summary>
+    /// Reads a value the venue may send as a JSON number or a string. Every other kind is refused
+    /// up front: an absent property deserializes to a default <see cref="JsonElement"/> of kind
+    /// <see cref="JsonValueKind.Undefined"/>, and <c>GetString</c> throws on that rather than
+    /// returning null, so an unsent field would fail the read instead of being treated as missing.
+    /// </summary>
     private static bool TryReadDouble(JsonElement element, out double value)
     {
-        if (element.ValueKind == JsonValueKind.Number) return element.TryGetDouble(out value);
-        return double.TryParse(
-            element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        value = 0;
+        return element.ValueKind switch
+        {
+            JsonValueKind.Number => element.TryGetDouble(out value),
+            JsonValueKind.String => double.TryParse(
+                element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value),
+            _ => false
+        };
     }
 
     private sealed record OptionQuotesResponse(

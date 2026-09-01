@@ -27,7 +27,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         };
 
         await fixture.PrepareAsync("reservation-proof");
-        await fixture.Service.AdvanceAsync("reservation-proof", 0, 0.00001m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("reservation-proof", 0.00001m, CancellationToken.None);
 
         Assert.True(durableReservationObserved);
         Assert.Equal(1, fixture.Broker.SubmitCount);
@@ -39,9 +39,9 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         using var fixture = new DiagnosticFixture();
         await fixture.PrepareAsync("single-post");
 
-        await fixture.Service.AdvanceAsync("single-post", 0, 0.00001m, CancellationToken.None);
-        await fixture.Service.AdvanceAsync("single-post", 0, 0.00001m, CancellationToken.None);
-        await fixture.Service.AdvanceAsync("single-post", 0, 0.00001m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("single-post", 0.00001m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("single-post", 0.00001m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("single-post", 0.00001m, CancellationToken.None);
 
         Assert.Equal(1, fixture.Broker.SubmitCount);
         Assert.Equal("EntryAccepted", fixture.Store.Find("single-post")!.State);
@@ -61,7 +61,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         };
 
         DiagnosticExecutionResult result = await fixture.Service.AdvanceAsync(
-            "timeout-recovery", 0, 0.00001m, CancellationToken.None);
+            "timeout-recovery", 0.00001m, CancellationToken.None);
 
         DiagnosticExecutionRecord record = fixture.Store.Find("timeout-recovery")!;
         Assert.True(result.Allowed);
@@ -105,17 +105,17 @@ public sealed class CryptoDiagnosticExecutionServiceTests
                 0.00005m)
         };
 
-        await fixture.Service.AdvanceAsync("fill-lifecycle", 0, 0.00005m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("fill-lifecycle", 0.00005m, CancellationToken.None);
         Assert.Equal("EntryAccepted", fixture.Store.Find("fill-lifecycle")!.State);
 
-        await fixture.Service.AdvanceAsync("fill-lifecycle", 0, 0.00005m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("fill-lifecycle", 0.00005m, CancellationToken.None);
         DiagnosticExecutionRecord partial = fixture.Store.Find("fill-lifecycle")!;
         Assert.Equal("EntryPartiallyFilled", partial.State);
         Assert.Equal(0.00002m, partial.EntryFilledQuantity);
         Assert.Equal(100_000m, partial.EntryAverageFillPrice);
         Assert.Equal(partialAt, partial.FirstEntryFillAt);
 
-        await fixture.Service.AdvanceAsync("fill-lifecycle", 0, 0.00005m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("fill-lifecycle", 0.00005m, CancellationToken.None);
         DiagnosticExecutionRecord filled = fixture.Store.Find("fill-lifecycle")!;
         Assert.Equal("Holding", filled.State);
         Assert.Equal("broker-fill", filled.EntryBrokerOrderId);
@@ -135,7 +135,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         using var fixture = new DiagnosticFixture();
         await fixture.PrepareAsync("fee-adjusted-entry");
         await fixture.Service.AdvanceAsync(
-            "fee-adjusted-entry", 0, 0.0001m, CancellationToken.None);
+            "fee-adjusted-entry", 0.0001m, CancellationToken.None);
         DateTimeOffset filledAt = fixture.Clock.UtcNow.AddSeconds(1);
         string clientOrderId = fixture.Store.Find("fee-adjusted-entry")!.EntryClientOrderId!;
         fixture.Broker.LookupBehavior = requestedId => requestedId == clientOrderId
@@ -155,7 +155,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         ];
 
         DiagnosticExecutionResult result = await fixture.Service.AdvanceAsync(
-            "fee-adjusted-entry", 0, 0.0001m, CancellationToken.None);
+            "fee-adjusted-entry", 0.0001m, CancellationToken.None);
 
         DiagnosticExecutionRecord persisted = fixture.Store.Find("fee-adjusted-entry")!;
         Assert.True(result.Allowed, result.Reason);
@@ -191,7 +191,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         var restartedStore = new DiagnosticExecutionStore(fixture.StorePath);
         CryptoDiagnosticExecutionService restarted = fixture.CreateService(restartedStore);
 
-        await restarted.AdvanceAsync("restart-hold", 0, 0, CancellationToken.None);
+        await restarted.AdvanceAsync("restart-hold", 0, CancellationToken.None);
 
         DiagnosticExecutionRecord persisted = restartedStore.Find("restart-hold")!;
         Assert.Equal("Holding", persisted.State);
@@ -205,7 +205,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         await EnterHoldingAsync(fixture, "overdue-hold", fixture.Clock.UtcNow, 0.00005m);
         fixture.Clock.Advance(TimeSpan.FromMinutes(2));
 
-        await fixture.Service.AdvanceAsync("overdue-hold", 0, 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("overdue-hold", 0, CancellationToken.None);
 
         Assert.Equal("ExitDue", fixture.Store.Find("overdue-hold")!.State);
         Assert.Equal(0, fixture.Broker.ExitSubmitCount);
@@ -229,9 +229,9 @@ public sealed class CryptoDiagnosticExecutionServiceTests
             return Task.FromResult(Acknowledged("broker-exit"));
         };
 
-        await fixture.Service.AdvanceAsync("single-exit-post", 0, 0, CancellationToken.None);
-        await fixture.Service.AdvanceAsync("single-exit-post", 0, 0, CancellationToken.None);
-        await fixture.Service.AdvanceAsync("single-exit-post", 0, 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("single-exit-post", 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("single-exit-post", 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("single-exit-post", 0, CancellationToken.None);
 
         Assert.True(durableExitReservationObserved);
         Assert.Equal(1, fixture.Broker.ExitSubmitCount);
@@ -257,7 +257,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         };
 
         DiagnosticExecutionResult result = await fixture.Service.AdvanceAsync(
-            "exit-timeout", 0, 0, CancellationToken.None);
+            "exit-timeout", 0, CancellationToken.None);
 
         DiagnosticExecutionRecord record = fixture.Store.Find("exit-timeout")!;
         Assert.True(result.Allowed);
@@ -273,7 +273,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         using var fixture = new DiagnosticFixture();
         const decimal entryQuantity = 0.00005m;
         await ProgressToExitDueAsync(fixture, "exit-fill-lifecycle", entryQuantity);
-        await fixture.Service.AdvanceAsync("exit-fill-lifecycle", 0, 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("exit-fill-lifecycle", 0, CancellationToken.None);
         DiagnosticExecutionRecord accepted = fixture.Store.Find("exit-fill-lifecycle")!;
         Assert.Equal("ExitAccepted", accepted.State);
         Assert.Equal(entryQuantity, accepted.ExitQuantity);
@@ -291,7 +291,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
             },
             remainingPosition: 0.00003m);
 
-        await fixture.Service.AdvanceAsync("exit-fill-lifecycle", 0, 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("exit-fill-lifecycle", 0, CancellationToken.None);
         DiagnosticExecutionRecord partial = fixture.Store.Find("exit-fill-lifecycle")!;
         Assert.Equal("ExitPartiallyFilled", partial.State);
         Assert.Equal(0.00002m, partial.ExitFilledQuantity);
@@ -309,7 +309,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
             },
             remainingPosition: 0);
 
-        await fixture.Service.AdvanceAsync("exit-fill-lifecycle", 0, 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync("exit-fill-lifecycle", 0, CancellationToken.None);
         DiagnosticExecutionRecord completed = fixture.Store.Find("exit-fill-lifecycle")!;
         Assert.Equal("Complete", completed.State);
         Assert.Equal("broker-exit-fill", completed.ExitBrokerOrderId);
@@ -360,7 +360,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         CryptoDiagnosticExecutionService restarted = fixture.CreateService(
             new DiagnosticExecutionStore(fixture.StorePath));
 
-        await restarted.AdvanceAsync(initial.ExperimentId, 0, 0.00005m, CancellationToken.None);
+        await restarted.AdvanceAsync(initial.ExperimentId, 0.00005m, CancellationToken.None);
 
         Assert.Equal(expectedState, fixture.Store.Find(initial.ExperimentId)!.State);
         Assert.Equal(0, fixture.Broker.SubmitCount);
@@ -406,7 +406,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         CryptoDiagnosticExecutionService restarted = fixture.CreateService(
             new DiagnosticExecutionStore(fixture.StorePath));
 
-        await restarted.AdvanceAsync(initial.ExperimentId, 0, 0, CancellationToken.None);
+        await restarted.AdvanceAsync(initial.ExperimentId, 0, CancellationToken.None);
 
         Assert.Equal(expectedState, fixture.Store.Find(initial.ExperimentId)!.State);
         Assert.Equal(0, fixture.Broker.ExitSubmitCount);
@@ -429,7 +429,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         CryptoDiagnosticExecutionService restarted = fixture.CreateService(
             new DiagnosticExecutionStore(fixture.StorePath));
 
-        await restarted.AdvanceAsync(experimentId, 0, 0, CancellationToken.None);
+        await restarted.AdvanceAsync(experimentId, 0, CancellationToken.None);
 
         DiagnosticExecutionRecord completed = fixture.Store.Find(experimentId)!;
         Assert.Equal("Complete", completed.State);
@@ -456,7 +456,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         ];
 
         DiagnosticExecutionResult result = await fixture.Service.AdvanceAsync(
-            experimentId, 0, 0, CancellationToken.None);
+            experimentId, 0, CancellationToken.None);
 
         DiagnosticExecutionRecord failed = fixture.Store.Find(experimentId)!;
         Assert.False(result.Allowed);
@@ -475,7 +475,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         DiagnosticExecutionRecord initial = fixture.Store.Find(experimentId)!;
         fixture.Broker.LookupBehavior = _ => null;
 
-        await fixture.Service.EmergencyFlattenAsync(experimentId, 0, CancellationToken.None);
+        await fixture.Service.EmergencyFlattenAsync(experimentId, CancellationToken.None);
         Assert.Equal(1, fixture.Broker.EmergencySubmitCount);
         BrokerOrderSnapshot filled = Order(
             "emergency-broker",
@@ -490,8 +490,8 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         CryptoDiagnosticExecutionService restarted = fixture.CreateService(
             new DiagnosticExecutionStore(fixture.StorePath));
 
-        await restarted.EmergencyFlattenAsync(experimentId, 0, CancellationToken.None);
-        await restarted.EmergencyFlattenAsync(experimentId, 0, CancellationToken.None);
+        await restarted.EmergencyFlattenAsync(experimentId, CancellationToken.None);
+        await restarted.EmergencyFlattenAsync(experimentId, CancellationToken.None);
 
         Assert.Equal(1, fixture.Broker.EmergencySubmitCount);
         Assert.Equal("Complete", fixture.Store.Find(experimentId)!.State);
@@ -505,10 +505,10 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         await EnterHoldingAsync(fixture, experimentId, fixture.Clock.UtcNow, 0.00005m);
         fixture.Broker.LookupBehavior = _ => null;
 
-        await fixture.Service.EmergencyFlattenAsync(experimentId, 0, CancellationToken.None);
+        await fixture.Service.EmergencyFlattenAsync(experimentId, CancellationToken.None);
         CryptoDiagnosticExecutionService restarted = fixture.CreateService(
             new DiagnosticExecutionStore(fixture.StorePath));
-        await restarted.EmergencyFlattenAsync(experimentId, 0, CancellationToken.None);
+        await restarted.EmergencyFlattenAsync(experimentId, CancellationToken.None);
 
         Assert.Equal(1, fixture.Broker.EmergencySubmitCount);
         Assert.Equal("EmergencyFlattenFailed", fixture.Store.Find(experimentId)!.State);
@@ -528,7 +528,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
             Order("external-open", "external-client-id", "new", 0, null)
         ];
 
-        await fixture.Service.EmergencyFlattenAsync(experimentId, 0, CancellationToken.None);
+        await fixture.Service.EmergencyFlattenAsync(experimentId, CancellationToken.None);
 
         Assert.Equal(1, fixture.Broker.CancelCount);
         Assert.Single(fixture.Broker.OpenOrders);
@@ -556,7 +556,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         fixture.Store.Record(record);
 
         DiagnosticExecutionResult result = await fixture.Service.EmergencyFlattenAsync(
-            record.ExperimentId, 0, CancellationToken.None);
+            record.ExperimentId, CancellationToken.None);
 
         Assert.False(result.Allowed);
         Assert.Equal("ALPACA_PAPER_REQUIRED", result.Reason);
@@ -706,12 +706,12 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         using var fixture = new DiagnosticFixture();
         string experimentId = $"status-{brokerStatus}";
         await fixture.PrepareAsync(experimentId);
-        await fixture.Service.AdvanceAsync(experimentId, 0, 0.00001m, CancellationToken.None);
+        await fixture.Service.AdvanceAsync(experimentId, 0.00001m, CancellationToken.None);
         fixture.Broker.LookupBehavior = clientOrderId =>
             Order("broker-status", clientOrderId, brokerStatus, 0, null);
 
         DiagnosticExecutionResult result = await fixture.Service.AdvanceAsync(
-            experimentId, 0, 0.00001m, CancellationToken.None);
+            experimentId, 0.00001m, CancellationToken.None);
 
         Assert.Equal(expectedAllowed, result.Allowed);
         Assert.Equal(expectedState, fixture.Store.Find(experimentId)!.State);
@@ -766,7 +766,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         decimal quantity)
     {
         await fixture.PrepareAsync(experimentId);
-        await fixture.Service.AdvanceAsync(experimentId, 0, quantity, CancellationToken.None);
+        await fixture.Service.AdvanceAsync(experimentId, quantity, CancellationToken.None);
         DiagnosticExecutionRecord reserved = fixture.Store.Find(experimentId)!;
         BrokerOrderSnapshot filled = Order(
             "broker-entry-fill",
@@ -782,7 +782,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
             ? SetBrokerTruth(fixture.Broker, filled, quantity)
             : null;
 
-        await fixture.Service.AdvanceAsync(experimentId, 0, quantity, CancellationToken.None);
+        await fixture.Service.AdvanceAsync(experimentId, quantity, CancellationToken.None);
 
         DiagnosticExecutionRecord holding = fixture.Store.Find(experimentId)!;
         Assert.Equal("Holding", holding.State);
@@ -796,7 +796,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
     {
         await EnterHoldingAsync(fixture, experimentId, fixture.Clock.UtcNow, quantity);
         fixture.Clock.Advance(TimeSpan.FromMinutes(2));
-        await fixture.Service.AdvanceAsync(experimentId, 0, 0, CancellationToken.None);
+        await fixture.Service.AdvanceAsync(experimentId, 0, CancellationToken.None);
 
         DiagnosticExecutionRecord exitDue = fixture.Store.Find(experimentId)!;
         Assert.Equal("ExitDue", exitDue.State);
@@ -875,14 +875,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
             Broker = new FakeBroker(isPaperEnvironment);
             Readiness = CreateInfrastructureReadyState();
             Clock = new VirtualRuntimeClock(DateTimeOffset.Parse("2026-08-30T00:00:00Z"));
-            Service = new CryptoDiagnosticExecutionService(
-                Readiness,
-                Store,
-                Broker,
-                new DiagnosticExecutionOptions(5m),
-                new DictionaryInstrumentSymbolResolver(
-                    new Dictionary<int, string> { [0] = DiagnosticExecutionOptions.RequiredSymbol }),
-                Clock);
+            Service = CreateService(Store);
         }
 
         public string StorePath { get; }
@@ -892,15 +885,21 @@ public sealed class CryptoDiagnosticExecutionServiceTests
         public VirtualRuntimeClock Clock { get; }
         public CryptoDiagnosticExecutionService Service { get; }
 
+        // The emergency sub-lifecycle is built here rather than injected by a caller so that it and the
+        // service it serves always share one store — a restart is simulated by swapping the store, and a
+        // pair that disagreed about which store is authoritative would not model anything real.
         public CryptoDiagnosticExecutionService CreateService(DiagnosticExecutionStore store) =>
             new(
                 Readiness,
                 store,
                 Broker,
                 new DiagnosticExecutionOptions(5m),
-                new DictionaryInstrumentSymbolResolver(
-                    new Dictionary<int, string> { [0] = DiagnosticExecutionOptions.RequiredSymbol }),
-                Clock);
+                Symbols,
+                Clock,
+                new DiagnosticEmergencyFlatten(store, Broker, Symbols, Clock));
+
+        private static DictionaryInstrumentSymbolResolver Symbols { get; } = new(
+            new Dictionary<int, string> { [0] = DiagnosticExecutionOptions.RequiredSymbol });
 
         public async Task<DiagnosticExecutionResult> PrepareAsync(string experimentId)
         {
