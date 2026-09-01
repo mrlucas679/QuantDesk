@@ -1293,6 +1293,8 @@ and a verdict recorded, so it is not re-attempted blindly.
 | G11 | `crypto_direction.py` is 810 lines and serves a lane the cost analysis has ruled out. |
 | G12 | 74 files in `Docs/`; at least `Docs/AUTONOMOUS_TRADING_CONNECTION_AUDIT.md` predates the routing work. Docs drift is caught by no test. |
 | G13 | Test-name-to-source mapping is unreliable, so coverage gaps cannot be checked mechanically. |
+| G15 | **Strict `mypy` covers `src` only.** `mypy src` reports "no issues found in 85 source files"; `mypy .` finds 51 errors, all of them in `tests/` (mostly missing annotations). The claim "mypy strict, clean" is true and narrower than it sounds — the test suite is not type-checked. |
+| G16 | **There is no CI workflow for the Python plane at all.** `.github/workflows/` contains `dotnet.yml` and nothing else, so ruff, mypy, and the 143 Python tests run only when someone runs them by hand. Everything the research plane asserts is unguarded between sessions. |
 | G14 | **Implemented:** the diagnostic minimum quantity is the named `DiagnosticExecutionOptions.MinimumCryptoQuantity` invariant, not a composition-root magic literal. |
 
 ### Option clients against real venue shapes — 2026-09-01
