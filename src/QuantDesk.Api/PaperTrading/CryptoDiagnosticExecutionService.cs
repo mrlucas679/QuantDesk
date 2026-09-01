@@ -57,9 +57,9 @@ public sealed class CryptoDiagnosticExecutionService(
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
 
-        DiagnosticExecutionResult? brokerFailure = VerifyBrokerAdmission(context, notional);
+        DiagnosticExecutionResult? brokerFailure = DiagnosticAdmissionPolicy.VerifyEntry(context, notional);
         if (brokerFailure is not null) return brokerFailure;
-        if (context.OpenOrders.Count != 0 || RelevantPositions(context.Positions, instrumentSlot: null).Count != 0)
+        if (context.OpenOrders.Count != 0 || DiagnosticAdmissionPolicy.RelevantPositions(context.Positions).Count != 0)
             return DiagnosticExecutionResult.Blocked("UNEXPLAINED_BROKER_EXPOSURE");
 
         return PersistReservation(normalizedExperimentId, notional);
@@ -129,9 +129,9 @@ public sealed class CryptoDiagnosticExecutionService(
         if (record.State is "Holding" or "EntryFilled") return AdvanceHolding(record);
         if (record.State == "Reconciling")
             return await ReconcileFinalAsync(record, instrumentSlot, cancellationToken);
-        if (IsExitLifecycleState(record.State))
+        if (DiagnosticExecutionMath.IsExitLifecycleState(record.State))
             return await AdvanceExitAsync(record, instrumentSlot, cancellationToken);
-        if (IsTerminalEntryState(record.State)) return TerminalResult(record);
+        if (DiagnosticExecutionMath.IsTerminalEntryState(record.State)) return TerminalResult(record);
         if (!options.Allows(record.Symbol, record.RequestedNotional))
             return DiagnosticExecutionResult.Blocked("DIAGNOSTIC_RISK_ENVELOPE_EXCEEDED");
 
@@ -149,7 +149,7 @@ public sealed class CryptoDiagnosticExecutionService(
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
 
-        DiagnosticExecutionResult? brokerFailure = VerifyBrokerAdmission(context, record.RequestedNotional);
+        DiagnosticExecutionResult? brokerFailure = DiagnosticAdmissionPolicy.VerifyEntry(context, record.RequestedNotional);
         if (brokerFailure is not null) return brokerFailure;
         try
         {
@@ -174,7 +174,7 @@ public sealed class CryptoDiagnosticExecutionService(
         if (context.ExistingOrder is not null)
             return PersistBrokerOrder(record, context.ExistingOrder);
 
-        if (!IsReconciled(record, context, instrumentSlot))
+        if (!DiagnosticAdmissionPolicy.IsReconciled(record, context))
         {
             PersistReconciliationMismatch(record.ExperimentId);
             return DiagnosticExecutionResult.Blocked("UNEXPLAINED_BROKER_EXPOSURE");
@@ -220,7 +220,7 @@ public sealed class CryptoDiagnosticExecutionService(
         int instrumentSlot,
         CancellationToken cancellationToken)
     {
-        if (IsTerminalExitState(record.State)) return TerminalResult(record);
+        if (DiagnosticExecutionMath.IsTerminalExitState(record.State)) return TerminalResult(record);
         DiagnosticExecutionResult? infrastructureFailure = VerifyLocalInfrastructure();
         if (infrastructureFailure is not null) return infrastructureFailure;
         if (!store.IsAvailable()) return DiagnosticExecutionResult.Blocked("PERSISTENCE_UNAVAILABLE");
@@ -235,7 +235,7 @@ public sealed class CryptoDiagnosticExecutionService(
             return DiagnosticExecutionResult.Blocked("RECONCILIATION_UNAVAILABLE");
         }
 
-        DiagnosticExecutionResult? brokerFailure = VerifyBrokerExitAdmission(context);
+        DiagnosticExecutionResult? brokerFailure = DiagnosticAdmissionPolicy.VerifyExit(context);
         if (brokerFailure is not null) return brokerFailure;
         try
         {
@@ -253,13 +253,13 @@ public sealed class CryptoDiagnosticExecutionService(
         int instrumentSlot,
         CancellationToken cancellationToken)
     {
-        if (HasUnknownOrder(record, context.OpenOrders))
+        if (DiagnosticAdmissionPolicy.HasUnknownOrder(record, context.OpenOrders))
         {
             PersistReconciliationMismatch(record.ExperimentId);
             return DiagnosticExecutionResult.Blocked("UNEXPLAINED_BROKER_EXPOSURE");
         }
 
-        decimal brokerPositionQuantity = RelevantPositions(context.Positions, instrumentSlot)
+        decimal brokerPositionQuantity = DiagnosticAdmissionPolicy.RelevantPositions(context.Positions)
             .Sum(position => position.Quantity);
         if (context.ExistingOrder is not null)
         {
@@ -399,7 +399,7 @@ public sealed class CryptoDiagnosticExecutionService(
         try
         {
             IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
-            decimal brokerQuantity = RelevantPositions(positions, instrumentSlot: null)
+            decimal brokerQuantity = DiagnosticAdmissionPolicy.RelevantPositions(positions)
                 .Sum(position => position.Quantity);
             DiagnosticExecutionResult tracked = PersistExitBrokerOrder(record, order, brokerQuantity);
             DiagnosticExecutionRecord persisted = store.Find(record.ExperimentId)!;
@@ -424,9 +424,9 @@ public sealed class CryptoDiagnosticExecutionService(
                 DiagnosticExecutionOptions.RequiredSymbol,
                 cancellationToken);
             IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
-            decimal brokerQuantity = RelevantPositions(positions, instrumentSlot).Sum(position => position.Quantity);
-            decimal internalQuantity = InternalExposure(record);
-            bool hasUnresolvedDiagnosticOrder = openOrders.Any(order => IsDiagnosticOrder(record, order));
+            decimal brokerQuantity = DiagnosticAdmissionPolicy.RelevantPositions(positions).Sum(position => position.Quantity);
+            decimal internalQuantity = DiagnosticExecutionMath.InternalExposure(record);
+            bool hasUnresolvedDiagnosticOrder = openOrders.Any(order => DiagnosticAdmissionPolicy.IsDiagnosticOrder(record, order));
             bool reconciled = !hasUnresolvedDiagnosticOrder && brokerQuantity == 0 && internalQuantity == 0;
 
             store.Update(record.ExperimentId, current => current with
@@ -435,12 +435,12 @@ public sealed class CryptoDiagnosticExecutionService(
                 FinalBrokerQuantity = brokerQuantity,
                 FinalInternalQuantity = internalQuantity,
                 ReconciliationResult = reconciled ? "Flat" : "Mismatch",
-                GrossPaperPnl = reconciled ? ComputeGrossPaperPnl(current) : current.GrossPaperPnl,
+                GrossPaperPnl = reconciled ? DiagnosticExecutionMath.GrossPaperPnl(current) : current.GrossPaperPnl,
                 CompletedAt = reconciled ? clock.UtcNow : null,
                 Failure = reconciled
                     ? DiagnosticExecutionFailure.None
                     : DiagnosticExecutionFailure.ReconciliationFailed,
-                FailureReason = reconciled ? null : ReconciliationFailureReason(
+                FailureReason = reconciled ? null : DiagnosticExecutionMath.ReconciliationFailureReason(
                     hasUnresolvedDiagnosticOrder,
                     brokerQuantity,
                     internalQuantity)
@@ -479,17 +479,17 @@ public sealed class CryptoDiagnosticExecutionService(
             IReadOnlyList<BrokerOrderSnapshot> openOrders = await broker.ListOpenOrdersForSymbolAsync(
                 DiagnosticExecutionOptions.RequiredSymbol,
                 cancellationToken);
-            foreach (BrokerOrderSnapshot order in openOrders.Where(order => IsDiagnosticOrder(record, order)))
+            foreach (BrokerOrderSnapshot order in openOrders.Where(order => DiagnosticAdmissionPolicy.IsDiagnosticOrder(record, order)))
                 await broker.CancelAsync(order.BrokerOrderId, cancellationToken);
 
             IReadOnlyList<BrokerOrderSnapshot> remainingOrders = await broker.ListOpenOrdersForSymbolAsync(
                 DiagnosticExecutionOptions.RequiredSymbol,
                 cancellationToken);
-            if (remainingOrders.Any(order => IsDiagnosticOrder(record, order)))
+            if (remainingOrders.Any(order => DiagnosticAdmissionPolicy.IsDiagnosticOrder(record, order)))
                 return FailEmergency(record, "EMERGENCY_CANCEL_UNCONFIRMED");
 
             IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
-            decimal brokerQuantity = RelevantPositions(positions, instrumentSlot).Sum(position => position.Quantity);
+            decimal brokerQuantity = DiagnosticAdmissionPolicy.RelevantPositions(positions).Sum(position => position.Quantity);
             if (brokerQuantity == 0)
             {
                 store.Update(experimentId, current => current with
@@ -621,68 +621,6 @@ public sealed class CryptoDiagnosticExecutionService(
         IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
         return new BrokerEntryContext(account, asset, existing, orders, positions);
     }
-
-    private static DiagnosticExecutionResult? VerifyBrokerAdmission(BrokerEntryContext context, decimal notional)
-    {
-        BrokerAccountSnapshot? account = context.Account;
-        if (account is null || account.TradingBlocked || account.AccountBlocked || account.Equity <= 0 ||
-            account.BuyingPower < notional ||
-            !string.Equals(account.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(account.CryptoTradingStatus, "ACTIVE", StringComparison.OrdinalIgnoreCase))
-            return DiagnosticExecutionResult.Blocked("PAPER_ACCOUNT_UNAVAILABLE");
-
-        BrokerAssetSnapshot? asset = context.Asset;
-        if (asset is null || !asset.Tradable ||
-            !string.Equals(asset.Status, "active", StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(asset.AssetClass, "crypto", StringComparison.OrdinalIgnoreCase) ||
-            !SymbolsMatch(asset.Symbol, DiagnosticExecutionOptions.RequiredSymbol))
-            return DiagnosticExecutionResult.Blocked("BTC_USD_NOT_TRADABLE");
-
-        return null;
-    }
-
-    private static DiagnosticExecutionResult? VerifyBrokerExitAdmission(BrokerEntryContext context)
-    {
-        BrokerAccountSnapshot? account = context.Account;
-        if (account is null || account.TradingBlocked || account.AccountBlocked ||
-            !string.Equals(account.Status, "ACTIVE", StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(account.CryptoTradingStatus, "ACTIVE", StringComparison.OrdinalIgnoreCase))
-            return DiagnosticExecutionResult.Blocked("PAPER_ACCOUNT_UNAVAILABLE");
-
-        BrokerAssetSnapshot? asset = context.Asset;
-        return asset is not null && asset.Tradable &&
-               string.Equals(asset.Status, "active", StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(asset.AssetClass, "crypto", StringComparison.OrdinalIgnoreCase) &&
-               SymbolsMatch(asset.Symbol, DiagnosticExecutionOptions.RequiredSymbol)
-            ? null
-            : DiagnosticExecutionResult.Blocked("BTC_USD_NOT_TRADABLE");
-    }
-
-    private static bool IsReconciled(
-        DiagnosticExecutionRecord record,
-        BrokerEntryContext context,
-        int instrumentSlot)
-    {
-        if (HasUnknownOrder(record, context.OpenOrders)) return false;
-
-        IReadOnlyList<BrokerPositionSnapshot> relevantPositions = RelevantPositions(context.Positions, instrumentSlot);
-        decimal brokerQuantity = relevantPositions.Sum(position => position.Quantity);
-        decimal explainedQuantity = context.ExistingOrder?.FilledQuantity ?? record.EntryFilledQuantity;
-        return brokerQuantity == explainedQuantity;
-    }
-
-    private static bool HasUnknownOrder(
-        DiagnosticExecutionRecord record,
-        IReadOnlyList<BrokerOrderSnapshot> openOrders) => openOrders.Any(order =>
-        !string.Equals(order.ClientOrderId, record.EntryClientOrderId, StringComparison.Ordinal) &&
-        !string.Equals(order.ClientOrderId, record.ExitClientOrderId, StringComparison.Ordinal));
-
-    private static IReadOnlyList<BrokerPositionSnapshot> RelevantPositions(
-        IReadOnlyList<BrokerPositionSnapshot> positions,
-        int? instrumentSlot) => positions
-        .Where(position => SymbolsMatch(position.Symbol, DiagnosticExecutionOptions.RequiredSymbol))
-        .Where(position => position.Quantity != 0)
-        .ToArray();
 
     private async Task<DiagnosticExecutionResult> SubmitEntryAsync(
         DiagnosticExecutionRecord record,
@@ -823,7 +761,7 @@ public sealed class CryptoDiagnosticExecutionService(
         });
 
         DiagnosticExecutionRecord persisted = store.Find(record.ExperimentId)!;
-        return IsTerminalEntryState(state) ? TerminalResult(persisted) : Ready(persisted);
+        return DiagnosticExecutionMath.IsTerminalEntryState(state) ? TerminalResult(persisted) : Ready(persisted);
     }
 
     private DiagnosticExecutionResult PersistExitBrokerOrder(
@@ -884,7 +822,7 @@ public sealed class CryptoDiagnosticExecutionService(
         });
 
         DiagnosticExecutionRecord persisted = store.Find(record.ExperimentId)!;
-        return IsTerminalExitState(state) ? TerminalResult(persisted) : Ready(persisted);
+        return DiagnosticExecutionMath.IsTerminalExitState(state) ? TerminalResult(persisted) : Ready(persisted);
     }
 
     private void PersistReconciliationMismatch(string experimentId)
@@ -897,62 +835,13 @@ public sealed class CryptoDiagnosticExecutionService(
         });
     }
 
-    private static bool IsDiagnosticOrder(DiagnosticExecutionRecord record, BrokerOrderSnapshot order) =>
-        string.Equals(order.ClientOrderId, record.EntryClientOrderId, StringComparison.Ordinal) ||
-        string.Equals(order.ClientOrderId, record.ExitClientOrderId, StringComparison.Ordinal) ||
-        string.Equals(order.ClientOrderId, record.EmergencyClientOrderId, StringComparison.Ordinal);
-
-    private static string ReconciliationFailureReason(
-        bool unresolvedOrders,
-        decimal brokerQuantity,
-        decimal internalQuantity)
-    {
-        if (unresolvedOrders) return "RECONCILIATION_UNRESOLVED_DIAGNOSTIC_ORDERS";
-        if (brokerQuantity != internalQuantity) return "RECONCILIATION_BROKER_INTERNAL_MISMATCH";
-        if (brokerQuantity != 0) return "RECONCILIATION_BROKER_EXPOSURE_REMAINS";
-        return "RECONCILIATION_INTERNAL_EXPOSURE_REMAINS";
-    }
-
-    private static decimal InternalExposure(DiagnosticExecutionRecord record)
-    {
-        decimal flattenBasis = record.ExitQuantity > 0
-            ? record.ExitQuantity
-            : record.EntryFilledQuantity;
-        return Math.Max(0, flattenBasis - record.ExitFilledQuantity - record.EmergencyFilledQuantity);
-    }
-
     private void BackfillCompletedMetrics(DiagnosticExecutionRecord record)
     {
         if (record.GrossPaperPnl is not null) return;
-        decimal? grossPaperPnl = ComputeGrossPaperPnl(record);
+        decimal? grossPaperPnl = DiagnosticExecutionMath.GrossPaperPnl(record);
         if (grossPaperPnl is null) return;
         store.Update(record.ExperimentId, current => current with { GrossPaperPnl = grossPaperPnl });
     }
-
-    private static decimal? ComputeGrossPaperPnl(DiagnosticExecutionRecord record)
-    {
-        if (record.EntryAverageFillPrice is not decimal entryPrice ||
-            record.ExitAverageFillPrice is not decimal exitPrice ||
-            record.ExitFilledQuantity <= 0)
-            return null;
-        return (exitPrice - entryPrice) * record.ExitFilledQuantity;
-    }
-
-    private static bool SymbolsMatch(string left, string right) => string.Equals(
-        left.Replace("/", string.Empty, StringComparison.Ordinal),
-        right.Replace("/", string.Empty, StringComparison.Ordinal),
-        StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsTerminalEntryState(string state) =>
-        state is "EntryCanceled" or "EntryRejected" or "EntryExpired" or
-            "ReconciliationFailed" or "EmergencyFlattenFailed";
-
-    private static bool IsExitLifecycleState(string state) => state is
-        "ExitDue" or "ExitReserved" or "ExitSubmitted" or "ExitAccepted" or "ExitPartiallyFilled" or
-        "ExitFilled" or "ExitSubmissionUnknown" or "ExitCanceled" or "ExitRejected" or "ExitExpired";
-
-    private static bool IsTerminalExitState(string state) =>
-        state is "ExitCanceled" or "ExitRejected" or "ExitExpired";
 
     private static DiagnosticExecutionResult TerminalResult(DiagnosticExecutionRecord record) =>
         DiagnosticExecutionResult.Blocked(record.FailureReason ?? record.State.ToUpperInvariant());
@@ -982,12 +871,6 @@ public sealed class CryptoDiagnosticExecutionService(
         return $"qd-diag-{digest}-{leg}";
     }
 
-    private sealed record BrokerEntryContext(
-        BrokerAccountSnapshot? Account,
-        BrokerAssetSnapshot? Asset,
-        BrokerOrderSnapshot? ExistingOrder,
-        IReadOnlyList<BrokerOrderSnapshot> OpenOrders,
-        IReadOnlyList<BrokerPositionSnapshot> Positions);
 }
 
 public sealed record DiagnosticExecutionResult(
