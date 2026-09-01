@@ -1350,6 +1350,38 @@ a sentence naming that when the venue refuses. It is advisory and runs only afte
 change key formats at will, and a shape rule that *blocked* a request would eventually reject working
 credentials, which is a far worse failure than the opaque one it fixes.
 
+### Stress campaign 2 — restart recovery proven under process death — 2026-09-01
+
+**Phase C, the test campaign 1 failed to actually run.** A diagnostic was driven to a live fill
+(0.000127098 BTC), then the API container was killed outright and restarted:
+
+```
+entry filled 0.000127098  ->  API CONTAINER KILLED with the position live
+api back 3s later
+RECOVERED -> state=Complete  recon=Flat  exitFill=0.00012678
+             gross=+0.00336  net=-0.02118
+```
+
+The durable record survived, the recovery worker resumed a half-finished lifecycle, the position was
+closed and reconciliation came back `Flat`. That is the guarantee the durable-execution design exists
+for, demonstrated by killing the process rather than by a unit test.
+
+It also vindicates the net-P&L fix on its first live trade: **+$0.0034 gross reads as a winner,
+−$0.0212 net is a loss.** Without the fix this recovery would have been recorded as profitable.
+
+**Phase S measured the venue settle lag properly: 42.4s and 41.6s** — roughly twice the ~20s estimated
+from campaign 1's coarser timing. Back-to-back cycling has to wait that out.
+
+**Gap 5, found by Phase R — a dark research plane was disabling the operator's controls.** The preflight
+set the runtime mode from *full* readiness, which includes `featuresReady` and `expertsReady`. No
+strategy qualifies, so the runtime sat permanently in `EntryHalted`, and `EntryHalted` blocks manual
+orders. `SystemMode` was answering two different questions at once: "is the runtime healthy enough to
+act" and "is there a qualified strategy". The mode now reflects only the first. Strategy qualification
+stays enforced where strategy orders are admitted — the autonomous lane still requires a ready research
+plane and a forecast, `ExecutionAdmissionPolicy` still maps `QualifiedStrategy` onto full readiness, and
+`ExecutionWorker` still requires an active risk reservation. Four tests pin that separating them does
+not let an unqualified strategy through.
+
 ### Stress campaign 1, and the four gaps it found — 2026-09-01
 
 21 BTC/USD round trips ran back to back. **Every one completed and reconciled `Flat`; zero failures,

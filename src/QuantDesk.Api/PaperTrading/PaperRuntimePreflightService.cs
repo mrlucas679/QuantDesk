@@ -49,9 +49,22 @@ public sealed class PaperRuntimePreflightService(
             readiness.RecordBrokerPreflight(flatAndResolved, true, broker.IsPaperEnvironment);
             if (!preserveOperatorMode)
             {
+                // The mode reflects what *this* service knows: whether the broker and runtime are in a
+                // state to act. It deliberately does not include research readiness.
+                //
+                // It used to key on full readiness, which includes featuresReady and expertsReady. No
+                // strategy qualifies, so full readiness is unreachable, so the runtime sat permanently
+                // in EntryHalted — and EntryHalted blocks manual operator orders. A dark research plane
+                // was silently disabling the human's controls, which is not what "entry halted" is for.
+                //
+                // Strategy qualification is still enforced where strategy orders are admitted: the
+                // autonomous lane requires a ready research plane and a forecast, ExecutionAdmissionPolicy
+                // maps QualifiedStrategy onto full readiness, and ExecutionWorker requires an active risk
+                // reservation before any of it.
+                bool runtimeReady = readiness.Snapshot().InfrastructureExecutionReady;
                 runtimeMode.Transition(
-                    readiness.Snapshot().Ready ? SystemMode.Ready : SystemMode.EntryHalted,
-                    readiness.Snapshot().Ready ? "full_system_ready" : "full_system_readiness_incomplete");
+                    runtimeReady ? SystemMode.Ready : SystemMode.EntryHalted,
+                    runtimeReady ? "broker_preflight_reconciled" : "broker_preflight_incomplete");
                 logger.LogInformation(
                     "Paper broker preflight completed with {OrderCount} open orders and {PositionCount} positions; reconciled={Reconciled}, full readiness={Ready}.",
                     orders.Count,
