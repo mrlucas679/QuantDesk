@@ -15,6 +15,7 @@ from quantdesk_research.contracts.model_artifact import (
     StrategyDefinition,
     ValidationGateEvidence,
 )
+from quantdesk_research.data.manifest_keys import require_manifest_value
 from quantdesk_research.experiments.strategy_ensemble import (
     StrategyEvaluation,
     build_signal_frame,
@@ -43,8 +44,8 @@ def publish_validated_rule_strategy(
     if evaluation.name.split(":", maxsplit=1)[0] != family:
         raise ValueError("Rule evaluation does not match the requested strategy family.")
     manifest = _load_object(data_root / manifest_name)
-    bars = _load_array(data_root / str(manifest["dataFile"]))
-    timeframe = str(manifest["timeframe"])
+    bars = _load_array(data_root / str(require_manifest_value(manifest, "data_file")))
+    timeframe = str(require_manifest_value(manifest, "timeframe"))
     bar_minutes = _bar_duration_minutes(timeframe)
     horizon_minutes = horizon_bars * bar_minutes
     signals = build_signal_frame(bars)
@@ -52,7 +53,7 @@ def publish_validated_rule_strategy(
         raise ValueError("Rule strategy family has no causal signal implementation.")
 
     definition = StrategyDefinition(
-        symbol=str(manifest["symbol"]),
+        symbol=str(require_manifest_value(manifest, "symbol")),
         bar_duration_minutes=bar_minutes,
         forecast_horizon_minutes=horizon_minutes,
         entry_rule_version=f"{family}-v1",
@@ -107,7 +108,7 @@ def publish_validated_rule_strategy(
         strategy_family=family,
         strategy_definition=definition,
         feature_schema_hash=feature_hash,
-        dataset_hash=str(manifest["sha256"]),
+        dataset_hash=str(require_manifest_value(manifest, "sha256")),
         training_window={},
         calibration_window=None,
         test_window={"campaign_fingerprint": campaign_fingerprint},
@@ -118,7 +119,7 @@ def publish_validated_rule_strategy(
         evidence_profile=evidence_profile,
         validation_gates=sorted(validation_evidence),
         validation_evidence=validation_evidence,
-        support_domain={"instrument": manifest["symbol"], "timeframe": timeframe},
+        support_domain={"instrument": require_manifest_value(manifest, "symbol"), "timeframe": timeframe},
         git_commit="working-tree",
         config_hash=campaign_fingerprint,
         creation_timestamp=evaluated_at,

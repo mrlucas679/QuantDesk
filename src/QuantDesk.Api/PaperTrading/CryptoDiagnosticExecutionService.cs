@@ -189,7 +189,7 @@ public sealed class CryptoDiagnosticExecutionService(
         if (!store.TryClaimEntrySubmission(record.ExperimentId, quantity, attemptedAt, out DiagnosticExecutionRecord? claimed))
             return await RecoverClaimedSubmissionAsync(record, cancellationToken);
 
-        ExecutionCommand command = CreateEntryCommand(claimed!, instrumentSlot, quantity);
+        ExecutionCommand command = DiagnosticCommandFactory.Entry(claimed!, instrumentSlot, quantity, clock.UtcNow);
         return await SubmitEntryAsync(claimed!, command, cancellationToken);
     }
 
@@ -289,7 +289,7 @@ public sealed class CryptoDiagnosticExecutionService(
 
         return await SubmitExitAsync(
             claimed!,
-            CreateExitCommand(claimed!, instrumentSlot),
+            DiagnosticCommandFactory.Exit(claimed!, instrumentSlot, clock.UtcNow),
             cancellationToken);
     }
 
@@ -525,7 +525,7 @@ public sealed class CryptoDiagnosticExecutionService(
         try
         {
             BrokerSubmitResult result = await broker.SubmitAsync(
-                CreateEmergencyExitCommand(record, instrumentSlot),
+                DiagnosticCommandFactory.EmergencyFlatten(record, instrumentSlot, clock.UtcNow),
                 cancellationToken);
             if (result.State == BrokerSubmitState.Rejected)
                 return FailEmergency(record, result.ReasonCode ?? "EMERGENCY_REJECTED");
@@ -895,75 +895,6 @@ public sealed class CryptoDiagnosticExecutionService(
             Failure = DiagnosticExecutionFailure.ReconciliationMismatch,
             FailureReason = "UNEXPLAINED_BROKER_EXPOSURE"
         });
-    }
-
-    private ExecutionCommand CreateEntryCommand(
-        DiagnosticExecutionRecord record,
-        int instrumentSlot,
-        decimal quantity)
-    {
-        long now = clock.UtcNow.ToUnixTimeMilliseconds();
-        return new ExecutionCommand(
-            now,
-            ExecutionPriority.ExplorationEntry,
-            0,
-            0,
-            record.EntryClientOrderId!,
-            instrumentSlot,
-            OrderSide.Buy,
-            PositionIntent.Open,
-            ExecutionOrderType.Market,
-            ExecutionTimeInForce.Gtc,
-            quantity,
-            null,
-            now,
-            long.MaxValue,
-            "diagnostic-execution")
-        {
-            Notional = record.RequestedNotional
-        };
-    }
-
-    private ExecutionCommand CreateExitCommand(DiagnosticExecutionRecord record, int instrumentSlot)
-    {
-        long now = clock.UtcNow.ToUnixTimeMilliseconds();
-        return new ExecutionCommand(
-            now,
-            ExecutionPriority.NormalExit,
-            0,
-            0,
-            record.ExitClientOrderId!,
-            instrumentSlot,
-            OrderSide.Sell,
-            PositionIntent.Close,
-            ExecutionOrderType.Market,
-            ExecutionTimeInForce.Gtc,
-            record.ExitQuantity,
-            null,
-            now,
-            long.MaxValue,
-            "diagnostic-execution-exit");
-    }
-
-    private ExecutionCommand CreateEmergencyExitCommand(DiagnosticExecutionRecord record, int instrumentSlot)
-    {
-        long now = clock.UtcNow.ToUnixTimeMilliseconds();
-        return new ExecutionCommand(
-            now,
-            ExecutionPriority.EmergencyExit,
-            0,
-            0,
-            record.EmergencyClientOrderId!,
-            instrumentSlot,
-            OrderSide.Sell,
-            PositionIntent.Close,
-            ExecutionOrderType.Market,
-            ExecutionTimeInForce.Gtc,
-            record.EmergencyFlattenQuantity,
-            null,
-            now,
-            long.MaxValue,
-            "diagnostic-emergency-flatten");
     }
 
     private static bool IsDiagnosticOrder(DiagnosticExecutionRecord record, BrokerOrderSnapshot order) =>

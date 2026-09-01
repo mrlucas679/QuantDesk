@@ -1,0 +1,18 @@
+{
+  "artifact_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "as_of_time": "2026-09-01T12:00:00Z",
+  "calibration_status": "Calibrated",
+  "confidence": 0.75,
+  "expert_id": "FIXTURE-001-donchian_breakout",
+  "feature_schema_hash": "db0d751b847c5606cbde333ac1a904907dcaf0c8bde6a7aa270c74bf619276bd",
+  "forecast_family": "directional_return_bps",
+  "horizon_minutes": 60,
+  "instrument": "BTC/USD",
+  "model_id": "FIXTURE-001-donchian_breakout",
+  "model_version": "v1",
+  "point_forecast": 42.0,
+  "prediction_interval": null,
+  "reason_code": null,
+  "status": "Valid",
+  "support_domain_status": "InDomain"
+}
