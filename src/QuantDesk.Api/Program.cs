@@ -153,11 +153,35 @@ builder.Services.AddSingleton<IRealisedCostSource>(services =>
 // charge and a fee the model has never heard of still cannot be traded through.
 builder.Services.AddSingleton<ICostModel>(services =>
 {
-    CryptoFeeSchedule fees = services.GetRequiredService<CryptoFeeSchedule>();
-    var modelled = new CryptoCostModel(
-        new BasisPoints((double)(fees.TakerBps * 2m)), new BasisPoints(10));
+    AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
+    ICostModel modelled = services.GetRequiredService<OpportunityRouter>()
+        .TryRoute(configured.Symbol, out OpportunityRoute? route, out _) && route is not null
+        ? BuildModelledCost(route)
+        : new CryptoCostModel(
+            new BasisPoints((double)(services.GetRequiredService<CryptoFeeSchedule>().TakerBps * 2m)),
+            new BasisPoints(10));
+
     return new MeasuredCostFloor(modelled, services.GetRequiredService<IRealisedCostSource>());
 });
+
+// The modelled cost for the instrument the lane actually trades.
+//
+// This was built unconditionally from the crypto fee schedule, so an equity lane had its
+// actionability check charged Alpaca's ~50 bps crypto taker fee against an instrument that pays
+// about one. Between that and the research gate's crypto hurdle, a profitable SPY move was being
+// refused twice over by numbers belonging to a different asset class.
+static ICostModel BuildModelledCost(OpportunityRoute route) => route.AssetClass switch
+{
+    TradedAssetClass.UsEquity => new EquityCostModel(
+        new BasisPoints((double)route.Costs.RoundTripFeeBps),
+        new BasisPoints((double)route.Costs.SlippageAllowanceBps)),
+    TradedAssetClass.UsEquityOption => new OptionCostModel(
+        new BasisPoints((double)route.Costs.RoundTripFeeBps),
+        new BasisPoints((double)route.Costs.SlippageAllowanceBps)),
+    _ => new CryptoCostModel(
+        new BasisPoints((double)route.Costs.RoundTripFeeBps),
+        new BasisPoints((double)route.Costs.SlippageAllowanceBps)),
+};
 builder.Services.AddSingleton(new ActionabilityGate(0.01, new Usd(0.01m)));
 builder.Services.AddSingleton(services => new RiskGovernor(
     RiskLimitOptions.FromEnvironment(

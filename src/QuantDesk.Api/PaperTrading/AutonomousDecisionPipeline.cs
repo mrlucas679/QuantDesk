@@ -39,6 +39,16 @@ public sealed class AutonomousDecisionPipeline(
     IRuntimeClock clock,
     ILogger<AutonomousDecisionPipeline> logger)
 {
+    /// <summary>
+    /// What an unverified experimental candidate is called.
+    ///
+    /// Named for the mechanism rather than the venue. It used to default to
+    /// "crypto-long-momentum-v1" whatever was being traded, so an equity position was recorded,
+    /// attributed, and reconciled under a crypto strategy name -- harmless to execution and
+    /// actively misleading to anyone reading the audit trail afterwards.
+    /// </summary>
+    private const string DefaultStrategyFamily = "directional-long-momentum-v1";
+
     private const int MediumTrendExpertId = 14;
     private const int ShortMomentumExpertId = 15;
 
@@ -148,11 +158,11 @@ public sealed class AutonomousDecisionPipeline(
             ? compiler.Compile(
                 bundle, market, portfolio,
                 effectiveCapabilities,
-                nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1", candidates)
+                nowTicks, verifiedStrategyFamily ?? DefaultStrategyFamily, candidates)
             : compiler.Compile(
                 bundle, market, portfolio,
                 effectiveCapabilities,
-                nowTicks, verifiedStrategyFamily ?? "crypto-long-momentum-v1",
+                nowTicks, verifiedStrategyFamily ?? DefaultStrategyFamily,
                 verifiedStrategyDefinition, candidates);
         if (count == 0) return Reject("NoOpportunity", committeeDecision, market);
 

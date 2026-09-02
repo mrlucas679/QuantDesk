@@ -24,7 +24,8 @@ public sealed class AutonomousDecisionPipelineTests
             0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.True(result.Approved);
-        Assert.Equal("crypto-long-momentum-v1", result.Candidate?.StrategyId);
+        // Named for the mechanism, not the venue: the same momentum rule compiles for either asset class.
+        Assert.Equal("directional-long-momentum-v1", result.Candidate?.StrategyId);
         Assert.Equal("crypto-long-managed-v1", result.Candidate?.ManagementPlan.ExitPolicyVersion);
         Assert.True(result.Risk?.Approved);
         Assert.Equal(2, result.Committee?.SupportingExperts.Count);
