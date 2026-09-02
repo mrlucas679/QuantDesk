@@ -220,7 +220,24 @@ builder.Services.AddHostedService<MarketDataRuntimeService>();
 builder.Services.AddHostedService<MicrostructureEvidenceCaptureService>();
 builder.Services.AddHostedService<CryptoQuoteCaptureService>();
 builder.Services.AddHostedService<TradeUpdateRuntimeService>();
-builder.Services.AddHostedService<HistoricalCryptoDatasetService>();
+// The crypto history publisher gets its own client rather than sharing the trading lane's.
+//
+// The same typed client serves the evidence path, where a request must fail fast because a
+// decision made on a stale quote is worse than no decision, and this publisher, which downloads
+// months of bars. One timeout cannot be right for both: at ten seconds the download times out
+// every cycle, and at two minutes a hung quote would stall a symbol's evaluation. So they are
+// separate instances with separate budgets.
+builder.Services.AddHttpClient("bulk-crypto-history", client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
+builder.Services.AddHostedService(services => new HistoricalCryptoDatasetService(
+    new AlpacaLatestCryptoQuoteClient(
+        services.GetRequiredService<IHttpClientFactory>().CreateClient("bulk-crypto-history"),
+        services.GetRequiredService<AlpacaOptions>()),
+    services.GetRequiredService<AutonomousPaperTradingOptions>(),
+    services.GetRequiredService<OpportunityRouter>(),
+    services.GetRequiredService<ILogger<HistoricalCryptoDatasetService>>()));
 builder.Services.AddHostedService<HistoricalEquityDatasetService>();
 builder.Services.AddHttpClient<ResearchReadinessMonitorService>(client =>
 {
@@ -299,9 +316,13 @@ builder.Services.AddHttpClient<QuantDesk.Alpaca.MarketData.AlpacaLatestCryptoQuo
 {
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+// Bulk history, not a quote. This client is used only by the equity dataset publisher, which pulls
+// months of five-minute bars in a single request; fifteen seconds was a quote's budget applied to a
+// download, and it timed out every cycle. The publisher failed closed and logged, so the research
+// plane's datasets quietly stopped refreshing while everything looked healthy.
 builder.Services.AddHttpClient<AlpacaHistoricalStockBarClient>(client =>
 {
-    client.Timeout = TimeSpan.FromSeconds(15);
+    client.Timeout = TimeSpan.FromMinutes(2);
 });
 builder.Services.AddHttpClient<AlpacaHistoricalOptionBarClient>(client =>
 {
