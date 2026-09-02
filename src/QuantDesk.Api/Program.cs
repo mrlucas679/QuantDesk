@@ -76,7 +76,19 @@ builder.Services.AddSingleton(services =>
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 builder.Services.AddSingleton<PaperOrderApplicationService>();
-builder.Services.AddSingleton<CryptoResearchGate>();
+// The gate is asset-class agnostic by design -- it takes a cost profile -- but it was registered
+// without one, so it fell back to the spot-crypto taker default whatever the lane traded. Pointed
+// at SPY that charges an ~80 bps round-trip hurdle against an instrument whose real cost is nearer
+// 9, and SPY does not move 80 bps in an hour: the lane would have abstained with
+// EXPECTED_EDGE_BELOW_COSTS at every cycle, forever, while looking like it was working.
+builder.Services.AddSingleton(services =>
+{
+    AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
+    return services.GetRequiredService<OpportunityRouter>()
+        .TryRoute(configured.Symbol, out OpportunityRoute? route, out _) && route is not null
+        ? new CryptoResearchGate(route.Costs)
+        : new CryptoResearchGate();
+});
 builder.Services.AddSingleton(services =>
     new MarketStateStore(services.GetRequiredService<PaperTradingOptions>().Symbols.Count));
 builder.Services.AddSingleton(new BoundedEventChannel<NormalizedMarketEvent>(8_192));
