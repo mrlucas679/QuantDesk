@@ -27,6 +27,7 @@ public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
     IRealisedCostSource realisedCosts,
+    AlpacaMarketClock marketClock,
     IMarketEvidenceProvider evidenceProvider,
     BrokerExposureAttributor attributor,
     OpportunityRouter router,
@@ -95,6 +96,19 @@ public sealed class AutonomousPaperTradingService(
         }
         catch (Exception exception) when (HostedServiceFaults.IsFault(exception, stoppingToken))
         {
+            // A closed session is not a fault, and reporting it as one hides real ones. Both used to
+            // arrive here identically -- a quote with no two-sided spread -- so an equity lane
+            // logged the same warning and stack trace every cycle for roughly sixteen hours a day,
+            // which is how an operator learns to ignore the line that matters when the feed does
+            // break. The venue is asked rather than the failure's shape inferred from.
+            if (await IsSessionClosedAsync(stoppingToken))
+            {
+                state.Update("abstained", options.Symbol, reason: "MarketClosed");
+                logger.LogDebug(
+                    "Autonomous cycle abstained for {Symbol}: the session is closed.", options.Symbol);
+                return;
+            }
+
             state.Update("abstained", options.Symbol, reason: "EvidenceUnavailable");
             logger.LogWarning(
                 exception,
@@ -457,6 +471,30 @@ public sealed class AutonomousPaperTradingService(
     /// replaced by a modelled figure, because an unmeasured cost is not a licence to assume one --
     /// the gate falls back to the older comparison instead of inventing evidence.
     /// </summary>
+    /// <summary>
+    /// Whether the instrument's session is closed right now.
+    ///
+    /// Only asked for instruments that have a session: crypto trades continuously, so a failure
+    /// there is always worth a warning. A clock call that itself fails answers "not closed", which
+    /// keeps the original evidence failure visible rather than letting a second outage disguise the
+    /// first as a quiet weekend.
+    /// </summary>
+    private async Task<bool> IsSessionClosedAsync(CancellationToken cancellationToken)
+    {
+        if (!router.TryRoute(options.Symbol, out OpportunityRoute? route, out _)) return false;
+        if (route?.AssetClass is TradedAssetClass.SpotCrypto) return false;
+
+        try
+        {
+            return !(await marketClock.GetSessionAsync(cancellationToken)).IsOpen;
+        }
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
+        {
+            logger.LogDebug(exception, "Could not read the venue session clock.");
+            return false;
+        }
+    }
+
     private double? MeasuredCostUpperBoundBps() =>
         realisedCosts.Current()?.UpperConfidenceCostBpsFor(options.OrderNotional) is { } bps
             ? (double)bps

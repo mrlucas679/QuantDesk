@@ -222,6 +222,10 @@ builder.Services.AddHostedService(services =>
 builder.Services.AddSingleton<MultiLegExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<MultiLegExecutionRecoveryService>());
+builder.Services.AddHttpClient<QuantDesk.Alpaca.MarketData.AlpacaMarketClock>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
 builder.Services.AddHttpClient<QuantDesk.Alpaca.MarketData.AlpacaLatestCryptoQuoteClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);

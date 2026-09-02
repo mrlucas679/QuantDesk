@@ -256,6 +256,9 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new DiagnosticStoreRealisedCostSource(
                 new DiagnosticExecutionStore(_diagnosticStorePath),
                 new SpotExecutionStore(_spotStorePath)),
+            // The session clock is only consulted after an evidence failure, and these tests supply
+            // evidence, so an unreachable one is never reached.
+            new AlpacaMarketClock(new HttpClient(), AlpacaOptionsStub()),
             new StubEvidenceProvider(evidence ?? Evidence(100m, 100.01m, 100m, 104m)),
             attributor,
             new OpportunityRouter(), coordinator, spotLifecycle,
@@ -265,6 +268,14 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             NullLogger<AutonomousPaperTradingService>.Instance);
         return (service, state, mode);
     }
+
+    private static QuantDesk.Alpaca.Configuration.AlpacaOptions AlpacaOptionsStub() => new()
+    {
+        BaseUrl = new Uri("https://paper-api.alpaca.markets/"),
+        DataBaseUrl = new Uri("https://data.alpaca.markets/"),
+        KeyId = "test",
+        SecretKey = "test",
+    };
 
     private static CapabilityReport Capabilities(bool equity = true, bool options = true) =>
         new(true, equity, true, options, options ? 3 : null, true, false,
