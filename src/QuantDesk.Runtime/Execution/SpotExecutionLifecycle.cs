@@ -353,7 +353,8 @@ public sealed class SpotExecutionLifecycle(
         MinimumDaysToExpiry: null,
         ProfitTarget: record.ProfitTarget,
         SellableQuantity: sellableQuantity,
-        ExitCostRate: exitCostRate);
+        ExitCostRate: exitCostRate,
+        StrategyId: record.StrategyId);
 
     private SpotExecutionRecord StartHold(SpotExecutionRecord record)
     {

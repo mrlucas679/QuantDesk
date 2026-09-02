@@ -315,7 +315,19 @@ builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInter
     // system. Spot carries no expiry and the rule correctly ignores it.
     new ExpiryHoldInterrupt(services.GetRequiredService<IRuntimeClock>(), minimumDaysToExpiry: 2),
     new AdverseLossHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>()),
-    new ProfitTargetHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>())));
+    new ProfitTargetHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>()),
+    // The rule that opened the position is no longer one the system would open it with. The
+    // management plan has always said ExitOnThesisInvalidation and ExitEngine has always
+    // implemented it; no live position ever consulted either, so a stood-down thesis ran out its
+    // timer regardless. On 2026-09-02 every rule in both books became a known loser at 16:22Z
+    // while a position opened at 11:36Z under one of them was still held.
+    new ThesisInvalidationHoldInterrupt(symbol =>
+        services.GetRequiredService<OpportunityRouter>()
+                .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
+            ? [.. SignalStrategies
+                .Tradable(route.AssetClass, services.GetRequiredService<ShadowSignalLog>().Summarise())
+                .Select(strategy => strategy.Id)]
+            : [])));
 
 builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     services.GetRequiredService<IBrokerExecutionGateway>(),

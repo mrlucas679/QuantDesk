@@ -38,7 +38,8 @@ public readonly record struct HeldPosition(
     int? MinimumDaysToExpiry = null,
     decimal ProfitTarget = 0m,
     decimal? SellableQuantity = null,
-    decimal ExitCostRate = 0m)
+    decimal ExitCostRate = 0m,
+    string? StrategyId = null)
 {
     /// <summary>
     /// What closing this position would actually realise at <paramref name="mid"/>.
