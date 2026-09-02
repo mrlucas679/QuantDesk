@@ -20,7 +20,8 @@ public sealed class SpotExecutionLifecycle(
     SpotExecutionStore store,
     IRuntimeClock clock,
     TimeSpan brokerSubmitTimeout,
-    IHoldInterrupt? holdInterrupt = null)
+    IHoldInterrupt? holdInterrupt = null,
+    IHeldPositionMarker? referencePrices = null)
 {
     /// <summary>
     /// Persists the reservation. Nothing reaches the broker until this returns true, so an
@@ -36,7 +37,9 @@ public sealed class SpotExecutionLifecycle(
         TimeSpan maximumHoldingPeriod,
         decimal? entryLimitPrice = null,
         decimal? exitLimitPrice = null,
-        PositionOwnership? ownership = null)
+        PositionOwnership? ownership = null,
+        decimal? entryReferencePrice = null,
+        decimal? accountEquityBefore = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -72,7 +75,9 @@ public sealed class SpotExecutionLifecycle(
             MaximumHoldingPeriod = maximumHoldingPeriod,
             EntryLimitPrice = entryLimitPrice,
             ExitLimitPrice = exitLimitPrice,
-            Ownership = ownership
+            Ownership = ownership,
+            EntryReferencePrice = entryReferencePrice,
+            AccountEquityBefore = accountEquityBefore
         });
     }
 
@@ -385,11 +390,18 @@ public sealed class SpotExecutionLifecycle(
             return stillOpen;
         }
 
+        // Read once, here, because this is the only moment the account is known to be flat for this
+        // execution. Taken earlier it would still carry the position's mark; taken later another
+        // execution may have moved it, and the difference would be attributed to this trip.
+        BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
+
         SpotExecutionRecord complete = record with
         {
             State = SpotExecutionState.Complete,
             ReconciledAt = clock.UtcNow,
-            CompletedAt = clock.UtcNow
+            CompletedAt = clock.UtcNow,
+            AccountEquityAfter = account?.Equity ?? record.AccountEquityAfter,
+            ExitReferencePrice = record.ExitReferencePrice ?? referencePrices?.CurrentMid(record.Symbol)
         };
         store.Update(complete);
         return complete;

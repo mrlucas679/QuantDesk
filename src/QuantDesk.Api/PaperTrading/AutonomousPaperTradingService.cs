@@ -296,10 +296,19 @@ public sealed class AutonomousPaperTradingService(
             ? risk.RequiredRiskReservation.Value
             : options.OrderNotional;
 
+        // The decision price and the opening equity, captured before anything reaches the broker.
+        // Without them this round trip can never say what it cost: implementation shortfall needs a
+        // decision price to measure against, and only account equity sees the venue's separate USD
+        // cash charge. Every earlier round trip is unmeasurable for exactly this reason.
+        decimal referencePrice = (evidence.Bid + evidence.Ask) / 2m;
+        BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
+
         if (!spotExecution.TryReserve(
                 executionId, candidate.StrategyId, options.Symbol, slot, quantity,
                 definedMaximumLoss, candidate.ManagementPlan.MaximumHoldingPeriod,
-                ownership: ownership))
+                ownership: ownership,
+                entryReferencePrice: referencePrice,
+                accountEquityBefore: account?.Equity))
         {
             state.Update("abstained", options.Symbol, reason: "ReservationRejected");
             return;

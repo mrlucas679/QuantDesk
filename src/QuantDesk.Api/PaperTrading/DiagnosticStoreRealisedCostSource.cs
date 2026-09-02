@@ -12,17 +12,22 @@ namespace QuantDesk.Api.PaperTrading;
 /// the fill price nor the filled quantity, so a cost derived from fills is not merely less precise —
 /// it is systematically low, which is the error the measurement exists to correct.
 ///
-/// The autonomous lane's own spot records deliberately cannot contribute. They carry fills but no
-/// equity readings, so they cannot testify to what a round trip cost. Feeding them in would quietly
-/// reintroduce the fill-derived understatement under the name of a measurement.
+/// The autonomous lane's own completed round trips contribute alongside it, and have to: if that
+/// lane is the one actually trading, a dataset drawn only from the diagnostic lane stops growing
+/// the moment the diagnostic lane stops running, and the cost gating every decision goes stale
+/// while still looking measured. Its records only began carrying the decision price and the equity
+/// readings recently; older ones are skipped rather than approximated from their fills, which would
+/// see the fee alone and report roughly half the true cost.
 /// </summary>
-public sealed class DiagnosticStoreRealisedCostSource(DiagnosticExecutionStore store)
-    : IRealisedCostSource
+public sealed class DiagnosticStoreRealisedCostSource(
+    DiagnosticExecutionStore store,
+    SpotExecutionStore spotStore) : IRealisedCostSource
 {
     public RealisedCostContract? Current() => RealisedCostEstimator.Estimate(
         store.ListCompleted(),
         datasetId: "alpaca-paper-realised-cost",
         datasetVersion: "live",
         assetClass: "crypto",
-        venue: "alpaca");
+        venue: "alpaca",
+        spotStore.ListCompleted());
 }

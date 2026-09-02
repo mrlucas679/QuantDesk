@@ -116,7 +116,9 @@ builder.Services.AddSingleton(services =>
 });
 builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
 builder.Services.AddSingleton<IRealisedCostSource>(services =>
-    new DiagnosticStoreRealisedCostSource(services.GetRequiredService<DiagnosticExecutionStore>()));
+    new DiagnosticStoreRealisedCostSource(
+        services.GetRequiredService<DiagnosticExecutionStore>(),
+        services.GetRequiredService<SpotExecutionStore>()));
 
 // The cost the decision actually gets charged.
 //
@@ -209,7 +211,10 @@ builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     services.GetRequiredService<SpotExecutionStore>(),
     services.GetRequiredService<IRuntimeClock>(),
     services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout,
-    services.GetRequiredService<IHoldInterrupt>()));
+    services.GetRequiredService<IHoldInterrupt>(),
+    // Supplies the closing decision price when an execution reconciles flat, so the lane can
+    // measure what its own round trip cost instead of depending on another lane to do it.
+    services.GetRequiredService<IHeldPositionMarker>()));
 builder.Services.AddHostedService<RealisedCostPublisherService>();
 builder.Services.AddSingleton<SpotExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>

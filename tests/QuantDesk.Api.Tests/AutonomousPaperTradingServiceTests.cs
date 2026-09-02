@@ -253,7 +253,9 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
 
         var service = new AutonomousPaperTradingService(
             broker, resolver,
-            new DiagnosticStoreRealisedCostSource(new DiagnosticExecutionStore(_diagnosticStorePath)),
+            new DiagnosticStoreRealisedCostSource(
+                new DiagnosticExecutionStore(_diagnosticStorePath),
+                new SpotExecutionStore(_spotStorePath)),
             new StubEvidenceProvider(evidence ?? Evidence(100m, 100.01m, 100m, 104m)),
             attributor,
             new OpportunityRouter(), coordinator, spotLifecycle,

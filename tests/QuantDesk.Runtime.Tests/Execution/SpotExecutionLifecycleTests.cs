@@ -358,13 +358,79 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
             throw new InvalidOperationException("a broken interrupt must not strand a position");
     }
 
+    [Fact]
+    public async Task ACompletedRoundTripCanSayWhatItCost()
+    {
+        // The chain this closes. The cost dataset that gates every decision was derived only from
+        // the diagnostic lane, and its records never carried a decision price -- 0 of 68 -- so the
+        // estimator could never produce a dataset at all. If the autonomous lane is the one
+        // trading, it has to measure its own round trips or the figure gating them goes stale while
+        // still looking measured.
+        var broker = new FakeBroker { AccountEquity = 100_000m };
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: new StubMarker(101m));
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        await ReachHoldingAsync(lifecycle, broker);
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit due
+        broker.Order = null;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // submit exit
+        broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 1m, 100.9m);
+        broker.AccountEquity = 100_000.60m;                                  // 40 cents of cost
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit filled
+        SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Complete, done.State);
+        Assert.Equal(100m, done.EntryReferencePrice);
+        Assert.Equal(101m, done.ExitReferencePrice);
+        Assert.Equal(100_000m, done.AccountEquityBefore);
+        Assert.Equal(100_000.60m, done.AccountEquityAfter);
+
+        // A frictionless round trip at the decision prices earns 1.00; the account gained 0.60, so
+        // the trip cost 0.40 on 100 of notional -- 40 bps. Fills alone would never show that.
+        Assert.Equal(0.60m, done.RealisedAccountPnl);
+    }
+
+    [Fact]
+    public async Task ARoundTripWithNoDecisionPriceStillCompletesAndSimplyCannotTestify()
+    {
+        // Backward compatible. Records written before this capture existed have no reference price
+        // and are skipped by the estimator rather than approximated from their fills, which would
+        // see only the fee and report roughly half the true cost.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        Reserve(lifecycle);
+        await ReachHoldingAsync(lifecycle, broker);
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        broker.Order = null;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 1m, 101m);
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Complete, done.State);
+        Assert.Null(done.EntryReferencePrice);
+    }
+
+    private sealed class StubMarker(decimal? mid) : IHeldPositionMarker
+    {
+        public decimal? CurrentMid(string symbol) => mid;
+    }
+
     private bool Reserve(SpotExecutionLifecycle lifecycle) => lifecycle.TryReserve(
         ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15));
 
     private SpotExecutionStore Store() => new(_path);
 
-    private SpotExecutionLifecycle Build(FakeBroker broker, IHoldInterrupt? interrupt = null) =>
-        new(broker, Store(), _clock, TimeSpan.FromSeconds(30), interrupt);
+    private SpotExecutionLifecycle Build(
+        FakeBroker broker,
+        IHoldInterrupt? interrupt = null,
+        IHeldPositionMarker? referencePrices = null) =>
+        new(broker, Store(), _clock, TimeSpan.FromSeconds(30), interrupt, referencePrices);
 
     private static BrokerOrderSnapshot Filled(string clientOrderId, decimal quantity, decimal price) =>
         new("broker-1", clientOrderId, "filled", quantity, price);
@@ -394,6 +460,14 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         public IReadOnlyList<BrokerPositionSnapshot> Positions { get; init; } = [];
         public bool IsPaper { get; init; } = true;
         public bool ThrowOnSubmit { get; init; }
+
+        /// <summary>Account equity the lifecycle reads when a round trip reconciles flat.</summary>
+        public decimal? AccountEquity { get; set; }
+
+        public Task<BrokerAccountSnapshot?> GetAccountAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<BrokerAccountSnapshot?>(AccountEquity is { } equity
+                ? new BrokerAccountSnapshot("acct", "ACTIVE", equity, equity, false, false)
+                : null);
         public bool ExistingOrderAfterThrow { get; init; }
 
         public bool IsPaperEnvironment => IsPaper;

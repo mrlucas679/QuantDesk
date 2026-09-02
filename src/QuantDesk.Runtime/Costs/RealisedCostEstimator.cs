@@ -37,11 +37,20 @@ public static class RealisedCostEstimator
         string datasetId,
         string datasetVersion,
         string assetClass,
-        string venue)
+        string venue,
+        IReadOnlyList<SpotExecutionRecord>? spotRecords = null)
     {
         ArgumentNullException.ThrowIfNull(records);
 
-        List<CostObservation> observations = [.. records.Select(TryMeasure).OfType<CostObservation>()];
+        // Both lanes contribute, because both pay the same venue the same way. Reading only the
+        // diagnostic lane was a real limitation rather than a scruple: if the autonomous lane is the
+        // one actually trading, a dataset that ignores its round trips stops growing the moment the
+        // diagnostic lane stops running, and the cost that gates every decision quietly goes stale.
+        List<CostObservation> observations =
+        [
+            .. records.Select(TryMeasure).OfType<CostObservation>(),
+            .. (spotRecords ?? []).Select(TryMeasureSpot).OfType<CostObservation>(),
+        ];
         if (observations.Count == 0) return null;
 
         List<RealisedCostBucket> buckets = [];
@@ -126,6 +135,34 @@ public static class RealisedCostEstimator
             recordId,
             notional,
             cost / notional * 10_000m,
+            record.ExecutionMode,
+            completedAt);
+    }
+
+    /// <summary>
+    /// One autonomous spot round trip's all-in cost, or null when the trip cannot testify.
+    ///
+    /// The same measure and the same refusals as the diagnostic lane: a decision price to measure
+    /// shortfall against, and account equity on both sides, or nothing. A record that predates this
+    /// capture has no reference price and is skipped rather than approximated from its fills, which
+    /// would read the fee alone and report roughly half the true cost.
+    /// </summary>
+    private static CostObservation? TryMeasureSpot(SpotExecutionRecord record)
+    {
+        if (record.State is not SpotExecutionState.Complete) return null;
+        if (record.RealisedAccountPnl is not { } realised) return null;
+        if (record.EntryReferencePrice is not { } entryReference || entryReference <= 0m) return null;
+        if (record.ExitReferencePrice is not { } exitReference) return null;
+        if (record.CompletedAt is not { } completedAt) return null;
+        if (record.EntryFilledQuantity <= 0m) return null;
+
+        decimal notional = entryReference * record.EntryFilledQuantity;
+        decimal frictionless = (exitReference - entryReference) * record.EntryFilledQuantity;
+
+        return new CostObservation(
+            record.EntryClientOrderId,
+            notional,
+            (frictionless - realised) / notional * 10_000m,
             record.ExecutionMode,
             completedAt);
     }

@@ -87,6 +87,39 @@ public sealed record SpotExecutionRecord(
     /// <summary>Why the hold ended before its timer, or null when the timer ended it.</summary>
     public string? EarlyExitReason { get; init; }
 
+    /// <summary>
+    /// The quote mid when this opportunity was decided, and again when it reconciled flat.
+    ///
+    /// These are the decision prices, and without them a round trip cannot say what it cost. The
+    /// measure that matters is implementation shortfall -- what a frictionless execution at the
+    /// decision price would have earned, less what the account actually earned -- and every term of
+    /// it except these two was already recorded.
+    ///
+    /// Fill prices are not a substitute. They already have the spread and the slippage baked in, so
+    /// a cost derived from them sees only the fee and reports roughly half the true figure.
+    /// </summary>
+    public decimal? EntryReferencePrice { get; init; }
+
+    /// <inheritdoc cref="EntryReferencePrice"/>
+    public decimal? ExitReferencePrice { get; init; }
+
+    /// <summary>Account equity immediately before the entry was reserved.</summary>
+    public decimal? AccountEquityBefore { get; init; }
+
+    /// <summary>Account equity once this execution reconciled flat.</summary>
+    public decimal? AccountEquityAfter { get; init; }
+
+    /// <summary>
+    /// What the round trip actually did to the account.
+    ///
+    /// The only figure here that owes nothing to a fee model. Alpaca charges a "Coin Pair
+    /// Transaction Fee (USD)" that appears in neither the fill price nor the filled quantity, so a
+    /// cost derived from fills is not merely less precise -- it is systematically low. Measured
+    /// across 59 live round trips, fills reported 36 bps where the account had lost 68.
+    /// </summary>
+    public decimal? RealisedAccountPnl =>
+        AccountEquityBefore is { } before && AccountEquityAfter is { } after ? after - before : null;
+
     /// <summary>Quantity the application believes it still holds.</summary>
     public decimal InternalOpenQuantity => Math.Max(0m, EntryFilledQuantity - ExitFilledQuantity);
 
@@ -218,6 +251,21 @@ public sealed class SpotExecutionStore(string path)
     public IReadOnlyList<SpotExecutionRecord> ListNonterminal()
     {
         lock (_gate) return [.. ReadUnsafe().Values.Where(record => !record.IsTerminal)];
+    }
+
+    /// <summary>
+    /// Every round trip that completed cleanly, for measuring what trading actually cost.
+    ///
+    /// Only Complete, and deliberately not the failure states. A trip that was rejected, cancelled,
+    /// or emergency-flattened either paid no cost or paid an exceptional one, and averaging those
+    /// into a cost curve would describe a kind of trading this system does not do on purpose.
+    /// </summary>
+    public IReadOnlyList<SpotExecutionRecord> ListCompleted()
+    {
+        lock (_gate)
+        {
+            return [.. ReadUnsafe().Values.Where(record => record.State is SpotExecutionState.Complete)];
+        }
     }
 
     public IReadOnlyList<SpotExecutionRecord> ListAll()
