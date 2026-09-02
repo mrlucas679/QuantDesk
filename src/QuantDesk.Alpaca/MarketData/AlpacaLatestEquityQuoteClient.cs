@@ -20,8 +20,21 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
     private const int RequiredCloses = 13;
 
     /// <summary>Bars requested, and bars retained for indicator warm-up.</summary>
-    private const int BarLimit = 400;
-    private const int RetainedBars = 240;
+    /// <summary>
+    /// Bars requested per call, and bars kept.
+    ///
+    /// Sized for the time-of-day volume baseline, which needs five prior days at the same time of
+    /// day and had none: the window was thirty hours and the retention 240 bars, so every
+    /// time-of-day bucket held one observation and the feature was NaN for every bar in production
+    /// while the sixty-day research scan computed it happily.
+    ///
+    /// A regular equity session is six and a half hours, so a week of five-minute bars is about
+    /// 470 -- one request, and roughly 30 KB of doubles per symbol. Crypto is not widened to match,
+    /// because there the feed reports no volume on 65.6% of bars and no amount of history fixes
+    /// that; the coverage check refuses those series instead.
+    /// </summary>
+    private const int BarLimit = 1_200;
+    private const int RetainedBars = 800;
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     /// <summary>Gets the current NBBO quote and the recent 5-minute closes for one symbol.</summary>
@@ -75,7 +88,7 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
     private async Task<DirectionalMarketEvidence> GetRecentBarsAsync(
         string symbol, decimal bid, decimal ask, CancellationToken cancellationToken)
     {
-        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-30).ToString("O"));
+        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(-9).ToString("O"));
         string requestUri = options.DataUri("v2/stocks/bars") +
             $"?symbols={Uri.EscapeDataString(symbol)}&timeframe=5Min&start={start}" +
             $"&limit={BarLimit}&sort=asc&feed=iex&adjustment=all";

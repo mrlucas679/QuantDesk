@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Numerics;
+using QuantDesk.Domain.Portfolio;
 using QuantDesk.Domain.Risk;
 using QuantDesk.Domain.Strategies;
 using QuantDesk.Domain.Trading;
@@ -53,18 +54,15 @@ public sealed class ExplorationBudgetTests
     [Fact]
     public void ABudgetDoesNotExcuseAnyOtherLimit()
     {
-        // Exploration buys evidence about a rule, not permission to exceed the risk envelope.
-        RiskLimits tight = FinancialTestData.Limits() with { MaximumOpenPositions = 1 };
-        PortfolioSnapshot full = FinancialTestData.Portfolio() with
-        {
-            Positions = [new PositionSnapshot(0, 1m, 100m, Usd.Zero, Usd.Zero)],
-        };
+        // Exploration buys evidence about a rule, not permission to exceed the risk envelope. The
+        // day's losses still stop the lane, budget or no budget.
+        PortfolioSnapshot drawn = FinancialTestData.Portfolio() with { DailyPnl = new Usd(-5_000m) };
 
-        RiskDecision decision = new RiskGovernor(tight).Evaluate(
+        RiskDecision decision = new RiskGovernor(FinancialTestData.Limits()).Evaluate(
             FinancialTestData.Candidate(),
             new CostEstimate(Usd.Zero, Usd.Zero, new Usd(500m), Usd.Zero, Usd.Zero),
             FinancialTestData.HealthyMarket(),
-            full,
+            drawn,
             brokerHealthy: true,
             portfolioReconciled: true,
             nowTicks: 0,
@@ -72,7 +70,7 @@ public sealed class ExplorationBudgetTests
             explorationBudgetAvailable: true);
 
         Assert.False(decision.Approved);
-        Assert.Equal(RiskReason.PositionLimit, decision.Reason);
+        Assert.Equal(RiskReason.DailyLossLimit, decision.Reason);
     }
 
     [Fact]
