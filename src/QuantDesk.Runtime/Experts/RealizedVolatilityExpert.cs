@@ -34,8 +34,13 @@ namespace QuantDesk.Runtime.Experts;
 /// widen a stop, never a reason to buy or sell. The typed committee keeps the two apart by
 /// construction, and this expert publishes into the volatility family only.
 /// </summary>
-public sealed class RealizedVolatilityExpert
+public sealed class RealizedVolatilityExpert(HarVarianceModel? fitted = null)
 {
+    private readonly HarVarianceModel _fitted = fitted ?? HarVarianceModel.Unfitted();
+
+    /// <summary>True when a validated Python artifact is driving the forecast.</summary>
+    public bool IsFitted => _fitted.IsFitted;
+
     /// <summary>Bars in the short, medium and long HAR components at five-minute sampling.</summary>
     public const int ShortBars = 12;
     public const int MediumBars = 60;
@@ -81,7 +86,12 @@ public sealed class RealizedVolatilityExpert
         if (!double.IsFinite(shortRun) || !double.IsFinite(medium) || !double.IsFinite(longRun))
             return null;
 
-        double expected = (ShortWeight * shortRun) + (MediumWeight * medium) + (LongWeight * longRun);
+        // A fitted artifact if one has been validated, the conventional weights otherwise -- and
+        // never a silent blend of the two. The fallback is the same combination this expert has
+        // always used and is documented as unfitted; what changes with an artifact is that the
+        // coefficients came from data rather than from convention.
+        double expected = _fitted.Predict(shortRun, medium, longRun)
+            ?? (ShortWeight * shortRun) + (MediumWeight * medium) + (LongWeight * longRun);
         if (!double.IsFinite(expected) || expected < 0d) return null;
 
         // Dispersion across the three components is the honest uncertainty: when short, medium and
@@ -102,8 +112,11 @@ public sealed class RealizedVolatilityExpert
             ExpectedAnnualizedVolatility: Math.Sqrt(Math.Max(expected, 0d) * BarsPerYear),
             ForecastVariance: spread,
 
-            // Unscored, and saying so. QLIKE and MSE against realized variance are what would earn
-            // a number here, and neither has been run.
+            // Unscored until it has been scored, whether or not the coefficients were fitted. A
+            // fitted model is not a calibrated one: the fit says the coefficients came from data,
+            // the calibration would say the resulting forecasts were checked against outcomes, and
+            // only the second is a claim about being right. The scorer now measures exactly that
+            // and its QLIKE is the number that should eventually replace this.
             CalibrationScore: 0.5d);
     }
 
