@@ -83,6 +83,8 @@ builder.Services.AddSingleton(services =>
 });
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
+// Shared across lanes on purpose: correlation is a property of the account, not of a lane.
+builder.Services.AddSingleton<ReturnSeriesCache>();
 builder.Services.AddSingleton<PaperOrderApplicationService>();
 builder.Services.AddSingleton(services =>
     new MarketStateStore(services.GetRequiredService<PaperTradingOptions>().Symbols.Count));
@@ -205,6 +207,7 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<RuntimeModeState>(),
         services.GetRequiredService<AutonomousTradingState>(),
         services.GetRequiredService<IRuntimeClock>(),
+        services.GetRequiredService<ReturnSeriesCache>(),
         services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
 }
 builder.Services.AddSingleton<AutonomousTradingState>();

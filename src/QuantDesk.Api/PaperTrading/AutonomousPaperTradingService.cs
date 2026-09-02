@@ -20,6 +20,7 @@ using QuantDesk.Runtime.Portfolio;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Reconciliation;
 using QuantDesk.Runtime.Persistence;
+using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.Reservations;
 using QuantDesk.Runtime.Time;
 
@@ -46,6 +47,7 @@ public sealed class AutonomousPaperTradingService(
     RuntimeModeState runtimeMode,
     AutonomousTradingState state,
     IRuntimeClock clock,
+    ReturnSeriesCache returnSeries,
     ILogger<AutonomousPaperTradingService> logger) : BackgroundService
 {
     private static readonly TimeSpan PositionMonitorInterval = TimeSpan.FromSeconds(5);
@@ -292,6 +294,10 @@ public sealed class AutonomousPaperTradingService(
 
         PortfolioSnapshot initial = EmptyPortfolio(account);
         DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
+
+        // Kept for the correlation gate below. Costs no extra market-data call: these are the bars
+        // the decision is about to be made from anyway.
+        returnSeries.Record(route.Symbol, evidence.Closes);
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, route, evidence, initial, true, true, capabilities,
             // What each mechanism already holds, so one cannot monopolise the universe and leave
@@ -398,6 +404,28 @@ public sealed class AutonomousPaperTradingService(
         // cash charge. Every earlier round trip is unmeasurable for exactly this reason.
         decimal referencePrice = (evidence.Bid + evidence.Ask) / 2m;
         BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
+
+        // Would this position add exposure without adding a bet?
+        //
+        // The risk envelope caps notional, stress loss, daily and campaign loss, position count and
+        // dollar delta -- and nothing at all caps correlation, so the governor sized every position
+        // as though it were independent of the others. On 2026-09-02 the lane held seven crypto
+        // symbols at 0.709 mean pairwise correlation: about 1.33 independent bets carried as if
+        // they were seven, with every configured limit satisfied the whole time.
+        CorrelationBreadthDecision breadth = CorrelationBreadthGate.Evaluate(
+            symbol,
+            HeldSymbols(),
+            returnSeries.Snapshot(),
+            options.OrderNotional,
+            RiskLimitOptions.MaximumCorrelatedExposure(options.OrderNotional));
+        if (!breadth.Allowed)
+        {
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: breadth.Reason);
+            logger.LogInformation(
+                "Autonomous entry refused for {Symbol}: {Reason}. Nominal {Nominal:0.00}, correlated {Correlated:0.00}.",
+                symbol, breadth.Reason, breadth.NominalExposure, breadth.CorrelatedExposure);
+            return;
+        }
 
         // The gain at which this position has earned what its own thesis predicted.
         //
@@ -606,6 +634,21 @@ public sealed class AutonomousPaperTradingService(
             logger.LogDebug(exception, "Could not refresh the quote for held {Symbol}.", route.Symbol);
         }
     }
+
+    /// <summary>
+    /// Symbols the account currently holds through this system, from the durable records.
+    ///
+    /// Every lane's positions, not this lane's: correlation is a property of the account. Read from
+    /// the store for the same reason the mechanism counts are -- it survives a restart, and it is
+    /// the same history the evidence will be computed from.
+    /// </summary>
+    private IReadOnlyList<string> HeldSymbols() =>
+    [
+        .. spotStore.ListNonterminal()
+            .Where(record => record.EntryFilledQuantity > 0m)
+            .Select(record => record.Symbol)
+            .Distinct(StringComparer.OrdinalIgnoreCase),
+    ];
 
     private decimal HeldQuantity(string brokerSymbol) =>
         spotStore.ListNonterminal()

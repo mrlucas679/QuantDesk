@@ -52,6 +52,26 @@ public static class RiskLimitOptions
     /// <summary>Volatility exposure cap per vol point, sized the same way as gamma.</summary>
     private const double DefaultDollarVegaMultiple = 1.0;
 
+    /// <summary>
+    /// Cap on the book's correlation-adjusted exposure.
+    ///
+    /// Three times one order's notional permits about nine genuinely independent positions, or
+    /// about three that move as one. The distinction is the entire point: a position count treats
+    /// those two books as identical, and on 2026-09-02 the account carried seven crypto positions
+    /// worth 1,213 dollars of correlated exposure while every configured limit read as satisfied.
+    ///
+    /// Kept here rather than in RiskLimits because it is evaluated at the lane's entry gate, where
+    /// the candidate's return history is available. Folding it into the governor's marginal-risk
+    /// evaluation is the better home and the next step.
+    /// </summary>
+    private const decimal DefaultCorrelatedExposureMultiple = 3.0m;
+
+    /// <inheritdoc cref="DefaultCorrelatedExposureMultiple"/>
+    public static decimal MaximumCorrelatedExposure(decimal orderNotional) =>
+        Positive(
+            "QUANTDESK_RISK_MAX_CORRELATED_EXPOSURE",
+            orderNotional * DefaultCorrelatedExposureMultiple);
+
     public static RiskLimits FromEnvironment(decimal orderNotional)
     {
         if (orderNotional <= 0)
