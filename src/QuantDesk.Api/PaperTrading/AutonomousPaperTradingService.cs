@@ -304,6 +304,15 @@ public sealed class AutonomousPaperTradingService(
         // the bars the decision is about to be made from anyway.
         returnSeries.Record(route.Symbol, evidence.Closes);
 
+        // Read the resting book before deciding, not only while holding.
+        //
+        // The refresh path that first carried this runs for symbols the account already holds, so
+        // depth was being read for every position except the one about to be opened -- exactly
+        // backwards for a signal whose whole purpose is to say something about entering. One extra
+        // call per instrument per cycle, on the same cadence as the quote it accompanies.
+        long bookEventNs = clock.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
+        await RefreshOrderBookAsync(route, slot, bookEventNs, cancellationToken);
+
         // Close out any shadow signal whose holding period has ended, using the quote this cycle
         // already fetched. Done here rather than on a timer of its own so that a signal is scored
         // against a price the lane genuinely saw, not one read at an unrelated moment.
