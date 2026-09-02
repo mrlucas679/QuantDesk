@@ -186,6 +186,15 @@ public sealed class AutonomousDecisionPipeline(
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
+                // Failed, not abstained. The two look identical from outside -- neither produces a
+                // signal -- but one is a market observation and the other is a broken rule, and a
+                // rule that throws every time would accumulate no evidence for as long as it ran
+                // while appearing to be evaluated. That is the exact failure shadow exists to
+                // prevent: a strategy stood down for want of evidence it was never able to produce.
+                logger.LogWarning(
+                    exception,
+                    "Strategy {Strategy} threw while being evaluated in shadow on {Symbol}.",
+                    strategy.Id, route.Symbol);
                 continue;
             }
 
