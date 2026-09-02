@@ -66,6 +66,22 @@ public static class SignalStrategies
     /// Measured 2026-09-02 on 5-minute bars over ~60 days. The bounds are two-sided 95% intervals
     /// on the mean of non-overlapping trades, net of 68 bps for crypto and 8 bps for equities.
     /// </summary>
+    /// <summary>
+    /// Measured means and bounds below predate the 2026-09-02 indicator corrections.
+    ///
+    /// Four rules now read a different series than the one their figures were measured on: VWAP is
+    /// session-scoped for equities rather than a 48-bar rolling window, the volume anomaly is scored
+    /// against the same time of day on previous days rather than against its own trailing window,
+    /// and the two momentum rules measure an hour and a quarter-hour of time rather than twelve and
+    /// three bars. reversion.vwap.v1, volume.surge-breakout.v1, trend.momentum-dual-horizon.v1 and
+    /// volatility.atr-expansion.v1 are therefore rules whose research no longer describes them.
+    ///
+    /// The numbers are kept rather than blanked because they still bound the families conservatively
+    /// -- every crypto figure is negative by more than its own standard error, and correcting an
+    /// ill-posed feature is not a reason to expect that to reverse. But they are stale, and no rule
+    /// among those four should be described as measured until the scan is re-run against the
+    /// corrected definitions and the corrected 33.7 bps round trip.
+    /// </summary>
     public static IReadOnlyList<SignalStrategy> ForCrypto { get; } =
     [
         Trend("trend.momentum-dual-horizon.v1", -63.3, -70.1, MomentumDualHorizon),
@@ -177,11 +193,25 @@ public static class SignalStrategies
     /// </summary>
     private static bool MomentumDualHorizon(IndicatorSet s, int i)
     {
-        if (i < 12) return false;
-        double medium = ((s.Close[i] / s.Close[i - 12]) - 1) * 10_000;
-        double shortRun = ((s.Close[i] / s.Close[i - 3]) - 1) * 10_000;
-        return medium > 0 && shortRun > 0;
+        // An hour and a quarter of an hour, measured in time rather than in bars.
+        //
+        // Twelve five-minute bars equal an hour only while the feed returns an unbroken sequence.
+        // Across a halt, a dropped bar, or an equity session boundary the two diverge, and the rule
+        // keeps computing a number that now describes a different span than the one it was
+        // calibrated on. The bar counts remain the fallback for a series with no time axis, which
+        // is exactly the behaviour this had before.
+        int medium = s.IndexAtOrBefore(i, MediumHorizon, fallbackBars: 12);
+        int shortRun = s.IndexAtOrBefore(i, ShortHorizon, fallbackBars: 3);
+        if (medium < 0 || shortRun < 0) return false;
+
+        return s.Close[i] > s.Close[medium] && s.Close[i] > s.Close[shortRun];
     }
+
+    /// <summary>The spans the dual-horizon rule and the cost gate both measure over.</summary>
+    private static readonly TimeSpan MediumHorizon = TimeSpan.FromMinutes(60);
+
+    /// <inheritdoc cref="MediumHorizon"/>
+    private static readonly TimeSpan ShortHorizon = TimeSpan.FromMinutes(15);
 
     private static bool EmaCross(IndicatorSet s, int i) =>
         i > 0 && s.IsReadyAt(i, s.Ema12, s.Ema48) && s.IsReadyAt(i - 1, s.Ema12, s.Ema48)
@@ -237,7 +267,9 @@ public static class SignalStrategies
     private static bool AtrExpansionTrend(IndicatorSet s, int i)
     {
         if (i < 14 || !s.IsReadyAt(i, s.Atr14, s.Ema48) || !s.IsReadyAt(i - 1, s.Atr14)) return false;
-        double medium = ((s.Close[i] / s.Close[i - 12]) - 1) * 10_000;
+        int mediumIndex = s.IndexAtOrBefore(i, MediumHorizon, fallbackBars: 12);
+        if (mediumIndex < 0) return false;
+        double medium = ((s.Close[i] / s.Close[mediumIndex]) - 1) * 10_000;
         return s.Atr14[i] > s.Atr14[i - 1] && s.Close[i] > s.Ema48[i] && medium > 0;
     }
 

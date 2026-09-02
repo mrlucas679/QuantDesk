@@ -88,6 +88,7 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
             return new DirectionalMarketEvidence(bid, ask, []);
 
         List<decimal> closes = [], highs = [], lows = [], volumes = [];
+        List<DateTimeOffset> timestamps = [];
         bool complete = true;
         foreach (EquityBar bar in bars)
         {
@@ -98,6 +99,7 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
             // closes only, which is an honest description of what arrived.
             if (!TryReadDecimal(bar.Close, out decimal close) || close <= 0) continue;
             closes.Add(close);
+            timestamps.Add(bar.Timestamp);
 
             if (!complete) continue;
             if (!TryReadDecimal(bar.High, out decimal high) || high <= 0 ||
@@ -125,10 +127,11 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
             Highs = Tail(highs),
             Lows = Tail(lows),
             Volumes = Tail(volumes),
+            Timestamps = Tail(timestamps),
         };
     }
 
-    private static IReadOnlyList<decimal> Tail(List<decimal> values) =>
+    private static IReadOnlyList<T> Tail<T>(List<T> values) =>
         values.Count <= RetainedBars ? values : values[^RetainedBars..];
 
     private static string Validate(string symbol)
@@ -177,6 +180,7 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
         [property: JsonPropertyName("bars")] IReadOnlyDictionary<string, IReadOnlyList<EquityBar>>? Bars);
 
     private sealed record EquityBar(
+        [property: JsonPropertyName("t")] DateTimeOffset Timestamp,
         [property: JsonPropertyName("c")] JsonElement Close,
         [property: JsonPropertyName("h")] JsonElement High,
         [property: JsonPropertyName("l")] JsonElement Low,

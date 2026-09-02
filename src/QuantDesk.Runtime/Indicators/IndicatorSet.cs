@@ -51,6 +51,39 @@ public sealed class IndicatorSet
     public double[] ObvSlope12 { get; private init; } = [];
     public double[] VolumeZ48 { get; private init; } = [];
 
+    /// <summary>The instant each bar opened, or empty when the feed supplied no time axis.</summary>
+    public DateTimeOffset[] Timestamps { get; private init; } = [];
+
+    /// <summary>True when session-scoped measures reset on the session rather than on a bar count.</summary>
+    public bool SessionScoped { get; private init; }
+
+    /// <summary>True when every bar carries the instant it opened.</summary>
+    public bool HasTimeAxis => Timestamps.Length == Length && Length > 0;
+
+    /// <summary>
+    /// The index of the most recent bar at or before <paramref name="span"/> before bar
+    /// <paramref name="i"/>, or -1 when the history does not reach back that far.
+    ///
+    /// The replacement for counting bars. "Twelve bars ago" equals "an hour ago" only while the
+    /// feed returns an unbroken five-minute sequence; across a halt, a dropped bar, or an equity
+    /// session boundary the two diverge and the rule silently measures a different span than the
+    /// one it was calibrated on. With no time axis this falls back to the bar count, which is what
+    /// the caller had before and is honest about being an approximation.
+    /// </summary>
+    public int IndexAtOrBefore(int i, TimeSpan span, int fallbackBars)
+    {
+        if (i < 0 || i >= Length) return -1;
+        if (!HasTimeAxis) return i - fallbackBars >= 0 ? i - fallbackBars : -1;
+
+        DateTimeOffset cutoff = Timestamps[i] - span;
+        for (int j = i; j >= 0; j--)
+        {
+            if (Timestamps[j] <= cutoff) return j;
+        }
+
+        return -1;
+    }
+
     /// <summary>
     /// Computes every indicator, or returns null when the series is too short or misaligned.
     ///
@@ -62,7 +95,9 @@ public sealed class IndicatorSet
         IReadOnlyList<decimal> closes,
         IReadOnlyList<decimal> highs,
         IReadOnlyList<decimal> lows,
-        IReadOnlyList<decimal> volumes)
+        IReadOnlyList<decimal> volumes,
+        IReadOnlyList<DateTimeOffset>? timestamps = null,
+        bool sessionScoped = false)
     {
         ArgumentNullException.ThrowIfNull(closes);
         ArgumentNullException.ThrowIfNull(highs);
@@ -78,6 +113,12 @@ public sealed class IndicatorSet
         double[] l = [.. lows.Select(value => (double)value)];
         double[] v = [.. volumes.Select(value => (double)value)];
         if (c.Any(value => !double.IsFinite(value) || value <= 0)) return null;
+
+        // The time axis, when the feed supplied one. Every measure that is defined against a span
+        // of time rather than a count of bars reads it; the rest are unaffected.
+        DateTimeOffset[]? t = timestamps is not null && timestamps.Count == n
+            ? [.. timestamps]
+            : null;
 
         double[] trueRange = TrueRange(h, l, c);
         (double[] macdHistogram, _) = Macd(c);
@@ -105,9 +146,13 @@ public sealed class IndicatorSet
             PlusDi = plus,
             MinusDi = minus,
             DonchianHigh = DonchianHighs(h, 20),
-            Vwap48 = RollingVwap(h, l, c, v, 48),
+            Vwap48 = sessionScoped && t is not null
+                ? SessionVwap(h, l, c, v, t)
+                : RollingVwap(h, l, c, v, 48),
             ObvSlope12 = ObvSlope(c, v, 12),
-            VolumeZ48 = ZScore(v, 48),
+            VolumeZ48 = t is not null ? TimeOfDayVolumeZ(v, t) : ZScore(v, 48),
+            Timestamps = t ?? [],
+            SessionScoped = sessionScoped && t is not null,
         };
     }
 
@@ -336,6 +381,135 @@ public sealed class IndicatorSet
             double highest = double.MinValue;
             for (int j = i - n; j < i; j++) highest = Math.Max(highest, h[j]);
             output[i] = highest;
+        }
+
+        return output;
+    }
+
+    /// <summary>
+    /// VWAP accumulated from the start of each trading session, reset at every session boundary.
+    ///
+    /// The definition VWAP actually has. A rolling window is a different measure wearing the same
+    /// name: it answers "the volume-weighted price of the last N bars", where the real one answers
+    /// "the volume-weighted price so far today" -- which is the number a displacement is judged
+    /// against, and the number every published description of VWAP reversion refers to.
+    ///
+    /// This matters here more than most corrections. reversion.vwap.v1 is the best-scoring equity
+    /// rule in the book at +3.3 bps mean, so it is the rule most likely to be traded on, and its
+    /// figure was measured against a 48-bar rolling window rather than against VWAP.
+    ///
+    /// A session boundary is a gap in the time axis longer than a session's own bars can explain.
+    /// Deriving it from the gaps rather than from a hardcoded 9:30-16:00 keeps the venue's calendar
+    /// authoritative: a half day, a holiday, or an extended-hours bar changes where the boundaries
+    /// fall without changing this code, and the engineering constitution forbids hardcoding the
+    /// session anyway.
+    /// </summary>
+    private static double[] SessionVwap(
+        double[] h, double[] l, double[] c, double[] v, DateTimeOffset[] t)
+    {
+        double[] output = Filled(c.Length);
+        double weighted = 0, volume = 0;
+
+        for (int i = 0; i < c.Length; i++)
+        {
+            if (i > 0 && StartsNewSession(t, i))
+            {
+                weighted = 0;
+                volume = 0;
+            }
+
+            double typical = (h[i] + l[i] + c[i]) / 3.0;
+            weighted += typical * v[i];
+            volume += v[i];
+
+            // No traded volume means no volume-weighted price. Falling back to an unweighted mean
+            // would silently answer a different question.
+            output[i] = volume > 0 ? weighted / volume : double.NaN;
+        }
+
+        return output;
+    }
+
+    /// <summary>
+    /// Whether bar <paramref name="i"/> opens a new session.
+    ///
+    /// Taken as a gap materially larger than the series' own typical spacing. The median spacing is
+    /// the series' natural bar width whatever timeframe it was requested at, so this works on
+    /// five-minute and one-minute bars without being told which it is.
+    /// </summary>
+    private static bool StartsNewSession(DateTimeOffset[] t, int i)
+    {
+        TimeSpan spacing = TypicalSpacing(t);
+        if (spacing <= TimeSpan.Zero) return false;
+
+        // Three times the bar width: wide enough that one dropped bar is not a session boundary,
+        // narrow enough that an overnight break always is.
+        return t[i] - t[i - 1] > spacing * 3;
+    }
+
+    /// <summary>The median gap between consecutive bars, which is the series' own bar width.</summary>
+    private static TimeSpan TypicalSpacing(DateTimeOffset[] t)
+    {
+        if (t.Length < 2) return TimeSpan.Zero;
+
+        long[] gaps = new long[t.Length - 1];
+        for (int i = 1; i < t.Length; i++) gaps[i - 1] = (t[i] - t[i - 1]).Ticks;
+        Array.Sort(gaps);
+        return TimeSpan.FromTicks(gaps[gaps.Length / 2]);
+    }
+
+    /// <summary>
+    /// Volume measured against what this time of day normally does, rather than against itself.
+    ///
+    /// The construction the engineering constitution names as wrong is a volume z-score taken over
+    /// a trailing window of the same series, which is what this used to be. Volume has a strong and
+    /// entirely predictable shape across the day -- the open and the close are busy, the middle is
+    /// not -- so a trailing window scores every open as a surge and every lunchtime as a drought.
+    /// The rule reading it, volume.surge-breakout.v1, has the widest confidence interval in the
+    /// crypto book at -60.1 mean against a -94.2 lower bound, which is what an ill-posed feature
+    /// looks like from the outside.
+    ///
+    /// The baseline is the same time of day on previous days, so the comparison is like for like.
+    /// Where too few prior days exist to form one, the bar is left NaN rather than scored against a
+    /// baseline that is mostly itself: a rule that reads NaN declines, which is the correct answer
+    /// when the question cannot yet be asked.
+    /// </summary>
+    private static double[] TimeOfDayVolumeZ(double[] v, DateTimeOffset[] t)
+    {
+        const int MinimumPriorObservations = 5;
+
+        double[] output = Filled(v.Length);
+
+        // One bucket per bar slot in the day. Taken from the series' own bar width so the comparison
+        // is like for like at whatever timeframe was requested: a wider bucket would lump the busy
+        // open in with the quiet bars after it and reintroduce exactly the averaging this replaces.
+        double bucketMinutes = Math.Max(TypicalSpacing(t).TotalMinutes, 1d);
+
+        Dictionary<int, List<double>> byTimeOfDay = [];
+        for (int i = 0; i < v.Length; i++)
+        {
+            int bucket = (int)(t[i].UtcDateTime.TimeOfDay.TotalMinutes / bucketMinutes);
+            if (!byTimeOfDay.TryGetValue(bucket, out List<double>? prior))
+            {
+                prior = [];
+                byTimeOfDay[bucket] = prior;
+            }
+
+            // Scored against prior observations only. Including the current bar in its own baseline
+            // is the same self-reference in miniature, and it shrinks every extreme toward zero.
+            if (prior.Count >= MinimumPriorObservations)
+            {
+                double mean = 0;
+                foreach (double sample in prior) mean += sample;
+                mean /= prior.Count;
+
+                double variance = 0;
+                foreach (double sample in prior) variance += (sample - mean) * (sample - mean);
+                double deviation = Math.Sqrt(variance / prior.Count);
+                output[i] = deviation > 0 ? (v[i] - mean) / deviation : 0.0;
+            }
+
+            prior.Add(v[i]);
         }
 
         return output;

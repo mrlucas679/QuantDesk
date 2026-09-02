@@ -75,8 +75,16 @@ public sealed class AutonomousDecisionPipeline(
         OpportunityRoute route,
         IReadOnlyDictionary<string, int> openByMechanism)
     {
+        // Session scoping is an asset-class property, not a setting. Crypto has no session to reset
+        // on, so a session-scoped VWAP there would accumulate from whenever the history happens to
+        // begin; equities have one, and VWAP is defined against it.
+        bool sessionScoped = route.AssetClass is not TradedAssetClass.SpotCrypto;
+
         IndicatorSet? indicators = evidence.HasFullBars
-            ? IndicatorSet.Build(evidence.Closes, evidence.Highs, evidence.Lows, evidence.Volumes)
+            ? IndicatorSet.Build(
+                evidence.Closes, evidence.Highs, evidence.Lows, evidence.Volumes,
+                evidence.HasTimestamps ? evidence.Timestamps : null,
+                sessionScoped)
             : null;
 
         // Only strategies not already measured to lose. See SignalStrategies.IsKnownToLose: being
@@ -107,7 +115,9 @@ public sealed class AutonomousDecisionPipeline(
     private static IndicatorSet CloseOnlySet(DirectionalMarketEvidence evidence)
     {
         IReadOnlyList<decimal> zeroVolume = [.. evidence.Closes.Select(_ => 0m)];
-        return IndicatorSet.Build(evidence.Closes, evidence.Closes, evidence.Closes, zeroVolume)
+        return IndicatorSet.Build(
+                evidence.Closes, evidence.Closes, evidence.Closes, zeroVolume,
+                evidence.HasTimestamps ? evidence.Timestamps : null)
             ?? IndicatorSet.Unwarmed(evidence.Closes);
     }
 

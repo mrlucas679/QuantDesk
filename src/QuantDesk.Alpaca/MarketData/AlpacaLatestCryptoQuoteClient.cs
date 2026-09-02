@@ -125,6 +125,7 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         if (bars is null) return new DirectionalMarketEvidence(0m, 0m, []);
 
         List<decimal> closes = [], highs = [], lows = [], volumes = [];
+        List<DateTimeOffset> timestamps = [];
         bool complete = true;
         foreach (CryptoBar bar in bars)
         {
@@ -135,6 +136,7 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
             // closes only, which is an honest description of what arrived.
             if (!TryReadDecimal(bar.Close, out decimal close) || close <= 0) continue;
             closes.Add(close);
+            timestamps.Add(bar.Timestamp);
 
             if (!complete) continue;
             if (!TryReadDecimal(bar.High, out decimal high) || high <= 0 ||
@@ -162,10 +164,11 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
             Highs = Tail(highs),
             Lows = Tail(lows),
             Volumes = Tail(volumes),
+            Timestamps = Tail(timestamps),
         };
     }
 
-    private static IReadOnlyList<decimal> Tail(List<decimal> values) =>
+    private static IReadOnlyList<T> Tail<T>(List<T> values) =>
         values.Count <= RetainedBars ? values : values[^RetainedBars..];
 
     private static string Normalize(string symbol) => symbol.Replace("/", string.Empty, StringComparison.Ordinal);
@@ -223,6 +226,7 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         [property: JsonPropertyName("next_page_token")] string? NextPageToken);
 
     private sealed record CryptoBar(
+        [property: JsonPropertyName("t")] DateTimeOffset Timestamp,
         [property: JsonPropertyName("c")] JsonElement Close,
         [property: JsonPropertyName("h")] JsonElement High,
         [property: JsonPropertyName("l")] JsonElement Low,
