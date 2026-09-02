@@ -149,6 +149,20 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
 
+        // The session, before anything is evaluated.
+        //
+        // This used to be asked only in the catch handler, so it caught a symbol whose quote had
+        // failed and missed one whose data arrived fine. Outside market hours QQQ and DIA returned
+        // perfectly good bars, passed every gate, and sent orders the venue rejected outright --
+        // "ioc orders are only accepted during market hours" -- once per symbol per cycle. Nothing
+        // was lost because nothing filled, but the lane was hammering the broker with orders that
+        // could not be accepted, and reporting the venue's refusal as its own decision.
+        if (await IsSessionClosedAsync(symbol, cancellationToken))
+        {
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "MarketClosed");
+            return;
+        }
+
         if (!symbols.TryResolveBySymbol(symbol, out int slot))
         {
             state.UpdateSymbol(symbol, "abstained", symbol, reason: "SymbolNotMappedToInstrumentSlot");
