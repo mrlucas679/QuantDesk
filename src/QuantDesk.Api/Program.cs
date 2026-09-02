@@ -9,6 +9,7 @@ using QuantDesk.Api.Security;
 using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Forecasts;
+using QuantDesk.Domain.Scoring;
 using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Risk;
@@ -25,6 +26,7 @@ using QuantDesk.Runtime.Options;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Research;
+using QuantDesk.Runtime.Scoring;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
@@ -90,6 +92,16 @@ builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
 // The regime classifier, and the shared place its answer is written and read. Bounded by the
 // traded universe, which is fixed at startup.
 builder.Services.AddSingleton<MarketRegimeExpert>();
+builder.Services.AddSingleton<RealizedVolatilityExpert>();
+// Where forecasts and their outcomes are kept, so the scorers have something to score. Volatility
+// is the family whose loop closes without a trade in between: the expert predicts a variance and
+// the variance that realises is computable from the same bars.
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_FORECAST_OUTCOME_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "forecast-outcomes.json");
+    return new ForecastOutcomeLog(Path.GetFullPath(configured));
+});
 builder.Services.AddSingleton<IndicatorRegimeSource>();
 builder.Services.AddSingleton<IRegimeSource>(services =>
     services.GetRequiredService<IndicatorRegimeSource>());
@@ -535,6 +547,33 @@ app.MapGet("/api/diagnostics/{experimentId}", (
         return Results.Unauthorized();
     DiagnosticExecutionRecord? record = store.Find(experimentId);
     return record is null ? Results.NotFound() : Results.Ok(record);
+});
+app.MapGet("/api/research/expert-scores", (ForecastOutcomeLog outcomes) =>
+{
+    // Each expert judged on its own forecast, never on the trade's profit. Withheld below twelve
+    // independent episodes rather than reported wide, and separated by regime so an expert that is
+    // excellent in a range and useless in stress does not average to mediocre.
+    IReadOnlyList<ExpertForecastScore> scores = outcomes.Scores();
+    return Results.Ok(new
+    {
+        recorded = outcomes.Count,
+        resolved = outcomes.Resolved().Count,
+        minimumIndependentEpisodes = ExpertForecastScorer.MinimumIndependentEpisodes,
+        scores = scores.Select(score => new
+        {
+            expertId = score.ExpertId,
+            family = score.ForecastType.ToString(),
+            regime = score.Regime,
+            metric = score.PrimaryMetric.ToString(),
+            status = score.Status.ToString(),
+            samples = score.SampleCount,
+            independentEpisodes = score.IndependentEpisodeCount,
+            primaryLoss = score.PrimaryLoss,
+            qlike = score.QLike,
+            rmse = score.RootMeanSquaredError,
+            directionalAccuracy = score.DirectionalAccuracy,
+        }),
+    });
 });
 app.MapGet("/api/research/regimes", (IndicatorRegimeSource regimes) =>
 {
