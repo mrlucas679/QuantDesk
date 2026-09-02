@@ -245,7 +245,11 @@ builder.Services.AddHttpClient<ResearchReadinessMonitorService>(client =>
     string configured = Environment.GetEnvironmentVariable("QUANTDESK_RESEARCH_BASE_URL")
         ?? "http://localhost:8000";
     client.BaseAddress = new Uri(configured.TrimEnd('/') + "/");
-    client.Timeout = TimeSpan.FromSeconds(5);
+
+    // Taken from the service so the two cannot drift. A five-second budget against an endpoint
+    // measured at 4.1, 5.0 and 8.5 seconds was writing the readiness ledger from a timeout rather
+    // than from the plane's answer.
+    client.Timeout = ResearchReadinessMonitorService.ProbeTimeout;
 });
 builder.Services.AddHostedService<ResearchReadinessMonitorService>(
     services => services.GetRequiredService<ResearchReadinessMonitorService>());
