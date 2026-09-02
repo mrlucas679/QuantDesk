@@ -65,8 +65,16 @@ public sealed class AutonomousPaperTradingService(
         // starting from zero -- and in every one of them the strategy that fires most often is
         // picked first. The sample tilts toward it while the code still looks like it is
         // balancing, which is the kind of bias that leaves no trace of itself in the result.
+        //
+        // Only records that actually opened a position count. RecordTrade is called on execution
+        // rather than on selection for exactly this reason, and restoring from every record undid
+        // that: six orders the venue rejected out of hours were credited as trades, so ema-cross
+        // carried three trades having never once held anything, and the rotation began pushing the
+        // strategy with the least real evidence to the back of the queue.
         rotation.RestoreFrom(
-            spotStore.ListAll().Select(record => record.StrategyId),
+            spotStore.ListAll()
+                .Where(record => record.EntryFilledQuantity > 0m)
+                .Select(record => record.StrategyId),
             SignalStrategies.ForCrypto.Concat(SignalStrategies.ForEquity).ToArray());
         try
         {

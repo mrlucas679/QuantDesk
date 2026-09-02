@@ -324,3 +324,35 @@ public sealed class StrategyRotationRestoreTests
     private static IndicatorSet Bars() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
 }
+
+/// <summary>
+/// A selection that never became a position is not a trade.
+///
+/// RecordTrade is called on execution rather than on selection precisely so that a candidate the
+/// risk governor or the venue refused does not push the rotation away from a strategy that has
+/// never actually held anything. Restoring from every durable record undid that guarantee.
+/// </summary>
+public sealed class RotationCountsOnlyRealTradesTests
+{
+    [Fact]
+    public void AStrategyCreditedOnlyWithRefusedOrdersIsStillTheLeastTraded()
+    {
+        // The live case: six equity orders the venue rejected out of hours were restored as trades,
+        // and the strategy that had never opened a position was pushed to the back of the queue.
+        var rotation = new StrategyRotation();
+        SignalStrategy refused = Strategy("a.refused.v1", "trend");
+        SignalStrategy traded = Strategy("b.traded.v1", "reversion");
+
+        // Only executions that actually filled are restored -- the refused ones never reach here.
+        rotation.RestoreFrom(["b.traded.v1", "b.traded.v1"], [refused, traded]);
+
+        Assert.Equal("a.refused.v1", rotation.Select([refused, traded], Bars())!.Strategy.Id);
+        Assert.False(rotation.TradeCounts().ContainsKey("a.refused.v1"));
+    }
+
+    private static SignalStrategy Strategy(string id, string mechanism) =>
+        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
+
+    private static IndicatorSet Bars() =>
+        IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
+}
