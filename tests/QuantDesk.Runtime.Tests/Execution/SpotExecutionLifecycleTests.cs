@@ -536,10 +536,12 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task AResidualTooLargeToBeTheFeeIsStillTreatedAsExposure()
+    public async Task ALargeUnexplainedResidualCompletesButSaysSo()
     {
-        // The bound matters as much as the tolerance. Writing off anything larger than the fee is
-        // how a real position gets quietly abandoned.
+        // Broker flat, and more missing than the fee can explain. Looping was never the right
+        // answer -- the account is authoritative about what exists, and repeating a sell for
+        // something that is not there cannot resolve anything. What matters is that the gap is
+        // recorded rather than absorbed, so a genuine discrepancy is visible afterwards.
         var broker = new FakeBroker { AccountEquity = 100_000m };
         SpotExecutionLifecycle lifecycle = Build(broker);
         await ReachHoldingAsync(lifecycle, broker);
@@ -550,10 +552,55 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 0.5m, 101m);
         broker.Positions = [];
-        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         SpotExecutionRecord record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        for (int attempt = 0; attempt < 4 && record.State != SpotExecutionState.Complete; attempt++)
+            record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Complete, record.State);
+        Assert.Contains("CLOSED_OUTSIDE_SYSTEM", record.FailureReason);
+    }
+
+    [Fact]
+    public async Task ABrokerThatStillHoldsThePositionNeverCompletes()
+    {
+        // The safety property that actually matters, and the one unchanged by any of this: while
+        // the account still shows exposure, the round trip is not finished, whatever our own
+        // arithmetic believes.
+        var broker = new FakeBroker { AccountEquity = 100_000m };
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        SpotExecutionRecord record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        for (int attempt = 0; attempt < 4; attempt++)
+            record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
 
         Assert.NotEqual(SpotExecutionState.Complete, record.State);
+    }
+
+    [Fact]
+    public async Task APositionClosedOutsideTheSystemStopsBeingTreatedAsOpen()
+    {
+        // A position can leave without this system selling it: closed by hand in the venue's own
+        // interface, liquidated, or otherwise resolved elsewhere. There was no path for that, so
+        // the record circled -- the exit found nothing to sell and handed to reconciliation,
+        // reconciliation saw internal exposure and sent it back. Six positions sat in that loop,
+        // and their symbols could never have traded again, because the lane reads its own store to
+        // decide whether an instrument is already held.
+        var broker = new FakeBroker { AccountEquity = 100_000m };
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+        broker.Positions = [];                                   // closed by hand at the venue
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        SpotExecutionRecord record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        for (int attempt = 0; attempt < 4 && record.State != SpotExecutionState.Complete; attempt++)
+            record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Complete, record.State);
+        // The discrepancy is recorded, not hidden: our arithmetic said we held something and the
+        // account said otherwise, which is worth seeing afterwards even though the account is right.
+        Assert.Contains("CLOSED_OUTSIDE_SYSTEM", record.FailureReason);
     }
 
     private bool Reserve(SpotExecutionLifecycle lifecycle) => lifecycle.TryReserve(

@@ -479,9 +479,27 @@ public sealed class SpotExecutionLifecycle(
         // The ledger is not rewritten -- the fill quantities are what the venue reported and stay
         // that way. What changes is the reading: a residual this small, against a broker position
         // of zero, is the fee rather than exposure.
-        bool internallyFlat = record.InternalOpenQuantity == 0m ||
-            (brokerQuantity == 0m && record.EntryFilledQuantity > 0m &&
-             record.InternalOpenQuantity <= record.EntryFilledQuantity * MaximumInKindFeeShare);
+        bool withinFee = brokerQuantity == 0m && record.EntryFilledQuantity > 0m &&
+            record.InternalOpenQuantity <= record.EntryFilledQuantity * MaximumInKindFeeShare;
+
+        // The broker is authoritative about what exists.
+        //
+        // A position can leave without this system selling it: closed by hand in the venue's own
+        // interface, liquidated, or otherwise resolved outside the lifecycle. The existing check
+        // catches the opposite case -- a broker position with no internal exposure -- and there was
+        // nothing for this one, so the record simply circled: the exit found nothing to sell and
+        // handed to reconciliation, reconciliation saw internal exposure and sent it back.
+        //
+        // Six positions were in exactly that loop after they were closed by hand, and their symbols
+        // could never have traded again, because the lane reads its own store to decide whether an
+        // instrument is already held.
+        //
+        // The discrepancy is recorded rather than hidden. Our arithmetic said we held something and
+        // the account says otherwise, and that is worth being able to see afterwards even though
+        // the account is right.
+        bool closedElsewhere = brokerQuantity == 0m && record.InternalOpenQuantity > 0m && !withinFee;
+
+        bool internallyFlat = record.InternalOpenQuantity == 0m || withinFee || closedElsewhere;
 
         // Complete only when the broker and the application agree there is nothing left.
         if (brokerQuantity != 0m || !internallyFlat)
@@ -508,6 +526,9 @@ public sealed class SpotExecutionLifecycle(
         SpotExecutionRecord complete = record with
         {
             State = SpotExecutionState.Complete,
+            FailureReason = closedElsewhere
+                ? $"CLOSED_OUTSIDE_SYSTEM:{record.InternalOpenQuantity} unaccounted"
+                : record.FailureReason,
             ReconciledAt = clock.UtcNow,
             CompletedAt = clock.UtcNow,
             AccountEquityAfter = account?.Equity ?? record.AccountEquityAfter,
