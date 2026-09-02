@@ -12,6 +12,7 @@ using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Risk;
 using QuantDesk.Domain.Runtime;
+using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Execution;
@@ -111,8 +112,19 @@ builder.Services.AddSingleton(new ExpertCommittee(0.60, 1));
 builder.Services.AddSingleton(services =>
 {
     AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
+
+    // The lane's own instrument decides which permission is required and which beta the position is
+    // booked against. Assuming crypto meant an equity lane asked the venue for a permission it does
+    // not need and reported its exposure to the risk governor under the wrong factor entirely.
+    TradedAssetClass assetClass =
+        services.GetRequiredService<OpportunityRouter>()
+            .TryRoute(configured.Symbol, out OpportunityRoute? route, out _) && route is not null
+            ? route.AssetClass
+            : TradedAssetClass.SpotCrypto;
+
     return new CryptoDirectionalStrategyCompiler(
-        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration);
+        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration,
+        assetClass);
 });
 builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
 builder.Services.AddSingleton<IRealisedCostSource>(services =>

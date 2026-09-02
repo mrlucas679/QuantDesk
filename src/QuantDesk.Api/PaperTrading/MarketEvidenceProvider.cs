@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Trading;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Domain.Options;
 

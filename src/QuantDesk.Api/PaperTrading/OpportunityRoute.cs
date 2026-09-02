@@ -5,13 +5,6 @@ using QuantDesk.Domain.Trading;
 namespace QuantDesk.Api.PaperTrading;
 
 /// <summary>The asset classes this application is allowed to route an opportunity to.</summary>
-public enum TradedAssetClass
-{
-    SpotCrypto,
-    UsEquity,
-    UsEquityOption
-}
-
 /// <summary>
 /// How an admitted opportunity is priced into an order.
 ///

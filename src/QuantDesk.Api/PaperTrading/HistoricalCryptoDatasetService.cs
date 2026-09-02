@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Persistence;
 using System.Globalization;
 using System.Security.Cryptography;

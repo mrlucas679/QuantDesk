@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Trading;
 using QuantDesk.Api.PaperTrading;
 
 namespace QuantDesk.Api.Tests;
@@ -40,3 +41,4 @@ public sealed class AssetClassRoutingTests
         Assert.False(string.IsNullOrWhiteSpace(reason));
     }
 }
+

@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Trading;
 using System.Text.Json;
 using QuantDesk.Alpaca.MarketData;
 
