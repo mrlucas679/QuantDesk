@@ -33,6 +33,16 @@ public sealed class SpotExecutionLifecycle(
     /// </summary>
     private const decimal MaximumInKindFeeShare = 0.005m;
 
+    /// <summary>
+    /// What closing a spot crypto position costs, as a fraction of the proceeds.
+    ///
+    /// Alpaca's taker fee, charged in kind. Verified from delivered quantities rather than read
+    /// from the schedule: across 62 matched round trips on 2026-09-02 the median retained on an
+    /// entry was 25.0 bps, exactly the published rate. The exit is charged the same way, which is
+    /// why a position sitting on its profit target has not yet earned it.
+    /// </summary>
+    private const decimal ExitCostRate = 0.0025m;
+
 
     /// <summary>
     /// Persists the reservation. Nothing reaches the broker until this returns true, so an
@@ -230,7 +240,10 @@ public sealed class SpotExecutionLifecycle(
     }
 
     /// <summary>Projects a spot record onto the view every early-exit rule reads.</summary>
-    private static HeldPosition HeldPositionView(SpotExecutionRecord record) => new(
+    private static HeldPosition HeldPositionView(
+        SpotExecutionRecord record,
+        decimal? sellableQuantity = null,
+        decimal exitCostRate = 0m) => new(
         record.ExecutionId,
         record.Symbol,
         record.EntryFilledQuantity,
@@ -239,7 +252,9 @@ public sealed class SpotExecutionLifecycle(
         record.Ownership,
         EarliestLegExpiry: null,
         MinimumDaysToExpiry: null,
-        ProfitTarget: record.ProfitTarget);
+        ProfitTarget: record.ProfitTarget,
+        SellableQuantity: sellableQuantity,
+        ExitCostRate: exitCostRate);
 
     private SpotExecutionRecord StartHold(SpotExecutionRecord record)
     {
@@ -269,10 +284,15 @@ public sealed class SpotExecutionLifecycle(
         // Only asked after the position has had time to appear. A fill takes a moment to become a
         // visible position, and treating that gap as a disappearance would abandon every entry the
         // instant it filled.
-        if (record.EntryFilledQuantity > 0m &&
-            record.HoldStartedAt is { } started &&
-            clock.UtcNow - started >= BrokerPositionGracePeriod &&
-            await BrokerHoldsNothingAsync(record, cancellationToken))
+        // One position read, used for both questions: has the account stopped holding this, and how
+        // much of it can actually be sold. Asking twice would double the call for no new answer.
+        decimal? held = record.EntryFilledQuantity > 0m &&
+            record.HoldStartedAt is { } holdStarted &&
+            clock.UtcNow - holdStarted >= BrokerPositionGracePeriod
+            ? await BrokerHeldQuantityAsync(record, cancellationToken)
+            : null;
+
+        if (held is 0m)
         {
             SpotExecutionRecord vanished = record with
             {
@@ -285,7 +305,7 @@ public sealed class SpotExecutionLifecycle(
             return vanished;
         }
 
-        return EvaluateHold(record);
+        return EvaluateHold(record, held);
     }
 
     /// <summary>
@@ -296,20 +316,32 @@ public sealed class SpotExecutionLifecycle(
     /// </summary>
     private static readonly TimeSpan BrokerPositionGracePeriod = TimeSpan.FromMinutes(2);
 
-    private async Task<bool> BrokerHoldsNothingAsync(
+    /// <summary>
+    /// How much of this symbol the account actually holds, which is not what the entry bought.
+    ///
+    /// Zero means the position is gone -- closed by hand, or liquidated by the venue. An empty list
+    /// is ambiguous: it is what a flat account returns and also what a failed call returns through
+    /// a gateway that swallows errors. Reconciliation is the safe reading either way, since it
+    /// re-asks the broker and completes only when the two agree, so this does not need to tell them
+    /// apart.
+    /// </summary>
+    private async Task<decimal> BrokerHeldQuantityAsync(
         SpotExecutionRecord record, CancellationToken cancellationToken)
     {
         IReadOnlyList<BrokerPositionSnapshot> positions =
             await broker.ListPositionsAsync(cancellationToken);
 
-        // An empty list is ambiguous: it is what a flat account returns and also what a failed
-        // call returns through a gateway that swallows errors. Reconciliation is the safe reading
-        // either way -- it re-asks the broker and completes only when the two agree -- so this
-        // does not need to tell them apart.
-        return !positions.Any(position => BrokerSymbol.Matches(position.Symbol, record.Symbol));
+        decimal total = 0m;
+        foreach (BrokerPositionSnapshot position in positions)
+        {
+            if (BrokerSymbol.Matches(position.Symbol, record.Symbol)) total += position.Quantity;
+        }
+
+        return total;
     }
 
-    private SpotExecutionRecord EvaluateHold(SpotExecutionRecord record)
+    private SpotExecutionRecord EvaluateHold(
+        SpotExecutionRecord record, decimal? sellableQuantity = null)
     {
         // The scheduled exit is durable, so a restart mid-hold still exits at the original time
         // rather than restarting the clock.
@@ -319,7 +351,8 @@ public sealed class SpotExecutionLifecycle(
         bool timerDue = record.ScheduledExitAt is { } due && clock.UtcNow >= due;
         HoldInterrupt interrupt = timerDue
             ? HoldInterrupt.None
-            : holdInterrupt?.Evaluate(HeldPositionView(record)) ?? HoldInterrupt.None;
+            : holdInterrupt?.Evaluate(
+                HeldPositionView(record, sellableQuantity, ExitCostRate)) ?? HoldInterrupt.None;
 
         if (!timerDue && !interrupt.ShouldExitNow) return record;
 

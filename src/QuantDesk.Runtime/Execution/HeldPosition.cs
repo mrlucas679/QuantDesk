@@ -36,4 +36,36 @@ public readonly record struct HeldPosition(
     PositionOwnership? Ownership,
     DateTimeOffset? EarliestLegExpiry,
     int? MinimumDaysToExpiry = null,
-    decimal ProfitTarget = 0m);
+    decimal ProfitTarget = 0m,
+    decimal? SellableQuantity = null,
+    decimal ExitCostRate = 0m)
+{
+    /// <summary>
+    /// What closing this position would actually realise at <paramref name="mid"/>.
+    ///
+    /// Two corrections against the naive (mid - entry) * quantity, and both were live.
+    ///
+    /// The account does not hold the quantity that was bought. Alpaca charges its spot crypto fee
+    /// in kind, so an entry that filled 28.02521709 leaves 27.955154 to sell -- 25 bps taken off
+    /// the top, measured from delivered quantity across 62 round trips on 2026-09-02. Marking the
+    /// filled quantity overstates the position by that much in both directions.
+    ///
+    /// And the exit has not been paid for. A position sitting exactly on its profit target has not
+    /// earned it: closing costs another 25 bps in kind, so it realises a quarter of a percent less
+    /// than the mark suggests. Symmetrically, a position at exactly its defined maximum loss will
+    /// realise more than that maximum once the exit is paid -- which makes a bound that sizes the
+    /// capital reservation quietly wrong in the one direction that matters.
+    /// </summary>
+    /// <param name="mid">The current mid, or null when no healthy quote exists.</param>
+    public decimal? RealisableProfit(decimal? mid)
+    {
+        if (mid is not { } price || price <= 0m) return null;
+        if (EntryPrice is not { } entry || entry <= 0m) return null;
+
+        decimal held = SellableQuantity ?? Quantity;
+        if (held <= 0m) return null;
+
+        decimal proceeds = price * held * (1m - ExitCostRate);
+        return proceeds - (entry * Quantity);
+    }
+}

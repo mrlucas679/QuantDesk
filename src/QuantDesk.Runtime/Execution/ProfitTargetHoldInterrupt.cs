@@ -34,11 +34,13 @@ public sealed class ProfitTargetHoldInterrupt(IHeldPositionMarker marker) : IHol
     {
         if (position.ProfitTarget <= 0m) return HoldInterrupt.None;
         if (position.Quantity <= 0m) return HoldInterrupt.None;
-        if (position.EntryPrice is not { } entryPrice || entryPrice <= 0m) return HoldInterrupt.None;
-        if (marker.CurrentMid(position.Symbol) is not { } mid || mid <= 0m) return HoldInterrupt.None;
 
-        // Long-only, matching the adverse-loss rule: a rise above the entry price is the gain.
-        decimal unrealised = (mid - entryPrice) * position.Quantity;
+        // Net of the exit still to be paid. A position sitting exactly on its target has not earned
+        // it -- closing costs another 25 bps in kind -- so taking the target on a gross mark banks
+        // a quarter of a percent less than the target claims, every time.
+        if (position.RealisableProfit(marker.CurrentMid(position.Symbol)) is not { } unrealised)
+            return HoldInterrupt.None;
+
         if (unrealised < position.ProfitTarget) return HoldInterrupt.None;
 
         return HoldInterrupt.Now(

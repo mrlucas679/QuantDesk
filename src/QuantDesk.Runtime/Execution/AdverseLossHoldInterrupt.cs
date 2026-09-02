@@ -24,11 +24,14 @@ public sealed class AdverseLossHoldInterrupt(IHeldPositionMarker marker) : IHold
     {
         if (position.DefinedMaximumLoss <= 0m) return HoldInterrupt.None;
         if (position.Quantity <= 0m) return HoldInterrupt.None;
-        if (position.EntryPrice is not { } entryPrice || entryPrice <= 0m) return HoldInterrupt.None;
-        if (marker.CurrentMid(position.Symbol) is not { } mid || mid <= 0m) return HoldInterrupt.None;
 
-        // Long-only: a fall below the entry price is the loss.
-        decimal unrealised = (mid - entryPrice) * position.Quantity;
+        // What closing would actually realise: the quantity the account holds after the venue's
+        // in-kind entry fee, less the in-kind fee the exit will cost. Marking the filled quantity
+        // gross of the exit meant a position at exactly its defined maximum loss realised more than
+        // that maximum -- a bound that sizes the capital reservation, breached by construction.
+        if (position.RealisableProfit(marker.CurrentMid(position.Symbol)) is not { } unrealised)
+            return HoldInterrupt.None;
+
         if (unrealised > -position.DefinedMaximumLoss) return HoldInterrupt.None;
 
         return HoldInterrupt.Now(

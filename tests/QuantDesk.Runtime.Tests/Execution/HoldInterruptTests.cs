@@ -66,6 +66,36 @@ public sealed class AdverseLossHoldInterruptTests
         Assert.False(interrupt.Evaluate(Held(100m, 0m, 5m)).ShouldExitNow);
     }
 
+    [Fact]
+    public void TheBoundIsMeasuredOnWhatClosingWouldRealise()
+    {
+        // DefinedMaximumLoss sizes the capital reservation, so it has to hold. Compared against a
+        // mark taken gross of the exit, a position at exactly the maximum realised more than the
+        // maximum once the venue took its in-kind fee on the way out -- a hard bound breached by
+        // construction, in the one direction that matters.
+        //
+        // 100 units bought at 100, marked at 89.9. Gross that is -1010 and clears a 1025 cap; net
+        // of a 25 bps exit on 8,990 of proceeds it is -1032.5, and does not.
+        var interrupt = new AdverseLossHoldInterrupt(new StubMarker(89.9m));
+        HeldPosition position = Held(100m, 100m, 1025m) with { ExitCostRate = 0.0025m };
+
+        Assert.True(interrupt.Evaluate(position).ShouldExitNow);
+        Assert.False(interrupt.Evaluate(position with { ExitCostRate = 0m }).ShouldExitNow);
+    }
+
+    [Fact]
+    public void TheMarkUsesWhatTheAccountHoldsNotWhatTheEntryBought()
+    {
+        // The venue takes its entry fee in kind, so an entry that filled 100 leaves 99.75 to sell.
+        // Marking the filled quantity understates the loss, which delays the stop that exists to
+        // cap it.
+        var interrupt = new AdverseLossHoldInterrupt(new StubMarker(90m));
+        HeldPosition asBought = Held(100m, 100m, 1015m);
+
+        Assert.False(interrupt.Evaluate(asBought).ShouldExitNow);
+        Assert.True(interrupt.Evaluate(asBought with { SellableQuantity = 99.75m }).ShouldExitNow);
+    }
+
     private static HeldPosition Held(decimal entryPrice, decimal quantity, decimal maximumLoss) =>
         new("exec", "BTC/USD", quantity, entryPrice, maximumLoss, null, EarliestLegExpiry: null);
 
