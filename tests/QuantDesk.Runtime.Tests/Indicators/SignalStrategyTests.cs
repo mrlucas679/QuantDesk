@@ -256,3 +256,71 @@ public sealed class StrategyRotationTests
     private static IndicatorSet Set() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
 }
+
+/// <summary>
+/// Restoring the rotation's balance after a restart.
+///
+/// The counts lived only in memory, so a day containing several deploys was several independent
+/// windows each starting from zero -- and in every one the strategy that fires most often was
+/// picked first. The sample tilts while the code still looks like it is balancing.
+/// </summary>
+public sealed class StrategyRotationRestoreTests
+{
+    [Fact]
+    public void PastTradesAreCountedSoBalancingSurvivesARestart()
+    {
+        var rotation = new StrategyRotation();
+        SignalStrategy busy = Strategy("a.busy.v1", "trend");
+        SignalStrategy quiet = Strategy("b.quiet.v1", "reversion");
+
+        rotation.RestoreFrom(["a.busy.v1", "a.busy.v1", "a.busy.v1"], [busy, quiet]);
+
+        Assert.Equal("b.quiet.v1", rotation.Select([busy, quiet], Bars())!.Strategy.Id);
+    }
+
+    [Fact]
+    public void RestoringReplacesRatherThanAddsToWhatIsAlreadyCounted()
+    {
+        // Called at lane start, and a lane can start more than once in a process. Adding would
+        // double-count every earlier trade and push the rotation away from a strategy that had
+        // only ever traded once.
+        var rotation = new StrategyRotation();
+        SignalStrategy a = Strategy("a.v1", "trend");
+        rotation.RecordTrade(a);
+
+        rotation.RestoreFrom(["a.v1"], [a]);
+
+        Assert.Equal(1, rotation.TradeCounts()["a.v1"]);
+    }
+
+    [Fact]
+    public void AStrategyThatNoLongerExistsStillCountsItsOwnTrades()
+    {
+        // It genuinely traded. Its mechanism cannot be balanced against because the strategy is
+        // gone, but pretending the trade never happened would misstate the history.
+        var rotation = new StrategyRotation();
+        SignalStrategy current = Strategy("a.current.v1", "trend");
+
+        rotation.RestoreFrom(["a.retired.v1", "a.current.v1"], [current]);
+
+        Assert.Equal(1, rotation.TradeCounts()["a.retired.v1"]);
+        Assert.Equal(1, rotation.TradeCounts()["a.current.v1"]);
+    }
+
+    [Fact]
+    public void RecordsWithoutAStrategyAreIgnoredRatherThanCountedAsOne()
+    {
+        var rotation = new StrategyRotation();
+        SignalStrategy a = Strategy("a.v1", "trend");
+
+        rotation.RestoreFrom(["", "   ", "a.v1"], [a]);
+
+        Assert.Single(rotation.TradeCounts());
+    }
+
+    private static SignalStrategy Strategy(string id, string mechanism) =>
+        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
+
+    private static IndicatorSet Bars() =>
+        IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
+}

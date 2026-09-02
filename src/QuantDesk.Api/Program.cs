@@ -190,6 +190,7 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<IInstrumentSymbolResolver>(),
         services.GetRequiredService<IRealisedCostSource>(),
         services.GetRequiredService<SpotExecutionStore>(),
+        services.GetRequiredService<StrategyRotation>(),
         services.GetRequiredService<QuantDesk.Alpaca.MarketData.AlpacaMarketClock>(),
         services.GetRequiredService<IMarketEvidenceProvider>(),
         services.GetRequiredService<BrokerExposureAttributor>(),

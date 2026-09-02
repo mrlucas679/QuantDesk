@@ -12,6 +12,7 @@ using QuantDesk.Domain.Strategies;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Execution;
+using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Modes;
 using QuantDesk.Runtime.Portfolio;
 using QuantDesk.Runtime.Positions;
@@ -28,6 +29,7 @@ public sealed class AutonomousPaperTradingService(
     IInstrumentSymbolResolver symbols,
     IRealisedCostSource realisedCosts,
     SpotExecutionStore spotStore,
+    StrategyRotation rotation,
     AlpacaMarketClock marketClock,
     IMarketEvidenceProvider evidenceProvider,
     BrokerExposureAttributor attributor,
@@ -55,6 +57,17 @@ public sealed class AutonomousPaperTradingService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!options.Enabled) { state.Update("disabled", options.Symbol); return; }
+
+        // Rebuild how many live trades each strategy already has, from the durable records.
+        //
+        // The rotation balances by trade count, and that count lived only in memory. Every restart
+        // reset it, so a day containing several deploys is several independent windows each
+        // starting from zero -- and in every one of them the strategy that fires most often is
+        // picked first. The sample tilts toward it while the code still looks like it is
+        // balancing, which is the kind of bias that leaves no trace of itself in the result.
+        rotation.RestoreFrom(
+            spotStore.ListAll().Select(record => record.StrategyId),
+            SignalStrategies.ForCrypto.Concat(SignalStrategies.ForEquity).ToArray());
         try
         {
             await WaitUntilReadyAsync(stoppingToken);

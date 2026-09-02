@@ -93,6 +93,46 @@ public sealed class StrategyRotation
         }
     }
 
+    /// <summary>
+    /// Rebuilds the counts from trades that already happened.
+    ///
+    /// Without this the balance is lost on every restart, and the restart is invisible in the
+    /// result. A process that has restarted five times has five independent windows each starting
+    /// from zero, so the strategy that fires most often is picked first in every one of them and
+    /// the sample tilts toward it -- while the code still looks like it is balancing. That is the
+    /// worst kind of experimental defect: it biases the evidence and leaves no trace of having
+    /// done so.
+    ///
+    /// The durable records are the right source because they are what the evidence will eventually
+    /// be computed from. Counting anything else would balance against one history and report
+    /// against another.
+    /// </summary>
+    public void RestoreFrom(IEnumerable<string> strategyIds, IReadOnlyList<SignalStrategy> known)
+    {
+        ArgumentNullException.ThrowIfNull(strategyIds);
+        ArgumentNullException.ThrowIfNull(known);
+
+        Dictionary<string, string> mechanisms = known
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Mechanism, StringComparer.Ordinal);
+
+        lock (_gate)
+        {
+            _tradesByStrategy.Clear();
+            _tradesByMechanism.Clear();
+            foreach (string id in strategyIds)
+            {
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                _tradesByStrategy[id] = _tradesByStrategy.GetValueOrDefault(id) + 1;
+
+                // A strategy that no longer exists still counted as a trade when it happened, but
+                // it has no mechanism to balance against now, so only its own tally is restored.
+                if (!mechanisms.TryGetValue(id, out string? mechanism)) continue;
+                _tradesByMechanism[mechanism] = _tradesByMechanism.GetValueOrDefault(mechanism) + 1;
+            }
+        }
+    }
+
     /// <summary>Live trade counts per strategy, for reporting how balanced the sample actually is.</summary>
     public IReadOnlyDictionary<string, int> TradeCounts()
     {
