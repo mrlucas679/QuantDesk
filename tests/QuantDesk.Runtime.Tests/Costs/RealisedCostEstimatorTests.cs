@@ -251,6 +251,94 @@ public sealed class RealisedCostEstimatorTests
         Assert.Equal(3, alone?.Buckets.Single().RoundTripCount);
     }
 
+    // ------------------------------------------------------------------- coverage
+
+    [Fact]
+    public void TheReasonADatasetIsEmptyIsReportedRatherThanLeftToBeGuessed()
+    {
+        // The blind spot this closes. On 2026-09-02 five of nine completed spot round trips carried
+        // no exit reference price and the rest had shared the account, so the dataset stayed empty
+        // -- and the only way to learn that was to read the durable store by hand and check each
+        // record. A system that refuses to measure has to say how often it is refusing, or the
+        // refusal is indistinguishable from there being nothing to measure.
+        DateTimeOffset open = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+
+        List<DiagnosticExecutionRecord> records =
+        [
+            // Two that overlap each other.
+            Completed("shared-a", 100m, 101m, 10m, 4m)
+                with { CreatedAt = open, EntryReservedAt = open, CompletedAt = open.AddHours(4) },
+            Completed("shared-b", 100m, 101m, 10m, 4m)
+                with { CreatedAt = open, EntryReservedAt = open, CompletedAt = open.AddHours(4) },
+            // One with no decision price.
+            Completed("no-price", 100m, 101m, 10m, 4m) with { ExitReferencePrice = null },
+            // One with no equity reading.
+            Completed("no-equity", 100m, 101m, 10m, 4m) with { RealisedAccountPnl = null },
+            // One that can testify.
+            Completed("clean", 100m, 101m, 10m, 4m),
+        ];
+
+        RealisedCostCoverage coverage = RealisedCostEstimator.Explain(records);
+
+        Assert.Equal(5, coverage.CompletedRoundTrips);
+        Assert.Equal(1, coverage.Measurable);
+        Assert.Equal(2, coverage.SharedTheAccount);
+        Assert.Equal(1, coverage.MissingDecisionPrice);
+        Assert.Equal(1, coverage.MissingAccountEquity);
+    }
+
+    [Fact]
+    public void ATripThatNeverHeldAnythingIsNotCountedAsALostMeasurement()
+    {
+        // A rejected order is not a measurement that was lost; it is one that does not exist. The
+        // seven out-of-hours equity rejections on 2026-09-02 must not inflate the refusal count and
+        // make the system look worse at measuring than it is.
+        RealisedCostCoverage coverage = RealisedCostEstimator.Explain(
+        [
+            Completed("rejected", 100m, 101m, 10m, 4m) with { EntryFilledQuantity = 0m },
+            Completed("clean", 100m, 101m, 10m, 4m),
+        ]);
+
+        Assert.Equal(1, coverage.CompletedRoundTrips);
+        Assert.Equal(1, coverage.Measurable);
+    }
+
+    [Fact]
+    public void CoverageCountsBothLanesBecauseBothShareTheAccount()
+    {
+        DateTimeOffset open = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+
+        RealisedCostCoverage coverage = RealisedCostEstimator.Explain(
+            [Completed("diag", 100m, 101m, 10m, 4m)
+                with { CreatedAt = open, EntryReservedAt = open, CompletedAt = open.AddHours(6) }],
+            [CompletedSpot("spot", open.AddHours(1), open.AddHours(2))]);
+
+        Assert.Equal(2, coverage.CompletedRoundTrips);
+        Assert.Equal(0, coverage.Measurable);
+        Assert.Equal(2, coverage.SharedTheAccount);
+    }
+
+    [Fact]
+    public void CoverageAgreesWithWhatTheEstimatorActuallyPublished()
+    {
+        // The two read the same refusals from the same code, and a divergence between "why the
+        // dataset is empty" and "what the dataset contains" would be worse than no explanation.
+        List<DiagnosticExecutionRecord> records =
+        [
+            Completed("a", 100m, 101m, 10m, 4m),
+            Completed("b", 100m, 101m, 10m, 4m),
+            Completed("c", 100m, 101m, 10m, 4m),
+            Completed("no-price", 100m, 101m, 10m, 4m) with { ExitReferencePrice = null },
+        ];
+
+        RealisedCostContract contract = Estimate(records);
+        RealisedCostCoverage coverage = RealisedCostEstimator.Explain(records);
+
+        Assert.Equal(contract.ObservationCount, coverage.Measurable);
+        Assert.Equal(4, coverage.CompletedRoundTrips);
+        Assert.Equal(1, coverage.MissingDecisionPrice);
+    }
+
     // ---------------------------------------------------------------------- fixtures
 
     /// <summary>

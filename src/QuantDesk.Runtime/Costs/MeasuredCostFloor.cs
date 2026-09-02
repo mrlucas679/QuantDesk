@@ -37,6 +37,15 @@ public interface IRealisedCostSource
 {
     /// <summary>The dataset as it stands now, or null when too little has been measured.</summary>
     RealisedCostContract? Current();
+
+    /// <summary>
+    /// How many completed round trips could testify, and why the rest could not.
+    ///
+    /// A null dataset says nothing about whether the system has traded and cannot measure, or has
+    /// not traded at all. Those call for opposite responses, and telling them apart used to require
+    /// reading the durable store by hand.
+    /// </summary>
+    RealisedCostCoverage Coverage() => default;
 }
 
 /// <summary>

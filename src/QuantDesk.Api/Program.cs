@@ -498,12 +498,20 @@ app.MapGet("/api/costs/realised", (
     // evidence had arrived.
     RealisedCostContract? contract = realisedCosts.Current();
 
+    // Why the dataset is the size it is, reported either way.
+    //
+    // "InsufficientCompletedRoundTrips" alone could not distinguish a system that has not traded
+    // from one that has traded and cannot measure any of it -- and on 2026-09-02 it was the second:
+    // five of nine completed spot round trips carried no exit reference price and the rest had
+    // shared the account. Finding that out meant reading the durable store by hand.
+    RealisedCostCoverage coverage = realisedCosts.Coverage();
+
     // 404 rather than an empty dataset or a zero. Too few completed round trips is not a cost of
     // zero; it is the absence of a measurement, and the caller has to be able to tell the
     // difference before deciding whether to trade on it.
     return contract is null
-        ? Results.NotFound(new { reason = "InsufficientCompletedRoundTrips" })
-        : Results.Ok(contract);
+        ? Results.NotFound(new { reason = "InsufficientCompletedRoundTrips", coverage })
+        : Results.Ok(new { contract, coverage });
 });
 app.MapPost("/api/diagnostics/{experimentId}/start", async (
     HttpRequest request,

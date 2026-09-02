@@ -30,4 +30,7 @@ public sealed class DiagnosticStoreRealisedCostSource(
         assetClass: "crypto",
         venue: "alpaca",
         spotStore.ListCompleted());
+
+    public RealisedCostCoverage Coverage() =>
+        RealisedCostEstimator.Explain(store.ListCompleted(), spotStore.ListCompleted());
 }

@@ -41,6 +41,46 @@ namespace QuantDesk.Runtime.Costs;
 /// visibly absent. The consequence is that the contract only fills from serialised trading, which
 /// is a real limitation and the honest one until per-position marks exist.
 /// </summary>
+/// <summary>Why a completed round trip could not contribute a cost observation.</summary>
+public enum CostRefusal
+{
+    /// <summary>It could. Not a refusal.</summary>
+    None,
+
+    /// <summary>Never completed, or never held anything, so there is no round trip to measure.</summary>
+    NotComplete,
+
+    /// <summary>No account equity on both sides, so there is no ground truth to compare against.</summary>
+    MissingAccountEquity,
+
+    /// <summary>No entry or exit reference price, so there is no decision to measure shortfall from.</summary>
+    MissingDecisionPrice,
+
+    /// <summary>Another position was open across the same window, so the equity delta is not its own.</summary>
+    SharedTheAccount,
+}
+
+/// <summary>
+/// How many completed round trips could testify about cost, and why the rest could not.
+///
+/// Exists because the absence of a measurement was invisible. On 2026-09-02 five of nine completed
+/// spot round trips carried no exit reference price and one more had shared the account, so the
+/// cost dataset stayed empty -- and the only way to learn that was to read the durable store by
+/// hand and check each record. A system that refuses to measure has to say how often it is
+/// refusing, or the refusal becomes indistinguishable from there being nothing to measure.
+/// </summary>
+/// <param name="CompletedRoundTrips">Trips that finished and held something.</param>
+/// <param name="Measurable">Trips that produced a cost observation.</param>
+/// <param name="MissingAccountEquity">Refused for want of equity readings on both sides.</param>
+/// <param name="MissingDecisionPrice">Refused for want of an entry or exit reference price.</param>
+/// <param name="SharedTheAccount">Refused because another position was open across the window.</param>
+public readonly record struct RealisedCostCoverage(
+    int CompletedRoundTrips,
+    int Measurable,
+    int MissingAccountEquity,
+    int MissingDecisionPrice,
+    int SharedTheAccount);
+
 public static class RealisedCostEstimator
 {
     /// <summary>One-sided 95% normal quantile, for the upper bound on the mean.</summary>
@@ -111,6 +151,52 @@ public static class RealisedCostEstimator
             buckets);
     }
 
+    /// <summary>
+    /// Counts how many completed round trips could testify, and why the rest could not.
+    ///
+    /// Reads exactly the same refusals the estimator applies, from the same code, so the two cannot
+    /// drift into disagreeing about why a dataset is empty.
+    /// </summary>
+    public static RealisedCostCoverage Explain(
+        IReadOnlyList<DiagnosticExecutionRecord> records,
+        IReadOnlyList<SpotExecutionRecord>? spotRecords = null)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        IReadOnlyList<ExposureWindow> windows =
+        [
+            .. records.Select(ExposureWindow.From).OfType<ExposureWindow>(),
+            .. (spotRecords ?? []).Select(ExposureWindow.From).OfType<ExposureWindow>(),
+        ];
+
+        int completed = 0, measurable = 0, equity = 0, price = 0, shared = 0;
+
+        void Tally(CostObservation? observation, CostRefusal refusal)
+        {
+            // NotComplete is not counted at all: a trip that never finished or never held anything
+            // is not a measurement that was lost, it is a measurement that does not exist yet.
+            if (refusal is CostRefusal.NotComplete) return;
+
+            completed++;
+            if (observation is not null) { measurable++; return; }
+            switch (refusal)
+            {
+                case CostRefusal.MissingAccountEquity: equity++; break;
+                case CostRefusal.MissingDecisionPrice: price++; break;
+                case CostRefusal.SharedTheAccount: shared++; break;
+                default: break;
+            }
+        }
+
+        foreach (DiagnosticExecutionRecord record in records)
+            Tally(TryMeasure(record, windows, out CostRefusal refusal), refusal);
+
+        foreach (SpotExecutionRecord record in spotRecords ?? [])
+            Tally(TryMeasureSpot(record, windows, out CostRefusal refusal), refusal);
+
+        return new RealisedCostCoverage(completed, measurable, equity, price, shared);
+    }
+
     private static RealisedCostBucket Summarise(
         decimal minimum,
         decimal? maximum,
@@ -152,16 +238,32 @@ public static class RealisedCostEstimator
     /// </summary>
     private static CostObservation? TryMeasure(
         DiagnosticExecutionRecord record,
-        IReadOnlyList<ExposureWindow> windows)
+        IReadOnlyList<ExposureWindow> windows) => TryMeasure(record, windows, out _);
+
+    /// <inheritdoc cref="TryMeasure(DiagnosticExecutionRecord, IReadOnlyList{ExposureWindow})"/>
+    /// <param name="refusal">Why the trip could not testify, or None when it could.</param>
+    private static CostObservation? TryMeasure(
+        DiagnosticExecutionRecord record,
+        IReadOnlyList<ExposureWindow> windows,
+        out CostRefusal refusal)
     {
-        if (record.RealisedAccountPnl is not { } realised) return null;
-        if (record.EntryReferencePrice is not { } entryReference) return null;
-        if (record.ExitReferencePrice is not { } exitReference) return null;
-        if (record.CompletedAt is not { } completedAt) return null;
-        if (record.EntryClientOrderId is not { } recordId) return null;
-        if (record.EntryFilledQuantity <= 0m || entryReference <= 0m) return null;
-        if (ExposureWindow.From(record) is not { } window) return null;
-        if (window.OverlapsAnyOther(windows)) return null;
+        refusal = CostRefusal.None;
+        if (record.CompletedAt is not { } completedAt) { refusal = CostRefusal.NotComplete; return null; }
+        if (record.EntryClientOrderId is not { } recordId) { refusal = CostRefusal.NotComplete; return null; }
+        if (record.EntryFilledQuantity <= 0m) { refusal = CostRefusal.NotComplete; return null; }
+        if (record.RealisedAccountPnl is not { } realised)
+        {
+            refusal = CostRefusal.MissingAccountEquity;
+            return null;
+        }
+        if (record.EntryReferencePrice is not { } entryReference || entryReference <= 0m ||
+            record.ExitReferencePrice is not { } exitReference)
+        {
+            refusal = CostRefusal.MissingDecisionPrice;
+            return null;
+        }
+        if (ExposureWindow.From(record) is not { } window) { refusal = CostRefusal.NotComplete; return null; }
+        if (window.OverlapsAnyOther(windows)) { refusal = CostRefusal.SharedTheAccount; return null; }
 
         decimal notional = entryReference * record.EntryFilledQuantity;
         decimal frictionless = (exitReference - entryReference) * record.EntryFilledQuantity;
@@ -186,16 +288,32 @@ public static class RealisedCostEstimator
     /// </summary>
     private static CostObservation? TryMeasureSpot(
         SpotExecutionRecord record,
-        IReadOnlyList<ExposureWindow> windows)
+        IReadOnlyList<ExposureWindow> windows) => TryMeasureSpot(record, windows, out _);
+
+    /// <inheritdoc cref="TryMeasureSpot(SpotExecutionRecord, IReadOnlyList{ExposureWindow})"/>
+    /// <param name="refusal">Why the trip could not testify, or None when it could.</param>
+    private static CostObservation? TryMeasureSpot(
+        SpotExecutionRecord record,
+        IReadOnlyList<ExposureWindow> windows,
+        out CostRefusal refusal)
     {
-        if (record.State is not SpotExecutionState.Complete) return null;
-        if (record.RealisedAccountPnl is not { } realised) return null;
-        if (record.EntryReferencePrice is not { } entryReference || entryReference <= 0m) return null;
-        if (record.ExitReferencePrice is not { } exitReference) return null;
-        if (record.CompletedAt is not { } completedAt) return null;
-        if (record.EntryFilledQuantity <= 0m) return null;
-        if (ExposureWindow.From(record) is not { } window) return null;
-        if (window.OverlapsAnyOther(windows)) return null;
+        refusal = CostRefusal.None;
+        if (record.State is not SpotExecutionState.Complete) { refusal = CostRefusal.NotComplete; return null; }
+        if (record.CompletedAt is not { } completedAt) { refusal = CostRefusal.NotComplete; return null; }
+        if (record.EntryFilledQuantity <= 0m) { refusal = CostRefusal.NotComplete; return null; }
+        if (record.RealisedAccountPnl is not { } realised)
+        {
+            refusal = CostRefusal.MissingAccountEquity;
+            return null;
+        }
+        if (record.EntryReferencePrice is not { } entryReference || entryReference <= 0m ||
+            record.ExitReferencePrice is not { } exitReference)
+        {
+            refusal = CostRefusal.MissingDecisionPrice;
+            return null;
+        }
+        if (ExposureWindow.From(record) is not { } window) { refusal = CostRefusal.NotComplete; return null; }
+        if (window.OverlapsAnyOther(windows)) { refusal = CostRefusal.SharedTheAccount; return null; }
 
         decimal notional = entryReference * record.EntryFilledQuantity;
         decimal frictionless = (exitReference - entryReference) * record.EntryFilledQuantity;
