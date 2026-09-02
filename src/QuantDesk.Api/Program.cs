@@ -224,6 +224,7 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<IRuntimeClock>(),
         services.GetRequiredService<ReturnSeriesCache>(),
         services.GetRequiredService<ShadowSignalLog>(),
+        services.GetRequiredService<IHeldPositionMarker>(),
         services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
 }
 builder.Services.AddSingleton<AutonomousTradingState>();

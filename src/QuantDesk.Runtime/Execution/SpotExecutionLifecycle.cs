@@ -85,7 +85,8 @@ public sealed class SpotExecutionLifecycle(
         PositionOwnership? ownership = null,
         decimal? entryReferencePrice = null,
         decimal? accountEquityBefore = null,
-        decimal profitTarget = 0m)
+        decimal profitTarget = 0m,
+        IReadOnlyList<PositionMark>? positionMarksBefore = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -124,7 +125,8 @@ public sealed class SpotExecutionLifecycle(
             Ownership = ownership,
             EntryReferencePrice = entryReferencePrice,
             AccountEquityBefore = accountEquityBefore,
-            ProfitTarget = profitTarget
+            ProfitTarget = profitTarget,
+            PositionMarksBefore = positionMarksBefore ?? []
         });
     }
 
@@ -336,6 +338,28 @@ public sealed class SpotExecutionLifecycle(
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Marks every position the account holds, using the same quotes the lane already has.
+    ///
+    /// A position that cannot be priced is marked at zero rather than dropped. Dropping it would
+    /// make the set of siblings look as though it had changed between the two readings, and the
+    /// estimator refuses on exactly that -- so a missing quote would silently cost a measurement
+    /// instead of visibly degrading one.
+    /// </summary>
+    private IReadOnlyList<PositionMark> MarkPositions(IReadOnlyList<BrokerPositionSnapshot> positions)
+    {
+        if (positions.Count == 0) return [];
+
+        List<PositionMark> marks = new(positions.Count);
+        foreach (BrokerPositionSnapshot position in positions)
+        {
+            decimal mid = referencePrices?.CurrentMid(position.Symbol) ?? 0m;
+            marks.Add(new PositionMark(position.Symbol, position.Quantity, mid));
+        }
+
+        return marks;
     }
 
     /// <summary>Projects a spot record onto the view every early-exit rule reads.</summary>
@@ -740,6 +764,9 @@ public sealed class SpotExecutionLifecycle(
             ReconciledAt = clock.UtcNow,
             CompletedAt = clock.UtcNow,
             AccountEquityAfter = account?.Equity ?? record.AccountEquityAfter,
+            PositionMarksAfter = record.PositionMarksAfter.Count > 0
+                ? record.PositionMarksAfter
+                : MarkPositions(positions),
             ExitReferencePrice = record.ExitReferencePrice ?? referencePrices?.CurrentMid(record.Symbol)
         };
         store.Update(complete);

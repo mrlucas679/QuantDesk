@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Contracts;
+using QuantDesk.Domain.Execution;
 using QuantDesk.Runtime.Persistence;
 
 namespace QuantDesk.Runtime.Costs;
@@ -35,11 +36,15 @@ namespace QuantDesk.Runtime.Costs;
 /// 33.7 bps. One more observation and the bucket would have published, and a ~1,160 bps hurdle
 /// would have refused every opportunity in the system on a measurement that was an artefact.
 ///
-/// Splitting a shared delta correctly needs each position's mark-to-market through the window,
-/// which nothing records. So an overlapping window is refused rather than apportioned: this
-/// measurement gates real money, and a cost that is confidently wrong is worse than one that is
-/// visibly absent. The consequence is that the contract only fills from serialised trading, which
-/// is a real limitation and the honest one until per-position marks exist.
+/// The record now carries what every position was worth at each equity reading, which makes the
+/// arithmetic possible for the common case. A sibling that was merely held across the window
+/// contributed exactly its own change in market value and nothing to cash, so that contribution is
+/// subtracted and what remains belongs to this round trip alone. A sibling that opened or closed
+/// inside the window also moved cash, by an amount no arithmetic over marks can separate, and those
+/// still refuse -- a cost that is confidently wrong is worse than one that is visibly absent.
+///
+/// The practical difference is between a lane that can only measure itself while trading one
+/// position at a time, and one that can measure itself while holding a book.
 /// </summary>
 /// <summary>Why a completed round trip could not contribute a cost observation.</summary>
 public enum CostRefusal
@@ -56,7 +61,10 @@ public enum CostRefusal
     /// <summary>No entry or exit reference price, so there is no decision to measure shortfall from.</summary>
     MissingDecisionPrice,
 
-    /// <summary>Another position was open across the same window, so the equity delta is not its own.</summary>
+    /// <summary>
+    /// A sibling opened or closed inside the window, so the equity delta carries cash movement
+    /// that cannot be attributed. A sibling merely held across the window is subtracted instead.
+    /// </summary>
     SharedTheAccount,
 }
 
@@ -313,7 +321,28 @@ public static class RealisedCostEstimator
             return null;
         }
         if (ExposureWindow.From(record) is not { } window) { refusal = CostRefusal.NotComplete; return null; }
-        if (window.OverlapsAnyOther(windows)) { refusal = CostRefusal.SharedTheAccount; return null; }
+
+        // A window that shared the account can still testify, if the siblings only sat there.
+        //
+        // Account equity is portfolio-wide, so the raw delta contains every other position's
+        // movement. But a sibling that was merely held across the window contributed exactly its
+        // own change in market value and nothing to cash, and the record now carries both marks --
+        // so that contribution can be subtracted and what remains is this position's alone.
+        //
+        // A sibling that opened or closed inside the window also moved cash, by an amount that
+        // cannot be separated without its fills. Those still refuse. This is the difference
+        // between a lane that can only measure itself while trading one position at a time, and
+        // one that can measure itself while holding a book.
+        if (window.OverlapsAnyOther(windows))
+        {
+            if (SiblingDrift(record) is not { } drift)
+            {
+                refusal = CostRefusal.SharedTheAccount;
+                return null;
+            }
+
+            realised -= drift;
+        }
 
         decimal notional = entryReference * record.EntryFilledQuantity;
         decimal frictionless = (exitReference - entryReference) * record.EntryFilledQuantity;
@@ -324,6 +353,53 @@ public static class RealisedCostEstimator
             (frictionless - realised) / notional * 10_000m,
             record.ExecutionMode,
             completedAt);
+    }
+
+    /// <summary>
+    /// What the other positions contributed to this window's equity delta, or null when it cannot
+    /// be known.
+    ///
+    /// Known only when the same set of siblings was present at both readings. A symbol that appears
+    /// in one and not the other opened or closed inside the window, which moved cash as well as
+    /// market value, and no arithmetic over marks alone can separate that from this position's own
+    /// result.
+    ///
+    /// A sibling marked at zero on either side is treated the same way: it could not be priced, so
+    /// its drift is unknown rather than nil, and pretending otherwise would quietly attribute its
+    /// movement to this round trip.
+    /// </summary>
+    private static decimal? SiblingDrift(SpotExecutionRecord record)
+    {
+        if (record.PositionMarksBefore.Count == 0 || record.PositionMarksAfter.Count == 0) return null;
+
+        Dictionary<string, PositionMark> before = new(StringComparer.OrdinalIgnoreCase);
+        foreach (PositionMark mark in record.PositionMarksBefore)
+        {
+            if (BrokerSymbol.Matches(mark.Symbol, record.Symbol)) continue;
+            if (!before.TryAdd(mark.Symbol, mark)) return null;
+        }
+
+        Dictionary<string, PositionMark> after = new(StringComparer.OrdinalIgnoreCase);
+        foreach (PositionMark mark in record.PositionMarksAfter)
+        {
+            if (BrokerSymbol.Matches(mark.Symbol, record.Symbol)) continue;
+            if (!after.TryAdd(mark.Symbol, mark)) return null;
+        }
+
+        if (before.Count != after.Count) return null;
+
+        decimal drift = 0m;
+        foreach ((string symbol, PositionMark opening) in before)
+        {
+            if (!after.TryGetValue(symbol, out PositionMark closing)) return null;
+            if (opening.Mid <= 0m || closing.Mid <= 0m) return null;
+
+            // Quantity may differ slightly where a venue takes its fee in kind, so each side is
+            // marked on the quantity it actually held.
+            drift += closing.MarketValue - opening.MarketValue;
+        }
+
+        return drift;
     }
 
     private readonly record struct CostObservation(

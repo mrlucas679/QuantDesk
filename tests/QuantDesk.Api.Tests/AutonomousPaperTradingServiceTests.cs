@@ -276,6 +276,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             pipeline, new ResearchArtifactState(),
             options, mode, state, clock, new ReturnSeriesCache(),
             new ShadowSignalLog(Path.Combine(Path.GetTempPath(), $"qd-shadow-{Guid.NewGuid():N}.json")),
+            new NoMarks(),
             NullLogger<AutonomousPaperTradingService>.Instance);
         return (service, state, mode);
     }
@@ -389,5 +390,11 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             ResearchLowerBoundBps = 300.0,
             ResearchCostAssumptionBps = 0.0,
         })];
+
+    /// <summary>No quotes, so every sibling marks at zero and the estimator degrades visibly.</summary>
+    private sealed class NoMarks : IHeldPositionMarker
+    {
+        public decimal? CurrentMid(string symbol) => null;
+    }
 
 }

@@ -50,6 +50,7 @@ public sealed class AutonomousPaperTradingService(
     IRuntimeClock clock,
     ReturnSeriesCache returnSeries,
     ShadowSignalLog shadow,
+    IHeldPositionMarker heldMarker,
     ILogger<AutonomousPaperTradingService> logger) : BackgroundService
 {
     private static readonly TimeSpan PositionMonitorInterval = TimeSpan.FromSeconds(5);
@@ -359,7 +360,8 @@ public sealed class AutonomousPaperTradingService(
             ? (decimal)Math.Abs(edge.ExpectedReturnBps)
             : 0m;
         if (!route.Costs.IsEconomicallyViable(
-                options.OrderNotional, grossEdgeBps, spreadBps: 0m, out string viability))
+                options.OrderNotional, grossEdgeBps, spreadBps: 0m, out string viability,
+                explorationBudgetAvailable))
         {
             state.UpdateSymbol(symbol, "abstained", symbol, reason: viability);
             logger.LogInformation(
@@ -435,6 +437,13 @@ public sealed class AutonomousPaperTradingService(
         decimal referencePrice = (evidence.Bid + evidence.Ask) / 2m;
         BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
 
+        // What everything else in the account is worth right now, marked at the same instant the
+        // opening equity is read. Without it a round trip that shares the account with any other
+        // position has no equity delta of its own, and the cost dataset can only ever fill from
+        // trading one position at a time -- which this lane does not do.
+        IReadOnlyList<PositionMark> marksBefore = MarkOpenPositions(
+            await broker.ListPositionsAsync(cancellationToken));
+
         // The gain at which this position has earned what its own thesis predicted.
         //
         // Taken from the candidate rather than configured, because the number that was chosen in
@@ -450,7 +459,8 @@ public sealed class AutonomousPaperTradingService(
                 ownership: ownership,
                 entryReferencePrice: referencePrice,
                 accountEquityBefore: account?.Equity,
-                profitTarget: profitTarget))
+                profitTarget: profitTarget,
+                positionMarksBefore: marksBefore))
         {
             state.UpdateSymbol(symbol, "abstained", symbol, reason: "ReservationRejected");
             return;
@@ -707,6 +717,26 @@ public sealed class AutonomousPaperTradingService(
         realisedCosts.Current()?.UpperConfidenceCostBpsFor(options.OrderNotional) is { } bps
             ? (double)bps
             : null;
+
+    /// <summary>
+    /// Marks every open position at the current mid, for the cost estimator's sibling arithmetic.
+    ///
+    /// A position that cannot be priced is marked at zero rather than omitted. Omitting it would
+    /// make the sibling set look as though it had changed between the two readings, and the
+    /// estimator refuses on exactly that -- so a missing quote would silently cost a measurement
+    /// rather than visibly degrade one.
+    /// </summary>
+    private IReadOnlyList<PositionMark> MarkOpenPositions(
+        IReadOnlyList<BrokerPositionSnapshot> positions)
+    {
+        if (positions.Count == 0) return [];
+
+        List<PositionMark> marks = new(positions.Count);
+        foreach (BrokerPositionSnapshot position in positions)
+            marks.Add(new PositionMark(position.Symbol, position.Quantity, heldMarker.CurrentMid(position.Symbol) ?? 0m));
+
+        return marks;
+    }
 
     private static PortfolioSnapshot EmptyPortfolio(BrokerAccountSnapshot account) => new(
         0, new Usd(account.Equity), new Usd(account.Equity), new Usd(account.BuyingPower),

@@ -32,6 +32,15 @@ public enum SpotExecutionState
 /// opportunity rather than generated, so a record can be reconstructed and an ambiguous submission
 /// resolved by asking the broker for the exact client order ID it would have used.
 /// </summary>
+/// <summary>One position's market value at an instant: what it was, how much, and at what price.</summary>
+/// <param name="Symbol">The instrument, in the venue's spelling.</param>
+/// <param name="Quantity">Units held.</param>
+/// <param name="Mid">The mid used to mark it, or zero when no healthy quote existed.</param>
+public readonly record struct PositionMark(string Symbol, decimal Quantity, decimal Mid)
+{
+    public decimal MarketValue => Quantity * Mid;
+}
+
 public sealed record SpotExecutionRecord(
     string ExecutionId,
     string StrategyId,
@@ -116,6 +125,25 @@ public sealed record SpotExecutionRecord(
 
     /// <summary>Account equity once this execution reconciled flat.</summary>
     public decimal? AccountEquityAfter { get; init; }
+
+    /// <summary>
+    /// What every position the account held was worth, at each of the two equity readings.
+    ///
+    /// Account equity is a property of the whole portfolio, so a round trip that shared the account
+    /// with another has no equity delta of its own -- which is why the cost estimator refuses those
+    /// rather than reporting a figure inflated by the concurrency factor, and why the cost dataset
+    /// could only ever fill from serialised trading. A lane that holds several positions by design
+    /// would never measure its own costs.
+    ///
+    /// Recording the marks makes the arithmetic possible: a sibling that was merely held across the
+    /// window contributes exactly its own change in market value to the equity delta, and that can
+    /// be subtracted. A sibling that opened or closed inside the window also moved cash, and its
+    /// contribution cannot be separated without the fills -- so those still refuse.
+    /// </summary>
+    public IReadOnlyList<PositionMark> PositionMarksBefore { get; init; } = [];
+
+    /// <inheritdoc cref="PositionMarksBefore"/>
+    public IReadOnlyList<PositionMark> PositionMarksAfter { get; init; } = [];
 
     /// <summary>
     /// What the round trip actually did to the account.

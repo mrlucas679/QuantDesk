@@ -251,6 +251,81 @@ public sealed class RealisedCostEstimatorTests
         Assert.Equal(3, alone?.Buckets.Single().RoundTripCount);
     }
 
+    // -------------------------------------------------- sharing the account with marks
+
+    [Fact]
+    public void ASiblingMerelyHeldAcrossTheWindowIsSubtractedRatherThanRefused()
+    {
+        // The limitation this removes: without marks, any round trip that shared the account was
+        // refused, so the cost dataset could only ever fill from trading one position at a time --
+        // which the lane does not do. A sibling that just sat there contributed exactly its own
+        // change in market value and nothing to cash, so it can be subtracted.
+        //
+        // The trip earns 10 on a frictionless basis. The account moved +9: +4 from this position
+        // after costs and +5 of sibling drift. Subtracting the drift leaves 4, so the cost is 6 on
+        // 1000 of notional -- the same 60 bps the serialised case measures.
+        DateTimeOffset open = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+
+        SpotExecutionRecord shared = CompletedSpot("shared", open, open.AddHours(2)) with
+        {
+            AccountEquityBefore = 1_000m,
+            AccountEquityAfter = 1_009m,
+            PositionMarksBefore = [new PositionMark("ETH/USD", 2m, 100m)],
+            PositionMarksAfter = [new PositionMark("ETH/USD", 2m, 102.5m)],
+        };
+
+        RealisedCostContract? contract = RealisedCostEstimator.Estimate(
+            [Completed("overlapping-sibling", 100m, 101m, 10m, 4m)
+                with { CreatedAt = open, EntryReservedAt = open, CompletedAt = open.AddHours(3) }],
+            "crypto-alpaca-paper", "v1", "crypto", "alpaca",
+            [shared, shared with { ExecutionId = "s2", EntryClientOrderId = "s2" },
+             shared with { ExecutionId = "s3", EntryClientOrderId = "s3" }]);
+
+        Assert.Equal(60m, contract?.Buckets.Single().MeanBps);
+    }
+
+    [Fact]
+    public void ASiblingThatOpenedInsideTheWindowStillRefuses()
+    {
+        // It moved cash as well as market value, and no arithmetic over marks alone can separate
+        // that from this round trip's own result.
+        DateTimeOffset open = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+
+        SpotExecutionRecord shared = CompletedSpot("appeared", open, open.AddHours(2)) with
+        {
+            AccountEquityBefore = 1_000m,
+            AccountEquityAfter = 1_009m,
+            PositionMarksBefore = [],
+            PositionMarksAfter = [new PositionMark("ETH/USD", 2m, 102.5m)],
+        };
+
+        Assert.Null(RealisedCostEstimator.Estimate(
+            [], "crypto-alpaca-paper", "v1", "crypto", "alpaca",
+            [shared, shared with { ExecutionId = "a2", EntryClientOrderId = "a2" },
+             shared with { ExecutionId = "a3", EntryClientOrderId = "a3" }]));
+    }
+
+    [Fact]
+    public void ASiblingThatCouldNotBePricedRefusesRatherThanCountingAsFlat()
+    {
+        // A zero mark means no healthy quote, not no movement. Treating it as nil would quietly
+        // attribute that position's drift to this round trip.
+        DateTimeOffset open = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+
+        SpotExecutionRecord shared = CompletedSpot("unpriced", open, open.AddHours(2)) with
+        {
+            AccountEquityBefore = 1_000m,
+            AccountEquityAfter = 1_009m,
+            PositionMarksBefore = [new PositionMark("ETH/USD", 2m, 100m)],
+            PositionMarksAfter = [new PositionMark("ETH/USD", 2m, 0m)],
+        };
+
+        Assert.Null(RealisedCostEstimator.Estimate(
+            [], "crypto-alpaca-paper", "v1", "crypto", "alpaca",
+            [shared, shared with { ExecutionId = "u2", EntryClientOrderId = "u2" },
+             shared with { ExecutionId = "u3", EntryClientOrderId = "u3" }]));
+    }
+
     // ------------------------------------------------------------------- coverage
 
     [Fact]
