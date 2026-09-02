@@ -13,6 +13,23 @@ public enum StrategyQualification
     /// </summary>
     Unqualified,
 
+    /// <summary>
+    /// The rule changed, or could not be re-measured, so its figures describe something else.
+    ///
+    /// Distinct from Unqualified in the way that matters for trading. Unqualified means measured and
+    /// found wanting -- a real number, near enough to breakeven that buying more evidence is
+    /// reasonable. Stale means the number on the record was produced by a different rule or a
+    /// different cost, so it is not evidence about this rule at all.
+    ///
+    /// The distinction had teeth immediately. After the 2026-09-02 re-measurement two rules could
+    /// not be re-evaluated -- donchian-breakout-20 and volume-surge-breakout produced fewer than
+    /// twelve non-overlapping trades in the held-out half -- and volume-surge-breakout's stale
+    /// equity figure of -3.6 sat close enough to zero to pass the known-to-lose test. It would have
+    /// been the only equity rule still trading, on the strength of a number measured against a
+    /// volume z-score the code no longer computes.
+    /// </summary>
+    Stale,
+
     /// <summary>Cleared its costs on out-of-sample research and is awaiting live confirmation.</summary>
     ResearchTested,
 
@@ -67,7 +84,32 @@ public static class SignalStrategies
     /// on the mean of non-overlapping trades, net of 68 bps for crypto and 8 bps for equities.
     /// </summary>
     /// <summary>
-    /// Measured means and bounds below predate the 2026-09-02 indicator corrections.
+    /// Out-of-sample means and 95% lower bounds, from the 2026-09-02 re-run.
+    ///
+    /// What changed, and why every number moved
+    /// ----------------------------------------
+    /// The first scan ranked and reported on one undivided sixty-day block at an assumed 68 bps
+    /// round trip, with no correction for having examined ninety combinations. This run selects on
+    /// a chronological training half and reports on the held-out half, charges the 33.7 bps the
+    /// broker-side reconstruction actually measured, and uses the corrected indicator definitions.
+    /// Figures are taken at the holding period each lane actually uses: four hours for crypto, two
+    /// for equities.
+    ///
+    /// Across 39 crypto trials PBO is 0.230 and the deflated Sharpe ratio is 0.000; across 39
+    /// equity trials PBO is 0.258 and the deflated Sharpe is 0.000. Nothing survives its own trial
+    /// count, and no family is positive in both halves at the lower bound. That is the finding.
+    ///
+    /// The single most consequential correction is reversion.vwap.v1, which was the best-scoring
+    /// equity rule in the book at +3.3 bps. Measured against a session-scoped VWAP -- the
+    /// definition VWAP actually has -- it is -7.9 out of sample. The rule that looked promising was
+    /// an artefact of a rolling window wearing VWAP's name.
+    ///
+    /// Two rules could not be evaluated: donchian-breakout-20 and volume-surge-breakout produced
+    /// fewer than twelve non-overlapping trades in one of the halves. They keep their stale figures
+    /// and must not be described as measured.
+    ///
+    /// Superseded note, kept for provenance: these numbers previously predated the indicator
+    /// corrections.
     ///
     /// Four rules now read a different series than the one their figures were measured on: VWAP is
     /// session-scoped for equities rather than a 48-bar rolling window, the volume anomaly is scored
@@ -84,19 +126,21 @@ public static class SignalStrategies
     /// </summary>
     public static IReadOnlyList<SignalStrategy> ForCrypto { get; } =
     [
-        Trend("trend.momentum-dual-horizon.v1", -63.3, -70.1, MomentumDualHorizon),
-        Trend("trend.ema-cross-12-48.v1", -71.1, -84.9, EmaCross),
-        Trend("trend.macd-histogram-flip.v1", -60.0, -68.5, MacdFlip),
-        Trend("trend.adx-filtered.v1", -48.2, -68.4, AdxFilteredTrend),
-        Reversion("reversion.rsi-oversold.v1", -59.5, -69.9, RsiOversold),
-        Reversion("reversion.bollinger-lower.v1", -49.8, -68.9, BollingerLowerTouch),
-        Reversion("reversion.stochastic-oversold.v1", -56.1, -71.2, StochasticOversold),
-        Reversion("reversion.vwap.v1", -50.5, -69.5, VwapReversion),
-        Breakout("breakout.donchian-20.v1", -70.0, -85.0, DonchianBreakout),
-        Breakout("breakout.bollinger-upper.v1", -72.0, -88.0, BollingerUpperBreak),
-        Volume("volume.surge-breakout.v1", -60.1, -94.2, VolumeSurgeBreakout),
-        Volume("volume.obv-confirmed-trend.v1", -62.0, -72.0, ObvConfirmedTrend),
-        Volatility("volatility.atr-expansion.v1", -57.5, -71.7, AtrExpansionTrend),
+        Trend("trend.momentum-dual-horizon.v1", -11.4, -23.4, MomentumDualHorizon),
+        Trend("trend.ema-cross-12-48.v1", -13.0, -27.6, EmaCross),
+        Trend("trend.macd-histogram-flip.v1", -15.3, -27.4, MacdFlip),
+        Trend("trend.adx-filtered.v1", -9.9, -28.5, AdxFilteredTrend),
+        Reversion("reversion.rsi-oversold.v1", -15.9, -33.5, RsiOversold),
+        Reversion("reversion.bollinger-lower.v1", -7.8, -21.2, BollingerLowerTouch),
+        Reversion("reversion.stochastic-oversold.v1", -18.4, -30.9, StochasticOversold),
+        Reversion("reversion.vwap.v1", -10.2, -23.1, VwapReversion),
+        // Stale: too few non-overlapping trades in the held-out half to re-measure.
+        Breakout("breakout.donchian-20.v1", -70.0, -85.0, DonchianBreakout) with { Qualification = StrategyQualification.Stale },
+        Breakout("breakout.bollinger-upper.v1", 1.5, -14.5, BollingerUpperBreak),
+        // Stale: too few non-overlapping trades in the held-out half to re-measure.
+        Volume("volume.surge-breakout.v1", -60.1, -94.2, VolumeSurgeBreakout) with { Qualification = StrategyQualification.Stale },
+        Volume("volume.obv-confirmed-trend.v1", -9.6, -24.4, ObvConfirmedTrend),
+        Volatility("volatility.atr-expansion.v1", -13.8, -27.0, AtrExpansionTrend),
     ];
 
     /// <summary>
@@ -107,19 +151,21 @@ public static class SignalStrategies
     /// </summary>
     public static IReadOnlyList<SignalStrategy> ForEquity { get; } =
     [
-        Reversion("reversion.vwap.v1", 3.3, -13.6, VwapReversion),
-        Reversion("reversion.rsi-oversold.v1", -2.4, -12.4, RsiOversold),
-        Reversion("reversion.bollinger-lower.v1", -5.3, -11.1, BollingerLowerTouch),
-        Trend("trend.macd-histogram-flip.v1", -5.5, -10.5, MacdFlip),
-        Trend("trend.momentum-dual-horizon.v1", -8.3, -11.8, MomentumDualHorizon),
-        Reversion("reversion.stochastic-oversold.v1", -8.1, -12.3, StochasticOversold),
-        Volume("volume.obv-confirmed-trend.v1", -8.7, -12.4, ObvConfirmedTrend),
-        Trend("trend.adx-filtered.v1", -9.5, -15.0, AdxFilteredTrend),
-        Breakout("breakout.donchian-20.v1", -9.8, -14.5, DonchianBreakout),
-        Volatility("volatility.atr-expansion.v1", -9.5, -14.0, AtrExpansionTrend),
-        Breakout("breakout.bollinger-upper.v1", -11.4, -17.4, BollingerUpperBreak),
-        Volume("volume.surge-breakout.v1", -3.6, -17.5, VolumeSurgeBreakout),
-        Trend("trend.ema-cross-12-48.v1", -15.6, -23.6, EmaCross),
+        Reversion("reversion.vwap.v1", -7.9, -10.6, VwapReversion),
+        Reversion("reversion.rsi-oversold.v1", -5.7, -11.0, RsiOversold),
+        Reversion("reversion.bollinger-lower.v1", -6.5, -9.7, BollingerLowerTouch),
+        Trend("trend.macd-histogram-flip.v1", -9.6, -12.4, MacdFlip),
+        Trend("trend.momentum-dual-horizon.v1", -11.2, -13.5, MomentumDualHorizon),
+        Reversion("reversion.stochastic-oversold.v1", -9.3, -12.0, StochasticOversold),
+        Volume("volume.obv-confirmed-trend.v1", -12.7, -15.7, ObvConfirmedTrend),
+        Trend("trend.adx-filtered.v1", -10.4, -14.7, AdxFilteredTrend),
+        // Stale: too few non-overlapping trades in the held-out half to re-measure.
+        Breakout("breakout.donchian-20.v1", -9.8, -14.5, DonchianBreakout) with { Qualification = StrategyQualification.Stale },
+        Volatility("volatility.atr-expansion.v1", -13.0, -16.1, AtrExpansionTrend),
+        Breakout("breakout.bollinger-upper.v1", -13.2, -17.0, BollingerUpperBreak),
+        // Stale: too few non-overlapping trades in the held-out half to re-measure.
+        Volume("volume.surge-breakout.v1", -3.6, -17.5, VolumeSurgeBreakout) with { Qualification = StrategyQualification.Stale },
+        Trend("trend.ema-cross-12-48.v1", -11.8, -16.8, EmaCross),
     ];
 
     /// <summary>
@@ -160,7 +206,10 @@ public static class SignalStrategies
     /// of sixty-eight, several families sit close enough to breakeven to remain worth observing.
     /// </summary>
     public static IReadOnlyList<SignalStrategy> Tradable(TradedAssetClass assetClass) =>
-        [.. For(assetClass).Where(strategy => !strategy.IsKnownToLose())];
+    [
+        .. For(assetClass).Where(strategy =>
+            strategy.Qualification is not StrategyQualification.Stale && !strategy.IsKnownToLose()),
+    ];
 
     /// <summary>
     /// The strategies that need nothing but closing prices.

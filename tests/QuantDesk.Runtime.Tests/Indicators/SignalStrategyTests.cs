@@ -286,12 +286,15 @@ public sealed class StrategyRotationTests
     [Fact]
     public void NoStrategyClaimsToBeQualified()
     {
-        // The whole point. Thirteen families were tested and none cleared its own costs at a lower
-        // bound; a strategy that has not may be run for evidence but never described as an edge.
+        // The whole point. Fifteen families were tested across 78 trials and none cleared its own
+        // costs at a lower bound out of sample; a strategy that has not may be run for evidence but
+        // never described as an edge. Two are Stale rather than Unqualified -- their research
+        // describes a rule the code no longer computes -- which is a weaker claim still, not a
+        // stronger one.
         Assert.All(SignalStrategies.ForCrypto,
-            s => Assert.Equal(StrategyQualification.Unqualified, s.Qualification));
+            s => Assert.NotEqual(StrategyQualification.Qualified, s.Qualification));
         Assert.All(SignalStrategies.ForEquity,
-            s => Assert.Equal(StrategyQualification.Unqualified, s.Qualification));
+            s => Assert.NotEqual(StrategyQualification.Qualified, s.Qualification));
     }
 
     [Fact]
@@ -375,6 +378,28 @@ public sealed class StrategyRotationRestoreTests
         rotation.RestoreFrom(["", "   ", "a.v1"], [a]);
 
         Assert.Single(rotation.TradeCounts());
+    }
+
+    [Fact]
+    public void WhatSurvivesTheReMeasuredEvidenceIsRecordedSoItCannotChangeUnnoticed()
+    {
+        // Pinned deliberately. Tradable() is what decides whether the account opens a position at
+        // all, so a change to it is a change to what the system trades -- and after the 2026-09-02
+        // re-run against out-of-sample figures at the corrected 33.7 bps round trip, almost nothing
+        // survives. Crypto keeps one breakout rule whose mean is positive but whose lower bound is
+        // not; the deflated Sharpe across 39 trials is 0.000, so that is noise rather than an edge,
+        // and it trades only because it is unproven rather than measured to lose. Every equity rule
+        // is negative by more than its own standard error.
+        //
+        // If this test fails, the evidence changed. Read the new numbers before changing the test.
+        Assert.Equal(
+            ["breakout.bollinger-upper.v1"],
+            SignalStrategies.Tradable(TradedAssetClass.SpotCrypto).Select(item => item.Id));
+
+        // Every equity rule is negative by more than its own standard error. The one that is not,
+        // volume.surge-breakout.v1, is Stale rather than tradable: its -3.6 was measured against a
+        // volume z-score the code no longer computes.
+        Assert.Empty(SignalStrategies.Tradable(TradedAssetClass.UsEquity));
     }
 
     private static SignalStrategy Strategy(string id, string mechanism) =>
@@ -496,20 +521,39 @@ public sealed class KnownLoserTests
     [Fact]
     public void EveryCryptoStrategyIsKnownToLoseSoTheLaneStopsOpeningPositions()
     {
-        // The live confirmation: nine round trips, $1,799 of notional, $9.00 of round-trip fees,
-        // and an account down $6.57. Gross price movement was approximately nothing -- the fee was
-        // the entire loss, exactly as the research predicted.
-        Assert.All(SignalStrategies.ForCrypto, s => Assert.True(s.IsKnownToLose()));
-        Assert.Empty(SignalStrategies.Tradable(TradedAssetClass.SpotCrypto));
+        // Re-measured on 2026-09-02 out of sample, at the 33.7 bps the broker-side reconstruction
+        // actually charged rather than the 68 that was assumed. Twelve of thirteen are still
+        // measured to lose by more than their own standard error; the exception is
+        // breakout.bollinger-upper.v1, whose out-of-sample mean is +1.5 with a lower bound of
+        // -14.5. Across 39 crypto trials the deflated Sharpe ratio is 0.000, so that is noise and
+        // not an edge -- it trades because it is unproven, which is a different claim.
+        Assert.All(
+            SignalStrategies.ForCrypto.Where(s => s.Id != "breakout.bollinger-upper.v1"),
+            s => Assert.True(
+                s.IsKnownToLose() || s.Qualification is StrategyQualification.Stale, s.Id));
+
+        Assert.False(
+            SignalStrategies.ForCrypto.Single(s => s.Id == "breakout.bollinger-upper.v1")
+                .IsKnownToLose());
     }
 
     [Fact]
-    public void EquityStrategiesNearBreakevenSurviveBecauseTheCostIsAnOrderOfMagnitudeLower()
+    public void NoEquityStrategySurvivesTheReMeasurement()
     {
-        // At roughly eight basis points a round trip rather than sixty-eight, the same absent edge
-        // costs far less to keep observing, and several families sit close enough to breakeven that
-        // the sample genuinely cannot tell them from flat.
-        Assert.NotEmpty(SignalStrategies.Tradable(TradedAssetClass.UsEquity));
+        // This test used to assert the opposite, on the strength of a scan that ranked and reported
+        // on one undivided block with a rolling-window VWAP standing in for VWAP. Re-measured out
+        // of sample at the two-hour hold the lane actually uses, every equity family is negative by
+        // more than its own standard error -- including reversion.vwap.v1, which had been the best
+        // rule in the book at +3.3 and is -7.9 once VWAP means what VWAP means.
+        //
+        // Across 39 equity trials PBO is 0.258 and the deflated Sharpe ratio is 0.000. The equity
+        // lane standing down is the correct reading of that, not a regression.
+        Assert.Empty(SignalStrategies.Tradable(TradedAssetClass.UsEquity));
+
+        Assert.All(
+            SignalStrategies.ForEquity,
+            s => Assert.True(
+                s.IsKnownToLose() || s.Qualification is StrategyQualification.Stale, s.Id));
     }
 
     [Fact]
