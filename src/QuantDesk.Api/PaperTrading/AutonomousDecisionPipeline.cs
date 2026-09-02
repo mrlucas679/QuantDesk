@@ -58,20 +58,26 @@ public sealed class AutonomousDecisionPipeline(
     /// only honest answer there: an indicator seeded on too little history returns a number that
     /// looks valid and is wrong.
     /// </summary>
-    private StrategySelection? SelectStrategy(DirectionalMarketEvidence evidence, OpportunityRoute route)
+    private StrategySelection? SelectStrategy(
+        DirectionalMarketEvidence evidence,
+        OpportunityRoute route,
+        IReadOnlyDictionary<string, int> openByMechanism)
     {
         IndicatorSet? indicators = evidence.HasFullBars
             ? IndicatorSet.Build(evidence.Closes, evidence.Highs, evidence.Lows, evidence.Volumes)
             : null;
 
+        IReadOnlyList<SignalStrategy> available = SignalStrategies.For(route.AssetClass);
         if (indicators is not null)
-            return rotation.Select(SignalStrategies.For(route.AssetClass), indicators);
+            return rotation.Select(available, indicators, openByMechanism, MechanismCap(available));
 
         // Closes only, or too little history for the slower indicators. Rather than fall silent,
         // fall back to the families that genuinely need nothing else -- which is what the lane
         // traded before any of this existed. Going quiet here would be the worse failure: a feed
         // that briefly returns short history would stop the lane without any signal that it had.
-        return rotation.Select(SignalStrategies.ClosesOnly(route.AssetClass), CloseOnlySet(evidence));
+        return rotation.Select(
+            SignalStrategies.ClosesOnly(route.AssetClass), CloseOnlySet(evidence),
+            openByMechanism, MechanismCap(available));
     }
 
     /// <summary>
@@ -95,6 +101,19 @@ public sealed class AutonomousDecisionPipeline(
     /// experts remain for the path where no strategy layer runs, and their disagreement is
     /// meaningful there because they are genuinely two readings of the same mechanism.
     /// </summary>
+    /// <summary>
+    /// How many concurrent positions one mechanism may hold.
+    ///
+    /// Half the mechanisms in play, rounded up, which leaves the other half room to act when their
+    /// conditions arrive. A tighter cap would starve whichever mechanism the market currently
+    /// favours; a looser one lets it take everything, which is the state this exists to prevent.
+    /// </summary>
+    private static int MechanismCap(IReadOnlyList<SignalStrategy> available)
+    {
+        int mechanisms = available.Select(item => item.Mechanism).Distinct(StringComparer.Ordinal).Count();
+        return Math.Max(1, (int)Math.Ceiling(mechanisms / 2.0));
+    }
+
     private const int StrategyExpertId = 16;
 
     private const int MediumTrendExpertId = 14;
@@ -108,6 +127,7 @@ public sealed class AutonomousDecisionPipeline(
         bool brokerHealthy,
         bool portfolioReconciled,
         AccountCapabilities capabilities,
+        IReadOnlyDictionary<string, int>? openPositionsByMechanism = null,
         double? verifiedForecastBps = null,
         string? verifiedStrategyFamily = null,
         StrategyDefinitionContract? verifiedStrategyDefinition = null,
@@ -133,6 +153,8 @@ public sealed class AutonomousDecisionPipeline(
         AccountCapabilities effectiveCapabilities = capabilities;
         StrategySelection? selection = null;
         double expectedMoveBps = 0d;
+        IReadOnlyDictionary<string, int> openByMechanism =
+            openPositionsByMechanism ?? new Dictionary<string, int>(StringComparer.Ordinal);
         if (verifiedForecastBps is null)
         {
             // Strategies first, then the cost hurdle.
@@ -144,7 +166,7 @@ public sealed class AutonomousDecisionPipeline(
             // mean-reversion rule could only fire when prices were already rising, so buying a dip
             // required the dip not to have happened. Nine of thirteen strategies could never have
             // opened a position.
-            selection = SelectStrategy(evidence, route);
+            selection = SelectStrategy(evidence, route, openByMechanism);
             if (selection is null) return Reject("NoStrategySignal");
 
             // The hurdle a strategy of any direction has to clear: does this instrument move enough

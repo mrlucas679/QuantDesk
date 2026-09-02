@@ -37,7 +37,11 @@ public sealed class StrategyRotation
     /// <summary>
     /// Evaluates every strategy at the last bar and selects one, or null when none fired.
     /// </summary>
-    public StrategySelection? Select(IReadOnlyList<SignalStrategy> strategies, IndicatorSet indicators)
+    public StrategySelection? Select(
+        IReadOnlyList<SignalStrategy> strategies,
+        IndicatorSet indicators,
+        IReadOnlyDictionary<string, int>? openByMechanism = null,
+        int maximumPerMechanism = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(strategies);
         ArgumentNullException.ThrowIfNull(indicators);
@@ -59,6 +63,34 @@ public sealed class StrategyRotation
         }
 
         if (fired.Count == 0) return null;
+
+        // A mechanism that already holds its share stands down, even though it fired.
+        //
+        // Balancing by trade count cannot equalise across opposing mechanisms, because they never
+        // compete: a trend rule fires on rising prices and a reversion rule on oversold ones, so
+        // they are almost never candidates on the same bar. The rotation only chooses among
+        // strategies that fired together, and trend rules simply fired first -- taking all seven
+        // crypto symbols for four hours each. Reversion had no capacity left to use when its own
+        // conditions arrived, and would have gone the whole day unsampled while the code looked
+        // like it was allocating fairly.
+        //
+        // Capping concurrent positions per mechanism reserves room for the mechanisms whose turn
+        // has not come yet. It costs some trades from whichever mechanism is currently firing,
+        // which is the right trade: a day of evidence about one mechanism is worth less than a day
+        // of evidence about five.
+        if (openByMechanism is not null && maximumPerMechanism < int.MaxValue)
+        {
+            List<SignalStrategy> withCapacity =
+            [
+                .. fired.Where(item =>
+                    openByMechanism.GetValueOrDefault(item.Mechanism) < maximumPerMechanism),
+            ];
+
+            // Nothing is forced through when every firing mechanism is full. Abstaining is the
+            // honest outcome: the capacity genuinely is spoken for.
+            if (withCapacity.Count == 0) return null;
+            fired = withCapacity;
+        }
 
         lock (_gate)
         {

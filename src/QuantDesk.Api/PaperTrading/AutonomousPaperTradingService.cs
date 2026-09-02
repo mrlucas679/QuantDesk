@@ -272,6 +272,9 @@ public sealed class AutonomousPaperTradingService(
         DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, route, evidence, initial, true, true, capabilities,
+            // What each mechanism already holds, so one cannot monopolise the universe and leave
+            // the others unsampled when their conditions finally appear.
+            OpenPositionsByMechanism(),
             experimental ? null : (double)forecast!.PointForecast,
             experimental ? null : research.StrategyFamily,
             experimental ? null : research.StrategyDefinition,
@@ -562,6 +565,30 @@ public sealed class AutonomousPaperTradingService(
             logger.LogDebug(exception, "Could not read the venue session clock.");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Concurrent open positions per strategy mechanism, from the durable records.
+    ///
+    /// Read from the store rather than tracked in memory for the same reason the rotation's counts
+    /// are: it survives a restart, and it is the same history the evidence will be computed from.
+    /// </summary>
+    private IReadOnlyDictionary<string, int> OpenPositionsByMechanism()
+    {
+        Dictionary<string, string> mechanisms = SignalStrategies.ForCrypto
+            .Concat(SignalStrategies.ForEquity)
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Mechanism, StringComparer.Ordinal);
+
+        var open = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (SpotExecutionRecord record in spotStore.ListNonterminal())
+        {
+            if (record.EntryFilledQuantity <= 0m) continue;
+            if (!mechanisms.TryGetValue(record.StrategyId, out string? mechanism)) continue;
+            open[mechanism] = open.GetValueOrDefault(mechanism) + 1;
+        }
+
+        return open;
     }
 
     private double? MeasuredCostUpperBoundBps() =>

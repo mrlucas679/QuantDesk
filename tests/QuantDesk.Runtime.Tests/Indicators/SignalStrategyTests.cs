@@ -356,3 +356,68 @@ public sealed class RotationCountsOnlyRealTradesTests
     private static IndicatorSet Bars() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
 }
+
+/// <summary>
+/// Reserving capacity so one mechanism cannot monopolise the universe.
+///
+/// Balancing by trade count cannot equalise across opposing mechanisms, because they never compete:
+/// a trend rule fires on rising prices and a reversion rule on oversold ones, so they are almost
+/// never candidates on the same bar. Trend simply fired first and took all seven crypto symbols for
+/// four hours each, and reversion had no capacity left when its own conditions arrived.
+/// </summary>
+public sealed class MechanismCapacityTests
+{
+    [Fact]
+    public void AMechanismAtItsCapStandsDownForOneThatIsNot()
+    {
+        var rotation = new StrategyRotation();
+        SignalStrategy trend = Strategy("a.trend.v1", "trend");
+        SignalStrategy reversion = Strategy("b.reversion.v1", "reversion");
+        Dictionary<string, int> open = new(StringComparer.Ordinal) { ["trend"] = 4 };
+
+        StrategySelection? selection = rotation.Select([trend, reversion], Bars(), open, maximumPerMechanism: 4);
+
+        Assert.Equal("b.reversion.v1", selection!.Strategy.Id);
+    }
+
+    [Fact]
+    public void BelowTheCapTheUsualBalancingStillDecides()
+    {
+        var rotation = new StrategyRotation();
+        SignalStrategy busy = Strategy("a.busy.v1", "trend");
+        SignalStrategy quiet = Strategy("b.quiet.v1", "reversion");
+        rotation.RecordTrade(busy);
+        Dictionary<string, int> open = new(StringComparer.Ordinal) { ["trend"] = 1 };
+
+        Assert.Equal("b.quiet.v1",
+            rotation.Select([busy, quiet], Bars(), open, maximumPerMechanism: 4)!.Strategy.Id);
+    }
+
+    [Fact]
+    public void EveryFiringMechanismBeingFullMeansAbstaining()
+    {
+        // Nothing is forced through. The capacity genuinely is spoken for, and opening anyway would
+        // defeat the reservation the cap exists to make.
+        var rotation = new StrategyRotation();
+        Dictionary<string, int> open = new(StringComparer.Ordinal) { ["trend"] = 4 };
+
+        Assert.Null(rotation.Select(
+            [Strategy("a.trend.v1", "trend")], Bars(), open, maximumPerMechanism: 4));
+    }
+
+    [Fact]
+    public void WithNoCapSuppliedNothingIsHeldBack()
+    {
+        // The default stays permissive, so a caller that does not track capacity is not silently
+        // given a different allocation policy than it asked for.
+        var rotation = new StrategyRotation();
+
+        Assert.NotNull(rotation.Select([Strategy("a.trend.v1", "trend")], Bars()));
+    }
+
+    private static SignalStrategy Strategy(string id, string mechanism) =>
+        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
+
+    private static IndicatorSet Bars() =>
+        IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
+}
