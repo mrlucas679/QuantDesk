@@ -510,6 +510,29 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
     if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
         return Results.Unauthorized();
 
+    // The diagnostic lane has no strategy and no opinion. It exists to prove the durable execution
+    // path works -- reservation before POST, recovery by client order ID, reconciliation -- by
+    // opening and closing a real position. That proof was obtained long ago.
+    //
+    // Left reachable, it kept being driven: 132 of the 151 orders placed in the twenty-four hours
+    // to 2026-09-02 came from this lane, 66 BTC round trips on roughly 12.65 USD each, paying the
+    // venue's 0.25% a side every time for a result that was already known. It was the majority of
+    // the day's order flow and the majority of its fees.
+    //
+    // It now requires an explicit opt-in rather than merely an operator key. A lane that can be
+    // driven into unbounded fee-paying churn by one endpoint should not be a default-on capability
+    // once what it proves has been proven.
+    if (!bool.TryParse(Environment.GetEnvironmentVariable("QUANTDESK_DIAGNOSTIC_ENABLED"), out bool diagnosticsAllowed)
+        || !diagnosticsAllowed)
+    {
+        return Results.Conflict(new
+        {
+            reason = "DIAGNOSTIC_LANE_DISABLED",
+            detail = "Set QUANTDESK_DIAGNOSTIC_ENABLED=true to run the durable-execution proof. "
+                   + "It trades a real position and pays real fees for a result already recorded.",
+        });
+    }
+
     DiagnosticExecutionRecord? existing = store.Find(experimentId);
     DiagnosticExecutionResult result = existing is null
         ? await diagnostics.PrepareAsync(
