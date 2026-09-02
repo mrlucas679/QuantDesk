@@ -18,6 +18,10 @@ namespace QuantDesk.Alpaca.MarketData;
 public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaOptions options)
 {
     private const int RequiredCloses = 13;
+
+    /// <summary>Bars requested, and bars retained for indicator warm-up.</summary>
+    private const int BarLimit = 400;
+    private const int RetainedBars = 240;
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     /// <summary>Gets the current NBBO quote and the recent 5-minute closes for one symbol.</summary>
@@ -26,8 +30,7 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
     {
         string normalized = Validate(symbol);
         (decimal bid, decimal ask) = await GetQuoteAsync(normalized, cancellationToken);
-        IReadOnlyList<decimal> closes = await GetRecentClosesAsync(normalized, cancellationToken);
-        return new DirectionalMarketEvidence(bid, ask, closes);
+        return await GetRecentBarsAsync(normalized, bid, ask, cancellationToken);
     }
 
     /// <summary>Gets the current executable NBBO quote without fetching bar history.</summary>
@@ -62,29 +65,71 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
         return (bid, ask);
     }
 
-    private async Task<IReadOnlyList<decimal>> GetRecentClosesAsync(
-        string symbol, CancellationToken cancellationToken)
+    /// <summary>
+    /// The recent bar history, as full bars rather than closes alone.
+    ///
+    /// Reaches back further than the longest indicator window rather than the shortest usable one:
+    /// a recursive indicator seeded on too little history produces a number that looks valid and is
+    /// wrong for its first few dozen bars, which is worse than declining to produce one.
+    /// </summary>
+    private async Task<DirectionalMarketEvidence> GetRecentBarsAsync(
+        string symbol, decimal bid, decimal ask, CancellationToken cancellationToken)
     {
-        // Reach back further than the required window so an illiquid open or a halt does not
-        // silently shorten the series; the gate rejects a short series rather than guessing.
-        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-6).ToString("O"));
+        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-30).ToString("O"));
         string requestUri = options.DataUri("v2/stocks/bars") +
             $"?symbols={Uri.EscapeDataString(symbol)}&timeframe=5Min&start={start}" +
-            "&limit=100&sort=asc&feed=iex&adjustment=all";
+            $"&limit={BarLimit}&sort=asc&feed=iex&adjustment=all";
         using var request = AuthenticatedRequest(requestUri);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
         await AlpacaMarketDataResponse.EnsureSuccessAsync(response, "v2/stocks/bars", cancellationToken);
         EquityBarsResponse? payload = await response.Content.ReadFromJsonAsync<EquityBarsResponse>(
             JsonOptions, cancellationToken);
         if (payload?.Bars is null || !payload.Bars.TryGetValue(symbol, out IReadOnlyList<EquityBar>? bars))
-            return [];
+            return new DirectionalMarketEvidence(bid, ask, []);
 
-        decimal[] closes = bars
-            .Select(bar => TryReadDecimal(bar.Close, out decimal close) ? close : 0m)
-            .Where(close => close > 0m)
-            .ToArray();
-        return closes.Length <= RequiredCloses ? closes : closes[^RequiredCloses..];
+        List<decimal> closes = [], highs = [], lows = [], volumes = [];
+        bool complete = true;
+        foreach (EquityBar bar in bars)
+        {
+            // The close is what makes a bar usable at all; a bar without one is dropped. A bar
+            // missing its high, low, or volume is kept for its close, and the extra series are
+            // abandoned wholesale rather than left ragged -- windowed indicators read these by
+            // index, so a series with holes in it is worse than no series. The consumer then sees
+            // closes only, which is an honest description of what arrived.
+            if (!TryReadDecimal(bar.Close, out decimal close) || close <= 0) continue;
+            closes.Add(close);
+
+            if (!complete) continue;
+            if (!TryReadDecimal(bar.High, out decimal high) || high <= 0 ||
+                !TryReadDecimal(bar.Low, out decimal low) || low <= 0 ||
+                !TryReadDecimal(bar.Volume, out decimal volume))
+            {
+                complete = false;
+                continue;
+            }
+
+            highs.Add(high);
+            lows.Add(low);
+            volumes.Add(volume);
+        }
+
+        if (!complete)
+        {
+            highs.Clear();
+            lows.Clear();
+            volumes.Clear();
+        }
+
+        return new DirectionalMarketEvidence(bid, ask, Tail(closes))
+        {
+            Highs = Tail(highs),
+            Lows = Tail(lows),
+            Volumes = Tail(volumes),
+        };
     }
+
+    private static IReadOnlyList<decimal> Tail(List<decimal> values) =>
+        values.Count <= RetainedBars ? values : values[^RetainedBars..];
 
     private static string Validate(string symbol)
     {
@@ -131,5 +176,9 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
     private sealed record EquityBarsResponse(
         [property: JsonPropertyName("bars")] IReadOnlyDictionary<string, IReadOnlyList<EquityBar>>? Bars);
 
-    private sealed record EquityBar([property: JsonPropertyName("c")] JsonElement Close);
+    private sealed record EquityBar(
+        [property: JsonPropertyName("c")] JsonElement Close,
+        [property: JsonPropertyName("h")] JsonElement High,
+        [property: JsonPropertyName("l")] JsonElement Low,
+        [property: JsonPropertyName("v")] JsonElement Volume);
 }

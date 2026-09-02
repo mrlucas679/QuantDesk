@@ -17,6 +17,7 @@ using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
+using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Ingestion;
 using QuantDesk.Runtime.Modes;
 using QuantDesk.Runtime.Options;
@@ -149,6 +150,9 @@ builder.Services.AddSingleton(services => new RiskGovernor(
     RiskLimitOptions.FromEnvironment(
         services.GetRequiredService<AutonomousPaperTradingOptions>().OrderNotional)));
 builder.Services.AddSingleton<ExitEngine>();
+// Shared across lanes on purpose: it balances live trades across strategies, and two lanes each
+// keeping their own count would each independently under-sample the same mechanisms.
+builder.Services.AddSingleton<StrategyRotation>();
 builder.Services.AddSingleton<AutonomousDecisionPipeline>();
 
 // Runs every configured lane. Registered as a single hosted service that owns them all rather than
@@ -169,6 +173,7 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<ExpertCommittee>(),
         compiler,
         services.GetRequiredService<AssetClassPricing>(),
+        services.GetRequiredService<StrategyRotation>(),
         services.GetRequiredService<ActionabilityGate>(),
         services.GetRequiredService<RiskGovernor>(),
         services.GetRequiredService<IRuntimeClock>(),

@@ -8,6 +8,10 @@ namespace QuantDesk.Alpaca.MarketData;
 
 public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaOptions options)
 {
+    /// <summary>Bars requested, and bars retained for indicator warm-up.</summary>
+    private const int BarLimit = 400;
+    private const int RetainedBars = 240;
+
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     public async Task<decimal> GetAskAsync(string symbol, CancellationToken cancellationToken)
@@ -27,8 +31,13 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         string symbol, CancellationToken cancellationToken)
     {
         (decimal bid, decimal ask, decimal _, decimal _) = await GetQuoteAsync(symbol, cancellationToken);
-        IReadOnlyList<decimal> closes = await GetRecentClosesAsync(symbol, cancellationToken);
-        return new DirectionalMarketEvidence(bid, ask, closes);
+        DirectionalMarketEvidence bars = await GetRecentBarsAsync(symbol, cancellationToken);
+        return new DirectionalMarketEvidence(bid, ask, bars.Closes)
+        {
+            Highs = bars.Highs,
+            Lows = bars.Lows,
+            Volumes = bars.Volumes,
+        };
     }
 
     public async Task<IReadOnlyList<HistoricalCryptoBar>> GetHistoricalBarsAsync(
@@ -92,12 +101,19 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         return (bid, ask, bidSize, askSize);
     }
 
-    private async Task<IReadOnlyList<decimal>> GetRecentClosesAsync(
+    /// <summary>
+    /// The recent bar history, as full bars rather than closes alone.
+    ///
+    /// Reaches back well past the longest indicator window: a recursive indicator seeded on too
+    /// little history produces a number that looks valid and is wrong for its first few dozen bars.
+    /// </summary>
+    private async Task<DirectionalMarketEvidence> GetRecentBarsAsync(
         string symbol, CancellationToken cancellationToken)
     {
-        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-2).ToString("O"));
+        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-24).ToString("O"));
         string requestUri = options.DataUri("v1beta3/crypto/us/bars") +
-            $"?symbols={Uri.EscapeDataString(symbol)}&timeframe=5Min&start={start}&limit=30&sort=asc";
+            $"?symbols={Uri.EscapeDataString(symbol)}&timeframe=5Min&start={start}" +
+            $"&limit={BarLimit}&sort=asc";
         using var request = AuthenticatedRequest(requestUri);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
         await AlpacaMarketDataResponse.EnsureSuccessAsync(
@@ -106,10 +122,51 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
             JsonOptions, cancellationToken);
         IReadOnlyList<CryptoBar>? bars = payload?.Bars.FirstOrDefault(pair =>
             string.Equals(Normalize(pair.Key), Normalize(symbol), StringComparison.OrdinalIgnoreCase)).Value;
-        return bars?.Select(bar => TryReadDecimal(bar.Close, out decimal close) ? close : 0)
-            .Where(close => close > 0)
-            .ToArray() ?? [];
+        if (bars is null) return new DirectionalMarketEvidence(0m, 0m, []);
+
+        List<decimal> closes = [], highs = [], lows = [], volumes = [];
+        bool complete = true;
+        foreach (CryptoBar bar in bars)
+        {
+            // The close is what makes a bar usable at all; a bar without one is dropped. A bar
+            // missing its high, low, or volume is kept for its close, and the extra series are
+            // abandoned wholesale rather than left ragged -- windowed indicators read these by
+            // index, so a series with holes in it is worse than no series. The consumer then sees
+            // closes only, which is an honest description of what arrived.
+            if (!TryReadDecimal(bar.Close, out decimal close) || close <= 0) continue;
+            closes.Add(close);
+
+            if (!complete) continue;
+            if (!TryReadDecimal(bar.High, out decimal high) || high <= 0 ||
+                !TryReadDecimal(bar.Low, out decimal low) || low <= 0 ||
+                !TryReadDecimal(bar.Volume, out decimal volume))
+            {
+                complete = false;
+                continue;
+            }
+
+            highs.Add(high);
+            lows.Add(low);
+            volumes.Add(volume);
+        }
+
+        if (!complete)
+        {
+            highs.Clear();
+            lows.Clear();
+            volumes.Clear();
+        }
+
+        return new DirectionalMarketEvidence(0m, 0m, Tail(closes))
+        {
+            Highs = Tail(highs),
+            Lows = Tail(lows),
+            Volumes = Tail(volumes),
+        };
     }
+
+    private static IReadOnlyList<decimal> Tail(List<decimal> values) =>
+        values.Count <= RetainedBars ? values : values[^RetainedBars..];
 
     private static string Normalize(string symbol) => symbol.Replace("/", string.Empty, StringComparison.Ordinal);
 
@@ -165,7 +222,11 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
         [property: JsonPropertyName("bars")] IReadOnlyDictionary<string, IReadOnlyList<HistoricalCryptoBar>> Bars,
         [property: JsonPropertyName("next_page_token")] string? NextPageToken);
 
-    private sealed record CryptoBar([property: JsonPropertyName("c")] JsonElement Close);
+    private sealed record CryptoBar(
+        [property: JsonPropertyName("c")] JsonElement Close,
+        [property: JsonPropertyName("h")] JsonElement High,
+        [property: JsonPropertyName("l")] JsonElement Low,
+        [property: JsonPropertyName("v")] JsonElement Volume);
 }
 
 public sealed record CryptoQuoteSnapshot(decimal Bid, decimal Ask, decimal BidSize, decimal AskSize);

@@ -7,6 +7,7 @@ using QuantDesk.Domain.Portfolio;
 using QuantDesk.Domain.Risk;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
+using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
@@ -24,8 +25,10 @@ public sealed class AutonomousDecisionPipelineTests
             0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.True(result.Approved);
-        // Named for the mechanism, not the venue: the same momentum rule compiles for either asset class.
-        Assert.Equal("directional-long-momentum-v1", result.Candidate?.StrategyId);
+        // Named for the rule that actually fired, not a generic family. The lane now asks several
+        // strategies and credits the trade to one of them, so the record says which mechanism
+        // opened the position -- without that the live evidence cannot be attributed to anything.
+        Assert.Equal("trend.momentum-dual-horizon.v1", result.Candidate?.StrategyId);
         Assert.Equal("crypto-long-managed-v1", result.Candidate?.ManagementPlan.ExitPolicyVersion);
         Assert.True(result.Risk?.Approved);
         Assert.Equal(2, result.Committee?.SupportingExperts.Count);
@@ -204,6 +207,7 @@ public sealed class AutonomousDecisionPipelineTests
             new CryptoDirectionalStrategyCompiler(new Usd(20), 0.05,
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
             new AssetClassPricing(new NoRealisedCosts()),
+            new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),
                 new Usd(250), 1, 100_000, 100_000, 100_000, 0.01, 1)),

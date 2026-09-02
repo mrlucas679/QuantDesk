@@ -11,6 +11,7 @@ using QuantDesk.Domain.Strategies;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Experts;
+using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
@@ -33,6 +34,7 @@ public sealed class AutonomousDecisionPipeline(
     ExpertCommittee committee,
     CryptoDirectionalStrategyCompiler compiler,
     AssetClassPricing pricing,
+    StrategyRotation rotation,
     ActionabilityGate actionability,
     RiskGovernor riskGovernor,
     IRuntimeClock clock,
@@ -47,6 +49,44 @@ public sealed class AutonomousDecisionPipeline(
     /// actively misleading to anyone reading the audit trail afterwards.
     /// </summary>
     private const string DefaultStrategyFamily = "directional-long-momentum-v1";
+
+    /// <summary>
+    /// Asks every strategy for this asset class whether it fires on the latest bar.
+    ///
+    /// Returns null when the evidence cannot support the indicators -- a series without highs, lows
+    /// and volumes, or one too short for the slowest indicator to have warmed up. Declining is the
+    /// only honest answer there: an indicator seeded on too little history returns a number that
+    /// looks valid and is wrong.
+    /// </summary>
+    private StrategySelection? SelectStrategy(DirectionalMarketEvidence evidence, OpportunityRoute route)
+    {
+        IndicatorSet? indicators = evidence.HasFullBars
+            ? IndicatorSet.Build(evidence.Closes, evidence.Highs, evidence.Lows, evidence.Volumes)
+            : null;
+
+        if (indicators is not null)
+            return rotation.Select(SignalStrategies.For(route.AssetClass), indicators);
+
+        // Closes only, or too little history for the slower indicators. Rather than fall silent,
+        // fall back to the families that genuinely need nothing else -- which is what the lane
+        // traded before any of this existed. Going quiet here would be the worse failure: a feed
+        // that briefly returns short history would stop the lane without any signal that it had.
+        return rotation.Select(SignalStrategies.ClosesOnly(route.AssetClass), CloseOnlySet(evidence));
+    }
+
+    /// <summary>
+    /// An indicator set carrying closes alone, with the bar's high and low taken as the close.
+    ///
+    /// Only the closes-only strategies are ever evaluated against it, so nothing reads the
+    /// synthesised high or low -- they exist to satisfy the shape, not to be used. A rule that
+    /// needed a true range would read zero here, which is why none of those rules is offered.
+    /// </summary>
+    private static IndicatorSet CloseOnlySet(DirectionalMarketEvidence evidence)
+    {
+        IReadOnlyList<decimal> zeroVolume = [.. evidence.Closes.Select(_ => 0m)];
+        return IndicatorSet.Build(evidence.Closes, evidence.Closes, evidence.Closes, zeroVolume)
+            ?? IndicatorSet.Unwarmed(evidence.Closes);
+    }
 
     private const int MediumTrendExpertId = 14;
     private const int ShortMomentumExpertId = 15;
@@ -82,8 +122,12 @@ public sealed class AutonomousDecisionPipeline(
         CryptoResearchGate researchGate = pricing.GateFor(route);
         ICostModel costs = pricing.CostsFor(route);
         AccountCapabilities effectiveCapabilities = capabilities;
+        StrategySelection? selection = null;
         if (verifiedForecastBps is null)
         {
+            // The cost gate first: no strategy, however it fires, may open a position whose expected
+            // move cannot pay the round trip. This is the same hurdle the single momentum rule used
+            // to enforce, kept in front of all of them rather than embedded in one.
             CryptoResearchDecision research = researchGate.Evaluate(evidence);
             if (!research.Approved)
             {
@@ -93,6 +137,21 @@ public sealed class AutonomousDecisionPipeline(
                     research.SpreadBps, research.LookbackBars);
                 return Reject(research.Reason);
             }
+
+            // Then the strategies. The lane used to trade one rule reading closes alone; this asks
+            // thirteen mechanisms -- trend, mean reversion, breakout, volume and volatility -- and
+            // credits the trade to whichever has the least live evidence so far, so the sample
+            // spreads across mechanisms instead of filling up with whichever fires most often.
+            selection = SelectStrategy(evidence, route);
+            if (selection is null) return Reject("NoStrategySignal");
+
+            logger.LogInformation(
+                "Strategy {Strategy} admitted {Instrument}; also firing: {Agreeing}. " +
+                "Research mean {Mean:0.0} bps, lower bound {Lower:0.0} bps, qualification {Qualification}.",
+                selection.Strategy.Id, instrumentSlot,
+                selection.AlsoFired.Count == 0 ? "none" : string.Join(", ", selection.AlsoFired),
+                selection.Strategy.ResearchMeanNetBps, selection.Strategy.ResearchLowerBoundBps,
+                selection.Strategy.Qualification);
         }
         else if (!double.IsFinite(verifiedForecastBps.Value) || verifiedForecastBps.Value <= 0)
         {
@@ -163,7 +222,8 @@ public sealed class AutonomousDecisionPipeline(
             ? compiler.Compile(
                 bundle, market, portfolio,
                 effectiveCapabilities,
-                nowTicks, route.AssetClass, verifiedStrategyFamily ?? DefaultStrategyFamily,
+                nowTicks, route.AssetClass,
+                verifiedStrategyFamily ?? selection?.Strategy.Id ?? DefaultStrategyFamily,
                 candidates)
             : compiler.Compile(
                 bundle, market, portfolio,

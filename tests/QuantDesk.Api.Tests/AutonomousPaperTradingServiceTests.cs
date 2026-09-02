@@ -9,6 +9,7 @@ using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Risk;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
+using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Domain.Runtime;
@@ -232,6 +233,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new CryptoDirectionalStrategyCompiler(
                 new Usd(notional), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
             new AssetClassPricing(new NoRealisedCosts()),
+            new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(RiskLimitOptions.FromEnvironment(notional)),
             clock, NullLogger<AutonomousDecisionPipeline>.Instance);

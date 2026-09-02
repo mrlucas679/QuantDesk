@@ -10,6 +10,7 @@ using QuantDesk.Domain.Strategies;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
+using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Domain.Runtime;
@@ -215,6 +216,7 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
             new CryptoDirectionalStrategyCompiler(OrderNotional, 0.05,
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
             new AssetClassPricing(new NoRealisedCosts()),
+            new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),
                 new Usd(250), 1, 100_000, 100_000, 100_000, 0.01, 1)),

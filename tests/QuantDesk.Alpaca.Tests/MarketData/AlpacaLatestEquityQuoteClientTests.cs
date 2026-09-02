@@ -8,7 +8,7 @@ namespace QuantDesk.Alpaca.Tests.MarketData;
 public sealed class AlpacaLatestEquityQuoteClientTests
 {
     [Fact]
-    public async Task ReturnsTheLiveSpreadAndTheMostRecentThirteenCloses()
+    public async Task ReturnsTheLiveSpreadAndRetainsHistoryForIndicatorWarmUp()
     {
         var handler = new SequencedHandler(
             """{"quotes":{"SPY":{"ap":601.25,"bp":601.23}}}""",
@@ -20,10 +20,13 @@ public sealed class AlpacaLatestEquityQuoteClientTests
 
         Assert.Equal(601.23m, evidence.Bid);
         Assert.Equal(601.25m, evidence.Ask);
-        Assert.Equal(13, evidence.Closes.Count);
-        // The window must be the newest closes, not the oldest.
+        // Every bar returned is retained, not truncated to the gate's 13-bar minimum. The gate
+        // still reads the last thirteen; the indicators need far more, and a 48-period average
+        // seeded on thirteen bars returns a number that looks valid and is wrong.
+        Assert.Equal(20, evidence.Closes.Count);
+        // The window must end on the newest close.
         Assert.Equal(119m, evidence.Closes[^1]);
-        Assert.Equal(107m, evidence.Closes[0]);
+        Assert.Equal(100m, evidence.Closes[0]);
         Assert.Contains("feed=iex", handler.Requests[0].Query, StringComparison.Ordinal);
         Assert.Contains("adjustment=all", handler.Requests[1].Query, StringComparison.Ordinal);
     }
