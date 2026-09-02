@@ -473,7 +473,12 @@ public sealed class AutonomousPaperTradingService(
                 profitTarget: profitTarget,
                 positionMarksBefore: marksBefore,
                 admittedAsExploration:
-                    decision.Risk?.Reason == RiskReason.ApprovedAsExploration))
+                    decision.Risk?.Reason == RiskReason.ApprovedAsExploration,
+                // The book as it stood when the decision was made. It cannot be recovered later:
+                // a spread read at reconciliation describes a different market.
+                decisionRelativeSpread: evidence.Ask > 0m && evidence.Bid > 0m
+                    ? (double)((evidence.Ask - evidence.Bid) / ((evidence.Ask + evidence.Bid) / 2m))
+                    : null))
         {
             state.UpdateSymbol(symbol, "abstained", symbol, reason: "ReservationRejected");
             return;

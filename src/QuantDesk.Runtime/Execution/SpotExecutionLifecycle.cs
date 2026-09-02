@@ -1,5 +1,6 @@
 using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Trading;
+using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Time;
 
@@ -87,7 +88,8 @@ public sealed class SpotExecutionLifecycle(
         decimal? accountEquityBefore = null,
         decimal profitTarget = 0m,
         IReadOnlyList<PositionMark>? positionMarksBefore = null,
-        bool admittedAsExploration = false)
+        bool admittedAsExploration = false,
+        double? decisionRelativeSpread = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -128,7 +130,8 @@ public sealed class SpotExecutionLifecycle(
             AccountEquityBefore = accountEquityBefore,
             ProfitTarget = profitTarget,
             PositionMarksBefore = positionMarksBefore ?? [],
-            AdmittedAsExploration = admittedAsExploration
+            AdmittedAsExploration = admittedAsExploration,
+            DecisionRelativeSpread = decisionRelativeSpread
         });
     }
 
@@ -367,6 +370,42 @@ public sealed class SpotExecutionLifecycle(
         }
 
         return marks;
+    }
+
+    /// <summary>
+    /// How far this round trip's reported result can be trusted.
+    ///
+    /// Graded at completion because that is when the trip is a fact. The spread it turns on was
+    /// captured at the decision, which is the only moment it describes.
+    /// </summary>
+    private static SimulationGrade GradeFor(SpotExecutionRecord record) =>
+        FillRealism.Grade(
+            record.DecisionRelativeSpread ?? 0d,
+
+            // A record that got as far as reconciling had a usable quote when it decided; the entry
+            // fence refuses on an unhealthy one before anything reaches the venue.
+            quoteHealthy: record.EntryReferencePrice is > 0m,
+
+            // Not observed per trip. Reported as full rather than guessed low, so the grade never
+            // claims a degradation it did not measure -- the coverage check on the indicator set is
+            // where an absent volume series is actually caught.
+            volumeCoverage: 1d,
+            notional: record.EntryReferencePrice is { } price and > 0m
+                ? price * record.EntryFilledQuantity
+                : 0m,
+
+            // The book is not retained on the record, so depth is not asserted either way. Not
+            // knowing the depth is not evidence that the depth was insufficient.
+            restingDepthNotional: null);
+
+    /// <summary>What a fill at the far touch would have cost beyond what the paper engine charged.</summary>
+    private static decimal? RealismCostFor(SpotExecutionRecord record)
+    {
+        if (record.DecisionRelativeSpread is not { } spread) return null;
+        if (record.EntryReferencePrice is not { } price || price <= 0m) return null;
+
+        return FillRealism.AdditionalRealismCost(
+            spread, price * record.EntryFilledQuantity, record.RealisedAccountPnl ?? 0m);
     }
 
     /// <summary>Projects a spot record onto the view every early-exit rule reads.</summary>
@@ -774,6 +813,11 @@ public sealed class SpotExecutionLifecycle(
             PositionMarksAfter = record.PositionMarksAfter.Count > 0
                 ? record.PositionMarksAfter
                 : MarkPositions(positions),
+            SimulationGrade = record.SimulationGrade ?? GradeFor(record).Grade.ToString(),
+            SimulationGradeReasons = record.SimulationGradeReasons.Count > 0
+                ? record.SimulationGradeReasons
+                : GradeFor(record).Reasons,
+            AdditionalRealismCost = record.AdditionalRealismCost ?? RealismCostFor(record),
             ExitReferencePrice = record.ExitReferencePrice ?? referencePrices?.CurrentMid(record.Symbol)
         };
         store.Update(complete);

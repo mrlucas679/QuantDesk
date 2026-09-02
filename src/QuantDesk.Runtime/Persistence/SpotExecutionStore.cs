@@ -162,6 +162,37 @@ public sealed record SpotExecutionRecord(
     public bool AdmittedAsExploration { get; init; }
 
     /// <summary>
+    /// The quoted spread at the moment the entry was decided, as a fraction of the mid.
+    ///
+    /// Captured because it cannot be recovered afterwards. The realism adjustment and the
+    /// simulation grade both turn on what the book looked like when the decision was made, and a
+    /// spread read at reconciliation describes a different market.
+    /// </summary>
+    public double? DecisionRelativeSpread { get; init; }
+
+    /// <summary>
+    /// How far the reported result can be trusted, and every reason it cannot be trusted further.
+    ///
+    /// A grade is not a measure of profit. A grade A loss is better evidence than a grade D gain,
+    /// because the question is whether the number describes trading or describes the simulator.
+    /// Every result this system has reported so far carried one fill assumption and no grade.
+    /// </summary>
+    public string? SimulationGrade { get; init; }
+
+    /// <inheritdoc cref="SimulationGrade"/>
+    public IReadOnlyList<string> SimulationGradeReasons { get; init; } = [];
+
+    /// <summary>
+    /// What a fill at the far touch on both legs would have cost beyond what the paper engine
+    /// charged, in USD.
+    ///
+    /// Kept beside the paper result rather than replacing it, per section 14.2: the paper number
+    /// proves the system behaved and the adjusted number is the only one that says anything about
+    /// money, so merging them would lose both claims.
+    /// </summary>
+    public decimal? AdditionalRealismCost { get; init; }
+
+    /// <summary>
     /// What the round trip actually did to the account.
     ///
     /// The only figure here that owes nothing to a fee model. Alpaca charges a "Coin Pair
