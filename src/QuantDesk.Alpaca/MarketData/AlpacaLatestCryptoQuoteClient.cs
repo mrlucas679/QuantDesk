@@ -8,9 +8,18 @@ namespace QuantDesk.Alpaca.MarketData;
 
 public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaOptions options)
 {
-    /// <summary>Bars requested, and bars retained for indicator warm-up.</summary>
-    private const int BarLimit = 400;
-    private const int RetainedBars = 240;
+    /// <summary>
+    /// Bars requested, and bars retained for indicator warm-up.
+    ///
+    /// Sized by the longest window anything downstream reads, which is 288 bars -- a full
+    /// twenty-four hours at five-minute sampling. Both the HAR volatility forecast and the regime
+    /// classifier measure against that horizon, and retaining 240 meant neither could ever produce
+    /// anything for crypto: the classifier ran on every equity symbol and silently on none of the
+    /// pairs the lane actually trades. Deliberately more than 288 so a few missing bars do not
+    /// take the whole family offline.
+    /// </summary>
+    private const int BarLimit = 600;
+    private const int RetainedBars = 360;
 
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
@@ -110,7 +119,7 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
     private async Task<DirectionalMarketEvidence> GetRecentBarsAsync(
         string symbol, CancellationToken cancellationToken)
     {
-        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-24).ToString("O"));
+        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-36).ToString("O"));
         string requestUri = options.DataUri("v1beta3/crypto/us/bars") +
             $"?symbols={Uri.EscapeDataString(symbol)}&timeframe=5Min&start={start}" +
             $"&limit={BarLimit}&sort=asc";
