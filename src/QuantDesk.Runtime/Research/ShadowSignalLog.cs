@@ -69,6 +69,21 @@ public sealed class ShadowSignalLog(string path)
 
     private readonly Lock _gate = new();
 
+    /// <summary>
+    /// The log, held in memory and written through.
+    ///
+    /// It was read and rewritten in full on every single recorded signal. Measured in production
+    /// thirty minutes after this shipped: an 83 KB file rewritten every two to four seconds, and a
+    /// lane that records up to ninety-one signals in one cycle was doing ninety-one full
+    /// serialisations of a file that only grows. At the twenty-thousand-signal cap that is roughly
+    /// eight megabytes, ninety-one times a cycle, on a path the trading loop awaits.
+    ///
+    /// Holding the map and writing once per batch makes the file cost proportional to cycles rather
+    /// than to signals, and reads free. Durability is unchanged where it matters: this is evidence,
+    /// not money, and it already fails soft in both directions.
+    /// </summary>
+    private Dictionary<string, ShadowSignal>? _cache;
+
     public bool IsAvailable()
     {
         try
@@ -94,14 +109,35 @@ public sealed class ShadowSignalLog(string path)
     public bool TryRecord(ShadowSignal signal)
     {
         ArgumentNullException.ThrowIfNull(signal);
-        if (signal.EntryReferencePrice <= 0m) return false;
+        return TryRecordMany([signal]) > 0;
+    }
+
+    /// <summary>
+    /// Records a batch of firings, writing the log at most once however many are new.
+    ///
+    /// The batch is the unit because the caller's unit is a batch: one evaluation of one instrument
+    /// asks every rule and several of them fire together. Recording them one at a time made the
+    /// cost of a cycle quadratic in the size of the log.
+    /// </summary>
+    /// <returns>How many were new.</returns>
+    public int TryRecordMany(IReadOnlyList<ShadowSignal> signals)
+    {
+        ArgumentNullException.ThrowIfNull(signals);
+        if (signals.Count == 0) return 0;
 
         lock (_gate)
         {
             Dictionary<string, ShadowSignal> all = Load();
-            if (!all.TryAdd(signal.SignalId, signal)) return false;
-            Save(all);
-            return true;
+            int added = 0;
+
+            foreach (ShadowSignal signal in signals)
+            {
+                if (signal is null || signal.EntryReferencePrice <= 0m) continue;
+                if (all.TryAdd(signal.SignalId, signal)) added++;
+            }
+
+            if (added > 0) Save(all);
+            return added;
         }
     }
 
@@ -196,22 +232,30 @@ public sealed class ShadowSignalLog(string path)
 
     private Dictionary<string, ShadowSignal> Load()
     {
+        if (_cache is not null) return _cache;
+
         try
         {
-            if (!File.Exists(path)) return new Dictionary<string, ShadowSignal>(StringComparer.Ordinal);
-            return JsonSerializer.Deserialize<Dictionary<string, ShadowSignal>>(
-                File.ReadAllText(path), Json) ?? new Dictionary<string, ShadowSignal>(StringComparer.Ordinal);
+            _cache = File.Exists(path)
+                ? JsonSerializer.Deserialize<Dictionary<string, ShadowSignal>>(
+                    File.ReadAllText(path), Json)
+                : null;
+            _cache ??= new Dictionary<string, ShadowSignal>(StringComparer.Ordinal);
+            return _cache;
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
             // A shadow log is evidence, not money. A corrupt or unreadable file must not stop the
             // lane, so it starts again rather than throwing into the trading path.
-            return new Dictionary<string, ShadowSignal>(StringComparer.Ordinal);
+            _cache = new Dictionary<string, ShadowSignal>(StringComparer.Ordinal);
+            return _cache;
         }
     }
 
     private void Save(Dictionary<string, ShadowSignal> all)
     {
+        _cache = all;
+
         if (all.Count > MaximumSignals)
         {
             foreach (string id in all.Values

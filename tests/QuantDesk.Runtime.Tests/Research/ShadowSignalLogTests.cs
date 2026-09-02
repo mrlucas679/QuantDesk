@@ -137,6 +137,43 @@ public sealed class ShadowSignalLogTests : IDisposable
         Assert.Empty(Log().ListAll());
     }
 
+    [Fact]
+    public void ABatchIsWrittenOnceHoweverManySignalsItCarries()
+    {
+        // The defect this fixes was measured in production: an 83 KB log rewritten every two to
+        // four seconds, because every single recorded signal read and rewrote the whole file. One
+        // evaluation can fire ninety-one rules, so a cycle's cost was quadratic in the log's size,
+        // on a path the trading loop awaits.
+        ShadowSignalLog log = Log();
+
+        List<ShadowSignal> batch =
+            [.. Enumerable.Range(0, 50).Select(i => Signal($"rule-{i}.v1", "BTC/USD", 100m))];
+
+        Assert.Equal(50, log.TryRecordMany(batch));
+
+        DateTime writtenAt = File.GetLastWriteTimeUtc(_path);
+        Assert.Equal(50, log.ListAll().Count);
+
+        // Nothing new in the batch means nothing written at all.
+        Assert.Equal(0, log.TryRecordMany(batch));
+        Assert.Equal(writtenAt, File.GetLastWriteTimeUtc(_path));
+    }
+
+    [Fact]
+    public void ABatchSkipsUnusableSignalsWithoutRejectingTheRest()
+    {
+        ShadowSignalLog log = Log();
+
+        int added = log.TryRecordMany(
+        [
+            Signal("a.trend.v1", "BTC/USD", 0m),
+            Signal("b.trend.v1", "BTC/USD", 100m),
+        ]);
+
+        Assert.Equal(1, added);
+        Assert.Equal("b.trend.v1", log.ListAll()[0].StrategyId);
+    }
+
     private void Record(ShadowSignalLog log, string strategyId, int minute, decimal exit)
     {
         log.TryRecord(Signal(strategyId, "BTC/USD", 100m, minute));

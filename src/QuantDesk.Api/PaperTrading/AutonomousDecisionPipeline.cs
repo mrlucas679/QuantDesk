@@ -174,21 +174,24 @@ public sealed class AutonomousDecisionPipeline(
         DateTimeOffset firedAt = indicators.HasTimeAxis ? indicators.Timestamps[last] : clock.UtcNow;
         double venueCost = VenueRoundTripCosts.For(route.AssetClass);
 
+        // Collected first, written once. One evaluation asks every rule and several fire together,
+        // so recording them one at a time made the cost of a cycle quadratic in the size of the log.
+        List<ShadowSignal> fired = [];
         foreach (SignalStrategy strategy in strategies)
         {
-            bool fired;
+            bool firedNow;
             try
             {
-                fired = strategy.Fires(indicators, last);
+                firedNow = strategy.Fires(indicators, last);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 continue;
             }
 
-            if (!fired) continue;
+            if (!firedNow) continue;
 
-            shadow.TryRecord(new ShadowSignal(
+            fired.Add(new ShadowSignal(
                 SignalId: $"{strategy.Id}|{route.Symbol}|{firedAt:yyyyMMddTHHmm}",
                 Symbol: route.Symbol,
                 StrategyId: strategy.Id,
@@ -198,6 +201,8 @@ public sealed class AutonomousDecisionPipeline(
                     shadowHoldingPeriod > TimeSpan.Zero ? shadowHoldingPeriod : DefaultShadowHold),
                 VenueRoundTripBps: venueCost));
         }
+
+        shadow.TryRecordMany(fired);
     }
 
     /// <summary>
@@ -475,7 +480,8 @@ public sealed class AutonomousDecisionPipeline(
 
         TradeCandidate candidate = candidates[0];
         CostEstimate estimate = costs.Estimate(candidate, market);
-        ActionabilityAssessment actionable = actionability.Evaluate(candidate, estimate, market);
+        ActionabilityAssessment actionable =
+            actionability.Evaluate(candidate, estimate, market, explorationBudgetAvailable);
         if (!actionable.Actionable)
             return new(false, actionable.Reason.ToString(), candidate, estimate, null, committeeDecision, market);
 
