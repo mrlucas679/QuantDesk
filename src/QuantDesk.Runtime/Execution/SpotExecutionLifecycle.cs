@@ -371,8 +371,7 @@ public sealed class SpotExecutionLifecycle(
             IReadOnlyList<BrokerPositionSnapshot> positions =
                 await broker.ListPositionsAsync(cancellationToken);
             decimal held = positions
-                .Where(position => string.Equals(
-                    position.Symbol, record.Symbol, StringComparison.OrdinalIgnoreCase))
+                .Where(position => BrokerSymbol.Matches(position.Symbol, record.Symbol))
                 .Sum(position => position.Quantity);
 
             return held <= 0m ? 0m : Math.Min(record.InternalOpenQuantity, held);
@@ -389,7 +388,27 @@ public sealed class SpotExecutionLifecycle(
     {
         BrokerOrderSnapshot? order =
             await broker.FindByClientOrderIdAsync(record.ExitClientOrderId, cancellationToken);
-        if (order is null) return record;
+
+        // No order under this ID means the submission never reached the venue.
+        //
+        // Returning the record unchanged left it here permanently: the exit was believed to be in
+        // flight, nothing was tracking it because nothing existed, and the position stayed open
+        // past its deadline with no retry and no error. AAVE sat in exactly this state for over an
+        // hour after its exit was refused for insufficient balance.
+        //
+        // Sending it back to ExitDue re-runs the submission, which is safe because the exit client
+        // order ID is deterministic: if an order does exist after all, the resubmission is
+        // recognised as the same order rather than becoming a second one.
+        if (order is null)
+        {
+            SpotExecutionRecord retry = record with
+            {
+                State = SpotExecutionState.ExitDue,
+                ExitSubmissionAttemptedAt = null,
+            };
+            store.Update(retry);
+            return retry;
+        }
 
         SpotExecutionRecord updated = record with
         {
@@ -426,7 +445,9 @@ public sealed class SpotExecutionLifecycle(
     {
         IReadOnlyList<BrokerPositionSnapshot> positions = await broker.ListPositionsAsync(cancellationToken);
         decimal brokerQuantity = positions
-            .Where(position => string.Equals(position.Symbol, record.Symbol, StringComparison.OrdinalIgnoreCase))
+            // The venue spells spot crypto without the separator, so an ordinal comparison here
+            // made every crypto position invisible -- to this reconciliation as much as to the exit.
+            .Where(position => BrokerSymbol.Matches(position.Symbol, record.Symbol))
             .Sum(position => position.Quantity);
 
         // Complete only when the broker and the application agree there is nothing left.

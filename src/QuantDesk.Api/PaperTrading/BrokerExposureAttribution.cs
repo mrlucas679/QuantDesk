@@ -89,11 +89,3 @@ public sealed class BrokerExposureAttributor(IEnumerable<IExposureClaimSource> s
 /// Compares symbols across the venue's inconsistent slash convention: the trading API accepts
 /// <c>BTC/USD</c> while the positions endpoint reports <c>BTCUSD</c> for the same instrument.
 /// </summary>
-internal static class BrokerSymbol
-{
-    public static bool Matches(string? left, string? right) => string.Equals(
-        Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);
-
-    private static string Normalize(string? value) =>
-        (value ?? string.Empty).Replace("/", string.Empty, StringComparison.Ordinal).Trim();
-}

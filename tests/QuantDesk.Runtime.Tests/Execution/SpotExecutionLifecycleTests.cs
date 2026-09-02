@@ -469,6 +469,45 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         Assert.Equal(SpotExecutionState.Reconciling, record.State);
     }
 
+    [Fact]
+    public async Task ACryptoPositionIsFoundDespiteTheVenueSpellingItDifferently()
+    {
+        // Alpaca returns spot crypto positions without the separator -- "BTCUSD" where the system
+        // says "BTC/USD". An ordinal comparison never matches, so every crypto position looks like
+        // it does not exist: the exit concludes there is nothing to sell and abandons a live
+        // position to reconciliation, which then cannot see it either.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+        broker.Positions = [new BrokerPositionSnapshot("BTCUSD", 0, 0.9975m, 100m)];
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        SpotExecutionRecord record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Reconciling, record.State);
+        Assert.Equal(0.9975m, broker.LastExitQuantity);
+    }
+
+    [Fact]
+    public async Task AnExitThatNeverReachedTheVenueIsRetriedRatherThanLeftInFlight()
+    {
+        // The state AAVE sat in for over an hour: its exit was refused, no order existed under the
+        // deterministic ID, and tracking returned the record untouched -- so nothing retried and
+        // nothing complained while the position stayed open past its deadline.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit due
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // submitted
+        broker.Order = null;                                                 // venue has no such order
+
+        SpotExecutionRecord record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.ExitDue, record.State);
+    }
+
     private bool Reserve(SpotExecutionLifecycle lifecycle) => lifecycle.TryReserve(
         ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15));
 
