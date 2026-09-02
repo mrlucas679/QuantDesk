@@ -195,7 +195,10 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<RiskGovernor>(),
         services.GetRequiredService<IRuntimeClock>(),
         services.GetRequiredService<ILogger<AutonomousDecisionPipeline>>(),
-        SignalStrategies.Tradable,
+        // Live shadow evidence overrules the backtest in both directions, which is what gives a
+        // stood-down rule a way back and a favoured one a way out.
+        assetClass => SignalStrategies.Tradable(
+            assetClass, services.GetRequiredService<ShadowSignalLog>().Summarise()),
         services.GetRequiredService<ShadowSignalLog>(),
         options.HoldDuration);
 
@@ -327,7 +330,9 @@ builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     // not permission to outlive it: a strategy stood down while the entry waited must not submit.
     symbol => services.GetRequiredService<OpportunityRouter>()
             .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
-        ? [.. SignalStrategies.Tradable(route.AssetClass).Select(strategy => strategy.Id)]
+        ? [.. SignalStrategies
+            .Tradable(route.AssetClass, services.GetRequiredService<ShadowSignalLog>().Summarise())
+            .Select(strategy => strategy.Id)]
         : []));
 builder.Services.AddHostedService<RealisedCostPublisherService>();
 builder.Services.AddSingleton<SpotExecutionRecoveryService>();

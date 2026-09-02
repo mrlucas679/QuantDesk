@@ -1,5 +1,7 @@
 using QuantDesk.Domain.Trading;
 
+using QuantDesk.Runtime.Research;
+
 namespace QuantDesk.Runtime.Indicators;
 
 /// <summary>How much live evidence a strategy has earned, and therefore what it is allowed to do.</summary>
@@ -350,11 +352,67 @@ public static class SignalStrategies
     }
 
     public static IReadOnlyList<SignalStrategy> Tradable(TradedAssetClass assetClass) =>
-    [
-        .. For(assetClass).Where(strategy =>
-            strategy.Qualification is not StrategyQualification.Stale
-            && !strategy.IsKnownToLose(VenueRoundTripCosts.For(assetClass))),
-    ];
+        Tradable(assetClass, shadow: null);
+
+    /// <summary>
+    /// Minimum resolved shadow signals before live evidence may overrule a backtest.
+    ///
+    /// Thirty. Enough that a mean and its interval describe the rule rather than the fortnight, and
+    /// few enough that a rule firing a handful of times a day can clear it inside a month.
+    /// </summary>
+    public const int MinimumShadowSignals = 30;
+
+    /// <inheritdoc cref="Tradable(TradedAssetClass)"/>
+    /// <param name="assetClass">The lane's instrument class.</param>
+    /// <param name="shadow">
+    /// What each rule has earned in shadow, keyed by strategy id, or null when there is none.
+    /// </param>
+    /// <remarks>
+    /// Live evidence overrules the backtest, in both directions.
+    ///
+    /// Promotion, because a rule stood down on a backtest can otherwise never come back: it does
+    /// not trade, so it produces no evidence, so nothing can requalify it. A shadow record whose
+    /// 95% lower bound clears zero after the venue's round trip is better evidence than the scan
+    /// that stood the rule down, for the reason section 20.1 cares about -- it was collected after
+    /// the decision to collect it, so it cannot have been fitted.
+    ///
+    /// Demotion, because the same argument runs the other way. A rule the research likes whose live
+    /// record is measurably negative is not a rule to keep trading while the backtest catches up.
+    ///
+    /// Shadow figures are an upper bound: they pay the venue's fee but never crossed the book, so
+    /// no spread and no slippage. Promotion therefore requires the lower bound to clear zero rather
+    /// than the mean, which is the same conservatism the registry's own figures are read with.
+    /// </remarks>
+    public static IReadOnlyList<SignalStrategy> Tradable(
+        TradedAssetClass assetClass,
+        IReadOnlyDictionary<string, ShadowSummary>? shadow)
+    {
+        double venueCost = VenueRoundTripCosts.For(assetClass);
+        List<SignalStrategy> tradable = [];
+
+        foreach (SignalStrategy strategy in For(assetClass))
+        {
+            // A rule whose research describes a rule the code no longer computes is not evidence
+            // either way, and shadow cannot rescue it -- it would be promoting on one measurement
+            // while the recorded one describes something else.
+            if (strategy.Qualification is StrategyQualification.Stale) continue;
+
+            bool researchSaysNo = strategy.IsKnownToLose(venueCost);
+
+            if (shadow is not null &&
+                shadow.TryGetValue(strategy.Id, out ShadowSummary live) &&
+                live.Signals >= MinimumShadowSignals)
+            {
+                // Live evidence decides, whichever way it points.
+                if (live.LowerBoundBps > 0d) tradable.Add(strategy);
+                continue;
+            }
+
+            if (!researchSaysNo) tradable.Add(strategy);
+        }
+
+        return tradable;
+    }
 
     /// <summary>
     /// The strategies that need nothing but closing prices.

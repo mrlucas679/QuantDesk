@@ -26,14 +26,24 @@ public sealed class RiskGovernor
         bool brokerHealthy,
         bool portfolioReconciled,
         long nowTicks,
-        Usd projectedCorrelatedExposure = default)
+        Usd projectedCorrelatedExposure = default,
+        bool explorationBudgetAvailable = false)
     {
         if (!brokerHealthy) return Reject(RiskReason.BrokerUnhealthy);
         if (!portfolioReconciled) return Reject(RiskReason.PortfolioUnreconciled);
         if (nowTicks > candidate.ValidUntilMonotonicTicks) return Reject(RiskReason.CandidateExpired);
         if (market.QuoteQuality != DataQuality.Healthy) return Reject(RiskReason.StaleMarketData);
         if (market.RelativeSpread > _limits.MaximumRelativeSpread) return Reject(RiskReason.SpreadTooWide);
-        if ((candidate.GrossExpectedPnl - costs.Total).Value <= 0) return Reject(RiskReason.NegativeNetEdge);
+        // A negative expected edge is normally the end of the matter. The one exception is an
+        // explicit exploration budget: a desk that only trades what it has already proven can never
+        // learn anything new, so section 12.2 provides for paying a bounded price for evidence.
+        //
+        // The permission has to be passed in and cannot be inferred here, and it changes the reason
+        // rather than being silently folded into Approved. A position opened this way is buying
+        // information at a price known in advance, and nothing downstream may mistake its P&L for
+        // evidence of an edge.
+        bool negativeEdge = (candidate.GrossExpectedPnl - costs.Total).Value <= 0;
+        if (negativeEdge && !explorationBudgetAvailable) return Reject(RiskReason.NegativeNetEdge);
         if (candidate.EstimatedStressLoss > _limits.MaximumStressLossPerTrade) return Reject(RiskReason.TradeLossLimit);
         if (portfolio.DailyPnl.Value <= -_limits.MaximumDailyLoss.Value) return Reject(RiskReason.DailyLossLimit);
         if (portfolio.CampaignPnl.Value <= -_limits.MaximumCampaignLoss.Value) return Reject(RiskReason.CampaignLossLimit);
@@ -70,7 +80,7 @@ public sealed class RiskGovernor
 
         return new RiskDecision(
             true,
-            RiskReason.Approved,
+            negativeEdge ? RiskReason.ApprovedAsExploration : RiskReason.Approved,
             candidate.EstimatedStressLoss,
             candidate.Exposure.Notional);
     }

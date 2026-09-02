@@ -32,6 +32,16 @@ public sealed record RiskLimits(
 public enum RiskReason
 {
     Approved,
+
+    /// <summary>
+    /// Admitted despite a negative expected edge, against a bounded exploration budget.
+    ///
+    /// Never a synonym for Approved. A position opened under this reason is buying information at a
+    /// price that was known in advance, and its P&amp;L is evidence about the rule rather than
+    /// evidence of an edge. Anything that reports performance has to be able to tell the two apart,
+    /// which is why this is a distinct reason and not a flag on the old one.
+    /// </summary>
+    ApprovedAsExploration,
     SystemHalted,
     CandidateExpired,
     StaleMarketData,

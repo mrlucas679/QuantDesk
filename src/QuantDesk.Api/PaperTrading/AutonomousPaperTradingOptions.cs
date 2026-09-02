@@ -26,8 +26,28 @@ public sealed record AutonomousPaperTradingOptions(
     decimal OrderNotional,
     TimeSpan HoldDuration,
     TimeSpan FillTimeout,
-    TimeSpan CycleInterval)
+    TimeSpan CycleInterval,
+    int ExplorationAllowance = 0)
 {
+    /// <summary>
+    /// How many concurrent positions may be opened in rules that are measured to lose.
+    ///
+    /// Zero by default, which is the honest resting state: after the 2026-09-02 re-measurement no
+    /// rule in either book has a positive expected edge at the sixty basis points the venue
+    /// charges, so nothing qualifies to trade and the desk stands down.
+    ///
+    /// Set above zero and the desk buys evidence instead. That is a real decision with a known
+    /// price, not a loosened gate: the known-loser test still refuses every one of these rules, and
+    /// the risk governor still records the admission as ApprovedAsExploration rather than folding
+    /// it into an ordinary approval. What changes is only that a bounded number of such positions
+    /// is permitted at once, spent on the rules closest to viable.
+    ///
+    /// The price is roughly the gap between what the venue charges and what the best rule is
+    /// measured to earn -- about 45 bps a round trip as of that measurement, or some 90 cents on a
+    /// 200-dollar position. Two concurrent positions is a few dollars a day. That buys live
+    /// out-of-sample evidence on rules whose only alternative is never being heard from again.
+    /// </summary>
+    public bool ExplorationEnabled => ExplorationAllowance > 0;
     /// <summary>
     /// The first configured symbol.
     ///
@@ -100,7 +120,8 @@ public sealed record AutonomousPaperTradingOptions(
 
         return new(
             "equity", true, crypto.Mode, OpportunityExpression.Spot, authorization, symbols,
-            notional, TimeSpan.FromHours(holdingHours), crypto.FillTimeout, crypto.CycleInterval);
+            notional, TimeSpan.FromHours(holdingHours), crypto.FillTimeout, crypto.CycleInterval,
+            ParseAllowance("QUANTDESK_AUTONOMOUS_EQUITY_EXPLORATION_ALLOWANCE"));
     }
 
     public static AutonomousPaperTradingOptions FromEnvironment(PaperTradingOptions trading)
@@ -157,7 +178,8 @@ public sealed record AutonomousPaperTradingOptions(
             notional,
             TimeSpan.FromHours(maximumHoldingHours),
             TimeSpan.FromSeconds(fillTimeoutSeconds),
-            TimeSpan.FromSeconds(cycleIntervalSeconds));
+            TimeSpan.FromSeconds(cycleIntervalSeconds),
+            ParseAllowance("QUANTDESK_AUTONOMOUS_EXPLORATION_ALLOWANCE"));
     }
 
     private static OpportunityExpression ParseExpression() =>
@@ -209,6 +231,15 @@ public sealed record AutonomousPaperTradingOptions(
         return decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal value) && value > 0
             ? value
             : throw new InvalidOperationException($"{name} must be a positive decimal value.");
+    }
+
+    /// <summary>Non-negative, because zero is the meaningful default rather than an error.</summary>
+    private static int ParseAllowance(string name)
+    {
+        string text = Environment.GetEnvironmentVariable(name) ?? "0";
+        return int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out int value) && value >= 0
+            ? value
+            : throw new InvalidOperationException($"{name} must be a non-negative integer value.");
     }
 
     private static int ParsePositiveInteger(string name, int fallback)

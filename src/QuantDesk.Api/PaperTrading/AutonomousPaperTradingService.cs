@@ -317,6 +317,15 @@ public sealed class AutonomousPaperTradingService(
             returnSeries.Snapshot(),
             options.OrderNotional,
             RiskLimitOptions.MaximumCorrelatedExposure(options.OrderNotional));
+        // Is there room in the exploration budget?
+        //
+        // Counted against positions actually open rather than against a running total, so the
+        // budget is a bound on concurrent exposure and not a daily quota that silently exhausts.
+        // Zero allowance -- the default -- makes this false always, and the desk stands down on the
+        // evidence rather than paying to ignore it.
+        bool explorationBudgetAvailable =
+            options.ExplorationEnabled && HeldSymbols().Count < options.ExplorationAllowance;
+
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, route, evidence, initial, true, true, capabilities,
             // What each mechanism already holds, so one cannot monopolise the universe and leave
@@ -330,7 +339,8 @@ public sealed class AutonomousPaperTradingService(
             // trade. Experimental mode has no verified forecast and no bound to apply.
             experimental ? null : forecast!.Uncertainty,
             experimental ? null : MeasuredCostUpperBoundBps(),
-            new Usd(breadth.CorrelatedExposure));
+            new Usd(breadth.CorrelatedExposure),
+            explorationBudgetAvailable);
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {

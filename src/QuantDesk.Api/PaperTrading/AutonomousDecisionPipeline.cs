@@ -77,6 +77,7 @@ public sealed class AutonomousDecisionPipeline(
         DirectionalMarketEvidence evidence,
         OpportunityRoute route,
         IReadOnlyDictionary<string, int> openByMechanism,
+        bool explorationBudgetAvailable,
         out IReadOnlyList<string> unavailable)
     {
         unavailable = [];
@@ -95,6 +96,15 @@ public sealed class AutonomousDecisionPipeline(
         // Only strategies not already measured to lose. See SignalStrategies.IsKnownToLose: being
         // unproven is worth paying a little to resolve, being demonstrably unprofitable is not.
         IReadOnlyList<SignalStrategy> available = _tradable(route.AssetClass);
+
+        // Nothing qualifies, and a budget exists to find out why.
+        //
+        // Falling back rather than widening: the qualified book is always preferred, and the
+        // explorable one is consulted only when the qualified one is empty. So a rule that earns
+        // its way back immediately displaces the exploration it was funded by, which is the whole
+        // point of paying for the evidence.
+        bool exploring = available.Count == 0 && explorationBudgetAvailable;
+        if (exploring) available = SignalStrategies.Explorable(route.AssetClass);
         if (indicators is not null)
         {
             unavailable = indicators.Unavailable;
@@ -245,7 +255,8 @@ public sealed class AutonomousDecisionPipeline(
         StrategyDefinitionContract? verifiedStrategyDefinition = null,
         ForecastUncertaintyContract? forecastUncertainty = null,
         double? allInCostUpperBoundBps = null,
-        Usd projectedCorrelatedExposure = default)
+        Usd projectedCorrelatedExposure = default,
+        bool explorationBudgetAvailable = false)
     {
         // Capabilities are required, not defaulted.
         //
@@ -279,8 +290,9 @@ public sealed class AutonomousDecisionPipeline(
             // mean-reversion rule could only fire when prices were already rising, so buying a dip
             // required the dip not to have happened. Nine of thirteen strategies could never have
             // opened a position.
-            StrategyEvaluation evaluation =
-                SelectStrategy(evidence, route, openByMechanism, out IReadOnlyList<string> unavailable);
+            StrategyEvaluation evaluation = SelectStrategy(
+                evidence, route, openByMechanism, explorationBudgetAvailable,
+                out IReadOnlyList<string> unavailable);
             selection = evaluation.Selection;
             if (selection is null)
             {
@@ -469,7 +481,8 @@ public sealed class AutonomousDecisionPipeline(
 
         RiskDecision risk = riskGovernor.Evaluate(
             candidate, estimate, market, portfolio, brokerHealthy, portfolioReconciled, nowTicks,
-            projectedCorrelatedExposure);
+            projectedCorrelatedExposure,
+            explorationBudgetAvailable);
         return risk.Approved
             ? new(true, "Approved", candidate, estimate, risk, committeeDecision, market)
             : new(false, risk.Reason.ToString(), candidate, estimate, risk, committeeDecision, market);
