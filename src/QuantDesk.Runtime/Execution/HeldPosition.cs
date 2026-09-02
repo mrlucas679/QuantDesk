@@ -35,4 +35,5 @@ public readonly record struct HeldPosition(
     decimal DefinedMaximumLoss,
     PositionOwnership? Ownership,
     DateTimeOffset? EarliestLegExpiry,
-    int? MinimumDaysToExpiry = null);
+    int? MinimumDaysToExpiry = null,
+    decimal ProfitTarget = 0m);

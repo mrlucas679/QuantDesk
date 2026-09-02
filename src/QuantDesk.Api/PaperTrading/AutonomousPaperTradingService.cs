@@ -399,12 +399,22 @@ public sealed class AutonomousPaperTradingService(
         decimal referencePrice = (evidence.Bid + evidence.Ask) / 2m;
         BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
 
+        // The gain at which this position has earned what its own thesis predicted.
+        //
+        // Taken from the candidate rather than configured, because the number that was chosen in
+        // advance for the downside is the defined maximum loss and the number chosen in advance for
+        // the upside is this. Without it the exit engine was asymmetric in the wrong direction: a
+        // cap on being wrong, and nothing at all on being right, so a correct forecast paid only
+        // whatever the market happened to be doing when the timer expired.
+        decimal profitTarget = Math.Max(candidate.GrossExpectedPnl.Value, 0m);
+
         if (!spotExecution.TryReserve(
                 executionId, candidate.StrategyId, symbol, slot, quantity,
                 definedMaximumLoss, candidate.ManagementPlan.MaximumHoldingPeriod,
                 ownership: ownership,
                 entryReferencePrice: referencePrice,
-                accountEquityBefore: account?.Equity))
+                accountEquityBefore: account?.Equity,
+                profitTarget: profitTarget))
         {
             state.UpdateSymbol(symbol, "abstained", symbol, reason: "ReservationRejected");
             return;

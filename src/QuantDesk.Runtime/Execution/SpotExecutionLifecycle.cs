@@ -50,7 +50,8 @@ public sealed class SpotExecutionLifecycle(
         decimal? exitLimitPrice = null,
         PositionOwnership? ownership = null,
         decimal? entryReferencePrice = null,
-        decimal? accountEquityBefore = null)
+        decimal? accountEquityBefore = null,
+        decimal profitTarget = 0m)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -88,7 +89,8 @@ public sealed class SpotExecutionLifecycle(
             ExitLimitPrice = exitLimitPrice,
             Ownership = ownership,
             EntryReferencePrice = entryReferencePrice,
-            AccountEquityBefore = accountEquityBefore
+            AccountEquityBefore = accountEquityBefore,
+            ProfitTarget = profitTarget
         });
     }
 
@@ -235,7 +237,9 @@ public sealed class SpotExecutionLifecycle(
         record.EntryAverageFillPrice,
         record.DefinedMaximumLoss,
         record.Ownership,
-        EarliestLegExpiry: null);
+        EarliestLegExpiry: null,
+        MinimumDaysToExpiry: null,
+        ProfitTarget: record.ProfitTarget);
 
     private SpotExecutionRecord StartHold(SpotExecutionRecord record)
     {

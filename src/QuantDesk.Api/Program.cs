@@ -295,7 +295,8 @@ builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInter
     // passed as null by every compiler, so the rule was stated in the domain and absent from the
     // system. Spot carries no expiry and the rule correctly ignores it.
     new ExpiryHoldInterrupt(services.GetRequiredService<IRuntimeClock>(), minimumDaysToExpiry: 2),
-    new AdverseLossHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>())));
+    new AdverseLossHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>()),
+    new ProfitTargetHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>())));
 
 builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     services.GetRequiredService<IBrokerExecutionGateway>(),

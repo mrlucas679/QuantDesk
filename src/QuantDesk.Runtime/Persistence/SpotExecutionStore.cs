@@ -48,6 +48,14 @@ public sealed record SpotExecutionRecord(
     public string ExecutionMode { get; init; } = "PAPER";
 
     public decimal DefinedMaximumLoss { get; init; }
+
+    /// <summary>
+    /// The unrealised gain at which this position has earned what its thesis predicted.
+    ///
+    /// Zero means no target, which is how every record written before this existed loads.
+    /// </summary>
+    public decimal ProfitTarget { get; init; }
+
     public TimeSpan MaximumHoldingPeriod { get; init; }
 
     /// <summary>
