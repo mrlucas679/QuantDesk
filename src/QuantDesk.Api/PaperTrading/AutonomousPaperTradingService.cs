@@ -22,6 +22,7 @@ using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Reconciliation;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Research;
+using QuantDesk.Runtime.Telemetry;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.Reservations;
 using QuantDesk.Runtime.Time;
@@ -53,6 +54,7 @@ public sealed class AutonomousPaperTradingService(
     ShadowSignalLog shadow,
     IHeldPositionMarker heldMarker,
     AlpacaCryptoOrderBookClient? orderBooks,
+    LatencyRecorder? latency,
     ILogger<AutonomousPaperTradingService> logger) : BackgroundService
 {
     private static readonly TimeSpan PositionMonitorInterval = TimeSpan.FromSeconds(5);
@@ -298,7 +300,12 @@ public sealed class AutonomousPaperTradingService(
         }
 
         PortfolioSnapshot initial = EmptyPortfolio(account);
+        // Timed separately from the decision that follows it. A cycle slow because the venue is
+        // slow and one slow because this system is slow need different responses, and a single
+        // end-to-end number cannot tell them apart.
+        long fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
+        latency?.Record(LatencyStage.MarketDataFetch, fetchStarted);
 
         // Kept for the correlation measurement below. Costs no extra market-data call: these are
         // the bars the decision is about to be made from anyway.
@@ -311,7 +318,9 @@ public sealed class AutonomousPaperTradingService(
         // backwards for a signal whose whole purpose is to say something about entering. One extra
         // call per instrument per cycle, on the same cadence as the quote it accompanies.
         long bookEventNs = clock.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
+        long bookStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         await RefreshOrderBookAsync(route, slot, bookEventNs, cancellationToken);
+        latency?.Record(LatencyStage.OrderBookFetch, bookStarted);
 
         // Close out any shadow signal whose holding period has ended, using the quote this cycle
         // already fetched. Done here rather than on a timer of its own so that a signal is scored
@@ -338,6 +347,9 @@ public sealed class AutonomousPaperTradingService(
         bool explorationBudgetAvailable =
             options.ExplorationEnabled && HeldSymbols().Count < options.ExplorationAllowance;
 
+        // The gap the entry fence guards. Whether a 30 bps adverse-move bound protects anything
+        // depends on how long this actually takes, and until now nothing measured it.
+        long decisionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, route, evidence, initial, true, true, capabilities,
             // What each mechanism already holds, so one cannot monopolise the universe and leave
@@ -353,6 +365,8 @@ public sealed class AutonomousPaperTradingService(
             experimental ? null : MeasuredCostUpperBoundBps(),
             new Usd(breadth.CorrelatedExposure),
             explorationBudgetAvailable);
+        latency?.Record(LatencyStage.Decision, decisionStarted);
+
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {
@@ -401,8 +415,10 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
 
+        long executionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         await ExecuteSpotOpportunityAsync(
             symbol, candidate, decision, evidence, slot, ownership, cancellationToken);
+        latency?.Record(LatencyStage.BrokerSubmit, executionStarted);
     }
 
     /// <summary>

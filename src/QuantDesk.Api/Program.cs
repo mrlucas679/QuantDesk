@@ -27,6 +27,7 @@ using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Research;
 using QuantDesk.Runtime.Scoring;
+using QuantDesk.Runtime.Telemetry;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
@@ -105,6 +106,7 @@ builder.Services.AddSingleton(services =>
 builder.Services.AddSingleton<IndicatorRegimeSource>();
 builder.Services.AddSingleton<IRegimeSource>(services =>
     services.GetRequiredService<IndicatorRegimeSource>());
+builder.Services.AddSingleton<LatencyRecorder>();
 builder.Services.AddSingleton<ReturnSeriesCache>();
 // What every rule would have done, recorded without trading it. Shared across lanes because a
 // strategy's shadow record is a fact about the strategy, not about which lane happened to ask.
@@ -247,6 +249,7 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<ShadowSignalLog>(),
         services.GetRequiredService<IHeldPositionMarker>(),
         services.GetService<AlpacaCryptoOrderBookClient>(),
+        services.GetRequiredService<LatencyRecorder>(),
         services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
 }
 builder.Services.AddSingleton<AutonomousTradingState>();
@@ -547,6 +550,45 @@ app.MapGet("/api/diagnostics/{experimentId}", (
         return Results.Unauthorized();
     DiagnosticExecutionRecord? record = store.Find(experimentId);
     return record is null ? Results.NotFound() : Results.Ok(record);
+});
+app.MapGet("/api/system/latency", (LatencyRecorder latency) =>
+{
+    // Percentiles, not an average. Section 24.1 says average latency alone is insufficient, and a
+    // mean hides exactly the behaviour that matters: the slow cycles are the ones that cause harm
+    // and they are by definition rare. The p99 is also what says whether the entry fence's 30 bps
+    // adverse-move bound protects anything -- that depends on how long the gap it guards really is.
+    RuntimeHealth health = RuntimeHealthProbe.Read();
+    return Results.Ok(new
+    {
+        stages = latency.Summarise()
+            .OrderBy(stage => stage.Stage.ToString(), StringComparer.Ordinal)
+            .Select(stage => new
+            {
+                stage = stage.Stage.ToString(),
+                observations = stage.Count,
+                p50Ms = Math.Round(stage.P50, 1),
+                p95Ms = Math.Round(stage.P95, 1),
+                p99Ms = Math.Round(stage.P99, 1),
+                maxMs = Math.Round(stage.Maximum, 1),
+            }),
+        runtime = new
+        {
+            managedHeapMb = Math.Round(health.ManagedHeapBytes / 1024d / 1024d, 1),
+            workingSetMb = Math.Round(health.WorkingSetBytes / 1024d / 1024d, 1),
+            gen0 = health.Gen0Collections,
+            gen1 = health.Gen1Collections,
+            // Gen 2 matters more than heap size: a process can hold a large heap happily, but one
+            // collecting gen 2 repeatedly is spending its time on memory instead of decisions, and
+            // each collection is a pause during which a quote goes stale.
+            gen2 = health.Gen2Collections,
+            gcPauseMs = Math.Round(health.TotalPauseMilliseconds, 1),
+            threadPoolThreads = health.ThreadPoolThreads,
+            // The queue-depth signal the constitution asks for. A number that grows is a lane
+            // falling behind its cadence, which shows up as staleness before it shows up as error.
+            pendingWorkItems = health.PendingWorkItems,
+            uptimeSeconds = Math.Round(health.UptimeSeconds, 0),
+        },
+    });
 });
 app.MapGet("/api/research/expert-scores", (ForecastOutcomeLog outcomes) =>
 {

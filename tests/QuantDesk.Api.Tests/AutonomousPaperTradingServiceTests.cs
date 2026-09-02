@@ -278,6 +278,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new ShadowSignalLog(Path.Combine(Path.GetTempPath(), $"qd-shadow-{Guid.NewGuid():N}.json")),
             new NoMarks(),
             orderBooks: null,
+            latency: null,
             NullLogger<AutonomousPaperTradingService>.Instance);
         return (service, state, mode);
     }
