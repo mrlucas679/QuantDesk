@@ -13,6 +13,7 @@ using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Runtime.Indicators;
+using QuantDesk.Runtime.Research;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
@@ -40,7 +41,9 @@ public sealed class AutonomousDecisionPipeline(
     RiskGovernor riskGovernor,
     IRuntimeClock clock,
     ILogger<AutonomousDecisionPipeline> logger,
-    Func<TradedAssetClass, IReadOnlyList<SignalStrategy>>? tradableStrategies = null)
+    Func<TradedAssetClass, IReadOnlyList<SignalStrategy>>? tradableStrategies = null,
+    ShadowSignalLog? shadow = null,
+    TimeSpan shadowHoldingPeriod = default)
 {
     /// <summary>
     /// The strategies this pipeline may open a position with.
@@ -95,6 +98,14 @@ public sealed class AutonomousDecisionPipeline(
         if (indicators is not null)
         {
             unavailable = indicators.Unavailable;
+
+            // Every rule is asked, not only the tradable ones, and what fires is recorded whether
+            // or not it is allowed to trade. Otherwise a stood-down rule can never earn its way
+            // back: it produces no evidence because it does not trade, and it does not trade
+            // because it has no evidence. Shadow is the rung of section 20.4's ladder that closes
+            // that loop, and it costs nothing but a dictionary write.
+            RecordShadowSignals(SignalStrategies.For(route.AssetClass), indicators, route, evidence);
+
             return rotation.Select(available, indicators, openByMechanism, MechanismCap(available));
         }
 
@@ -116,6 +127,67 @@ public sealed class AutonomousDecisionPipeline(
         return closesOnly.Count == 0
             ? StrategyEvaluation.None
             : rotation.Select(closesOnly, CloseOnlySet(evidence), openByMechanism, MechanismCap(available));
+    }
+
+    /// <summary>
+    /// Records every rule that fired on this bar, traded or not.
+    ///
+    /// The identity is the rule, the symbol and the bar's own minute, so two cycles landing on the
+    /// same bar produce one signal. Weighting the sample by how often the lane happened to run
+    /// rather than by how often the rule fired would make the evidence a fact about the scheduler.
+    ///
+    /// A rule that throws is skipped here without ceremony: the trading path already reports that
+    /// separately, and a shadow log is not the place to learn about it.
+    /// </summary>
+    /// <summary>
+    /// The holding period a shadow signal is scored over when the lane has not supplied one.
+    ///
+    /// Four hours, matching the crypto lane. A shadow result is only comparable to a real one if
+    /// they are measured over the same horizon, so this is a fallback rather than a policy.
+    /// </summary>
+    private static readonly TimeSpan DefaultShadowHold = TimeSpan.FromHours(4);
+
+    private void RecordShadowSignals(
+        IReadOnlyList<SignalStrategy> strategies,
+        IndicatorSet indicators,
+        OpportunityRoute route,
+        DirectionalMarketEvidence evidence)
+    {
+        if (shadow is null) return;
+
+        int last = indicators.Length - 1;
+        if (last < 0) return;
+
+        decimal reference = (evidence.Bid + evidence.Ask) / 2m;
+        if (reference <= 0m) return;
+
+        DateTimeOffset firedAt = indicators.HasTimeAxis ? indicators.Timestamps[last] : clock.UtcNow;
+        double venueCost = VenueRoundTripCosts.For(route.AssetClass);
+
+        foreach (SignalStrategy strategy in strategies)
+        {
+            bool fired;
+            try
+            {
+                fired = strategy.Fires(indicators, last);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                continue;
+            }
+
+            if (!fired) continue;
+
+            shadow.TryRecord(new ShadowSignal(
+                SignalId: $"{strategy.Id}|{route.Symbol}|{firedAt:yyyyMMddTHHmm}",
+                Symbol: route.Symbol,
+                StrategyId: strategy.Id,
+                FiredAt: firedAt,
+                EntryReferencePrice: reference,
+                ResolveAt: firedAt.Add(
+                    shadowHoldingPeriod > TimeSpan.Zero ? shadowHoldingPeriod : DefaultShadowHold),
+                VenueRoundTripBps: venueCost));
+        }
     }
 
     /// <summary>

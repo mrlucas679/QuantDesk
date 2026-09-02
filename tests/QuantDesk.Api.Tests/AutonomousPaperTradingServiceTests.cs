@@ -10,6 +10,7 @@ using QuantDesk.Domain.Risk;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Indicators;
+using QuantDesk.Runtime.Research;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Domain.Runtime;
@@ -274,6 +275,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new StubCapabilityProbe(capabilities ?? Capabilities()),
             pipeline, new ResearchArtifactState(),
             options, mode, state, clock, new ReturnSeriesCache(),
+            new ShadowSignalLog(Path.Combine(Path.GetTempPath(), $"qd-shadow-{Guid.NewGuid():N}.json")),
             NullLogger<AutonomousPaperTradingService>.Instance);
         return (service, state, mode);
     }

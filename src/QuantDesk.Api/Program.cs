@@ -23,6 +23,7 @@ using QuantDesk.Runtime.Modes;
 using QuantDesk.Runtime.Options;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Positions;
+using QuantDesk.Runtime.Research;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
@@ -85,6 +86,14 @@ builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 // Shared across lanes on purpose: correlation is a property of the account, not of a lane.
 builder.Services.AddSingleton<ReturnSeriesCache>();
+// What every rule would have done, recorded without trading it. Shared across lanes because a
+// strategy's shadow record is a fact about the strategy, not about which lane happened to ask.
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_SHADOW_LOG_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "shadow-signals.json");
+    return new ShadowSignalLog(Path.GetFullPath(configured));
+});
 builder.Services.AddSingleton<PaperOrderApplicationService>();
 builder.Services.AddSingleton(services =>
     new MarketStateStore(services.GetRequiredService<PaperTradingOptions>().Symbols.Count));
@@ -185,7 +194,10 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<ActionabilityGate>(),
         services.GetRequiredService<RiskGovernor>(),
         services.GetRequiredService<IRuntimeClock>(),
-        services.GetRequiredService<ILogger<AutonomousDecisionPipeline>>());
+        services.GetRequiredService<ILogger<AutonomousDecisionPipeline>>(),
+        SignalStrategies.Tradable,
+        services.GetRequiredService<ShadowSignalLog>(),
+        options.HoldDuration);
 
     return new AutonomousPaperTradingService(
         services.GetRequiredService<IBrokerExecutionGateway>(),
@@ -208,6 +220,7 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<AutonomousTradingState>(),
         services.GetRequiredService<IRuntimeClock>(),
         services.GetRequiredService<ReturnSeriesCache>(),
+        services.GetRequiredService<ShadowSignalLog>(),
         services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
 }
 builder.Services.AddSingleton<AutonomousTradingState>();
@@ -484,6 +497,31 @@ app.MapGet("/api/diagnostics/{experimentId}", (
         return Results.Unauthorized();
     DiagnosticExecutionRecord? record = store.Find(experimentId);
     return record is null ? Results.NotFound() : Results.Ok(record);
+});
+app.MapGet("/api/research/shadow", (ShadowSignalLog shadow) =>
+{
+    // What every rule would have earned, had it been allowed to trade.
+    //
+    // With both books stood down this is the only evidence the system still generates, and the only
+    // route by which a rule can earn its way back. Reported as an upper bound and labelled as one:
+    // a shadow signal never touched the book, so it pays the venue's round trip but not the spread
+    // or the slippage a real fill would have.
+    IReadOnlyList<ShadowSignal> all = shadow.ListAll();
+    return Results.Ok(new
+    {
+        recorded = all.Count,
+        resolved = all.Count(item => item.IsResolved),
+        basis = "reference-price move less the venue round trip; excludes spread and slippage",
+        strategies = shadow.Summarise()
+            .OrderByDescending(pair => pair.Value.MeanNetBps)
+            .Select(pair => new
+            {
+                strategyId = pair.Key,
+                signals = pair.Value.Signals,
+                meanNetBps = Math.Round(pair.Value.MeanNetBps, 1),
+                lowerBoundBps = Math.Round(pair.Value.LowerBoundBps, 1),
+            }),
+    });
 });
 app.MapGet("/api/costs/realised", (
     HttpRequest request,

@@ -20,6 +20,7 @@ using QuantDesk.Runtime.Portfolio;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Reconciliation;
 using QuantDesk.Runtime.Persistence;
+using QuantDesk.Runtime.Research;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.Reservations;
 using QuantDesk.Runtime.Time;
@@ -48,6 +49,7 @@ public sealed class AutonomousPaperTradingService(
     AutonomousTradingState state,
     IRuntimeClock clock,
     ReturnSeriesCache returnSeries,
+    ShadowSignalLog shadow,
     ILogger<AutonomousPaperTradingService> logger) : BackgroundService
 {
     private static readonly TimeSpan PositionMonitorInterval = TimeSpan.FromSeconds(5);
@@ -298,6 +300,12 @@ public sealed class AutonomousPaperTradingService(
         // Kept for the correlation measurement below. Costs no extra market-data call: these are
         // the bars the decision is about to be made from anyway.
         returnSeries.Record(route.Symbol, evidence.Closes);
+
+        // Close out any shadow signal whose holding period has ended, using the quote this cycle
+        // already fetched. Done here rather than on a timer of its own so that a signal is scored
+        // against a price the lane genuinely saw, not one read at an unrelated moment.
+        shadow.Resolve(clock.UtcNow, symbol =>
+            BrokerSymbol.Matches(symbol, route.Symbol) ? (evidence.Bid + evidence.Ask) / 2m : null);
 
         // What the book would actually be exposed to if this position opened, measured here because
         // this is where the return history is, and handed to the risk governor because that is
