@@ -32,8 +32,7 @@ public sealed class AutonomousDecisionPipeline(
     MarketStateStore marketState,
     ExpertCommittee committee,
     CryptoDirectionalStrategyCompiler compiler,
-    CryptoResearchGate researchGate,
-    ICostModel costs,
+    AssetClassPricing pricing,
     ActionabilityGate actionability,
     RiskGovernor riskGovernor,
     IRuntimeClock clock,
@@ -54,6 +53,7 @@ public sealed class AutonomousDecisionPipeline(
 
     public AutonomousPipelineDecision Evaluate(
         int instrumentSlot,
+        OpportunityRoute route,
         DirectionalMarketEvidence evidence,
         PortfolioSnapshot portfolio,
         bool brokerHealthy,
@@ -76,6 +76,11 @@ public sealed class AutonomousDecisionPipeline(
         // Permission must come from the live probe or the cycle must not run. There is no safe
         // default for "may this account trade this asset class", so there is no default.
         ArgumentNullException.ThrowIfNull(capabilities);
+        ArgumentNullException.ThrowIfNull(route);
+
+        // Priced for this instrument, not for whatever the lane was configured with at startup.
+        CryptoResearchGate researchGate = pricing.GateFor(route);
+        ICostModel costs = pricing.CostsFor(route);
         AccountCapabilities effectiveCapabilities = capabilities;
         if (verifiedForecastBps is null)
         {

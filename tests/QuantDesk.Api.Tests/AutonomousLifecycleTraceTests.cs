@@ -119,7 +119,8 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
 
         AutonomousPipelineDecision decision = CreatePipeline(clock, costs)
             .Evaluate(
-                Slot, evidence, portfolio, brokerHealthy, portfolioReconciled,
+                Slot, RouteFor(costs ?? ExecutionCostProfile.SpotCryptoTaker), evidence, portfolio,
+                brokerHealthy, portfolioReconciled,
                 new AccountCapabilities(true, true, true, false, null));
         trace.Add("committee", decision.Committee is { } c
             ? $"actionable={c.Actionable} expectedBps={c.ExpectedReturnBps:0.00} experts={c.SupportingExperts.Count}"
@@ -188,6 +189,22 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
         return trace;
     }
 
+    /// <summary>
+    /// A route carrying the profile under test.
+    ///
+    /// The pipeline prices from the route now, so varying the venue's costs means varying the route
+    /// rather than the registration -- which is the point: an instrument's cost travels with the
+    /// instrument instead of being decided once for the whole lane.
+    /// </summary>
+    private static OpportunityRoute RouteFor(ExecutionCostProfile profile) => new(
+        "BTC/USD", TradedAssetClass.SpotCrypto, profile, OrderExecutionPolicy.MarketableLimit);
+
+    /// <summary>No measured dataset, so the modelled cost stands -- the designed fallback.</summary>
+    private sealed class NoRealisedCosts : QuantDesk.Runtime.Costs.IRealisedCostSource
+    {
+        public QuantDesk.Domain.Contracts.RealisedCostContract? Current() => null;
+    }
+
     private static AutonomousDecisionPipeline CreatePipeline(
         IRuntimeClock clock, ExecutionCostProfile? costs = null)
     {
@@ -197,10 +214,7 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
             new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(OrderNotional, 0.05,
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
-            new CryptoResearchGate(profile),
-            new CryptoCostModel(
-                new BasisPoints((double)profile.RoundTripFeeBps),
-                new BasisPoints((double)profile.SlippageAllowanceBps)),
+            new AssetClassPricing(new NoRealisedCosts()),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),
                 new Usd(250), 1, 100_000, 100_000, 100_000, 0.01, 1)),

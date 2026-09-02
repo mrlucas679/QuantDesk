@@ -21,20 +21,39 @@ public sealed record AutonomousPaperTradingOptions(
     AutonomousTradingMode Mode,
     OpportunityExpression Expression,
     ExperimentalPaperAuthorization? ExperimentalAuthorization,
-    string Symbol,
+    IReadOnlyList<string> Symbols,
     decimal OrderNotional,
     TimeSpan HoldDuration,
     TimeSpan FillTimeout,
     TimeSpan CycleInterval)
 {
+    /// <summary>
+    /// The first configured symbol.
+    ///
+    /// Kept for the places that genuinely concern the lane as a whole rather than one instrument --
+    /// the experimental authorization record, and operator-facing messages before a symbol is in
+    /// scope. Anything that prices, routes, or executes must use the symbol it is actually working
+    /// on, because those are exactly the decisions that go wrong silently when they inherit a
+    /// default.
+    /// </summary>
+    public string Symbol => Symbols[0];
+
     public static AutonomousPaperTradingOptions FromEnvironment(PaperTradingOptions trading)
     {
         AutonomousTradingMode mode = ParseMode();
         bool enabled = mode != AutonomousTradingMode.Disabled && bool.TryParse(
             Environment.GetEnvironmentVariable("QUANTDESK_AUTONOMOUS_ENABLED"),
             out bool configured) && configured;
-        string configuredSymbol = (Environment.GetEnvironmentVariable("QUANTDESK_AUTONOMOUS_SYMBOL") ?? "")
-            .Trim().ToUpperInvariant();
+        // Comma-separated, so one lane can work several instruments. A single value stays valid and
+        // means exactly what it did before.
+        string[] configuredSymbols =
+        [
+            .. (Environment.GetEnvironmentVariable("QUANTDESK_AUTONOMOUS_SYMBOL") ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(item => item.ToUpperInvariant())
+                .Distinct(StringComparer.Ordinal),
+        ];
+        string configuredSymbol = configuredSymbols.Length > 0 ? configuredSymbols[0] : "";
         // BTC/USD remains the disabled research-data fallback only. An enabled execution lane
         // must name its intended symbol explicitly; it must never inherit a historically failed
         // default venue merely because an environment variable was omitted.
@@ -44,16 +63,23 @@ public sealed record AutonomousPaperTradingOptions(
         int fillTimeoutSeconds = ParsePositiveInteger("QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS", 30);
         int cycleIntervalSeconds = ParsePositiveInteger("QUANTDESK_AUTONOMOUS_CYCLE_INTERVAL_SECONDS", 300);
 
-        if (enabled && string.IsNullOrWhiteSpace(symbol))
+        if (enabled && configuredSymbols.Length == 0)
             throw new InvalidOperationException("QUANTDESK_AUTONOMOUS_SYMBOL is required when autonomous execution is enabled.");
-        if (enabled && !trading.Symbols.Values.Contains(symbol, StringComparer.OrdinalIgnoreCase))
-            throw new InvalidOperationException("QUANTDESK_AUTONOMOUS_SYMBOL must be present in QUANTDESK_SYMBOLS.");
-        if (!enabled && string.IsNullOrWhiteSpace(symbol)) symbol = "BTC/USD";
+        // Every symbol must be one the market-data plane subscribes to. Naming one it does not
+        // stream would leave the lane waiting for evidence that never arrives.
+        foreach (string candidate in configuredSymbols)
+        {
+            if (enabled && !trading.Symbols.Values.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"QUANTDESK_AUTONOMOUS_SYMBOL '{candidate}' must be present in QUANTDESK_SYMBOLS.");
+        }
+
+        string[] symbols = configuredSymbols.Length > 0 ? configuredSymbols : ["BTC/USD"];
         if (notional > trading.MaximumOrderNotional)
             throw new InvalidOperationException("Autonomous order notional exceeds the configured paper-order limit.");
 
         ExperimentalPaperAuthorization? authorization = mode == AutonomousTradingMode.ExperimentalPaper
-            ? ReadExperimentalAuthorization(symbol)
+            ? ReadExperimentalAuthorization(symbols)
             : null;
 
         return new(
@@ -61,7 +87,7 @@ public sealed record AutonomousPaperTradingOptions(
             mode,
             ParseExpression(),
             authorization,
-            symbol,
+            symbols,
             notional,
             TimeSpan.FromHours(maximumHoldingHours),
             TimeSpan.FromSeconds(fillTimeoutSeconds),
@@ -75,16 +101,23 @@ public sealed record AutonomousPaperTradingOptions(
             ? parsed
             : OpportunityExpression.Spot;
 
-    private static ExperimentalPaperAuthorization ReadExperimentalAuthorization(string symbol)
+    private static ExperimentalPaperAuthorization ReadExperimentalAuthorization(IReadOnlyList<string> symbols)
     {
         string Get(string name) => Environment.GetEnvironmentVariable(name)?.Trim() ?? "";
         bool Passed(string name) => bool.TryParse(Environment.GetEnvironmentVariable(name), out bool value) && value;
         var authorization = new ExperimentalPaperAuthorization(
             Get("QUANTDESK_EXPERIMENT_ID"), Get("QUANTDESK_HYPOTHESIS_ID"),
-            Get("QUANTDESK_STRATEGY_VERSION"), symbol, ParseRegisteredAt(), Get("QUANTDESK_EVIDENCE_REFERENCE"),
+            Get("QUANTDESK_STRATEGY_VERSION"), symbols, ParseRegisteredAt(), Get("QUANTDESK_EVIDENCE_REFERENCE"),
             Passed("QUANTDESK_LEAKAGE_SANITY_PASSED"), Passed("QUANTDESK_REPLAY_SANITY_PASSED"));
-        if (!authorization.IsValidFor(symbol))
-            throw new InvalidOperationException("Experimental paper authorization is incomplete or failed sanity checks.");
+        // Every symbol, not just the first: an instrument the declaration does not name is one the
+        // experiment was never registered to trade.
+        foreach (string symbol in symbols)
+        {
+            if (!authorization.IsValidFor(symbol))
+                throw new InvalidOperationException(
+                    $"Experimental paper authorization does not cover '{symbol}', or failed its sanity checks.");
+        }
+
         return authorization;
     }
 

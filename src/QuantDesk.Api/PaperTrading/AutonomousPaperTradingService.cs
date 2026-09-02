@@ -90,9 +90,22 @@ public sealed class AutonomousPaperTradingService(
     /// </summary>
     private async Task EvaluateOneCycleAsync(CancellationToken stoppingToken)
     {
+        // Each symbol is evaluated independently and fails independently. One instrument's feed
+        // outage, unroutable ticker, or closed session must not stop the lane looking at the
+        // others -- with a single symbol that distinction did not exist, and inheriting it would
+        // mean the least reliable instrument silently governed the whole lane.
+        foreach (string symbol in options.Symbols)
+        {
+            if (stoppingToken.IsCancellationRequested) return;
+            await EvaluateSymbolAsync(symbol, stoppingToken);
+        }
+    }
+
+    private async Task EvaluateSymbolAsync(string symbol, CancellationToken stoppingToken)
+    {
         try
         {
-            await EvaluateOpportunityAsync(stoppingToken);
+            await EvaluateOpportunityAsync(symbol, stoppingToken);
         }
         catch (Exception exception) when (HostedServiceFaults.IsFault(exception, stoppingToken))
         {
@@ -101,47 +114,46 @@ public sealed class AutonomousPaperTradingService(
             // logged the same warning and stack trace every cycle for roughly sixteen hours a day,
             // which is how an operator learns to ignore the line that matters when the feed does
             // break. The venue is asked rather than the failure's shape inferred from.
-            if (await IsSessionClosedAsync(stoppingToken))
+            if (await IsSessionClosedAsync(symbol, stoppingToken))
             {
-                state.Update("abstained", options.Symbol, reason: "MarketClosed");
-                logger.LogDebug(
-                    "Autonomous cycle abstained for {Symbol}: the session is closed.", options.Symbol);
+                state.UpdateSymbol(symbol, "abstained", symbol, reason: "MarketClosed");
+                logger.LogDebug("Autonomous cycle abstained for {Symbol}: the session is closed.", symbol);
                 return;
             }
 
-            state.Update("abstained", options.Symbol, reason: "EvidenceUnavailable");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "EvidenceUnavailable");
             logger.LogWarning(
                 exception,
                 "Autonomous cycle abstained for {Symbol}: market evidence was unavailable. The lane continues.",
-                options.Symbol);
+                symbol);
         }
     }
 
-    internal async Task EvaluateOpportunityAsync(CancellationToken cancellationToken)
+    internal async Task EvaluateOpportunityAsync(string symbol, CancellationToken cancellationToken)
     {
         bool experimental = options.Mode == AutonomousTradingMode.ExperimentalPaper;
         if (runtimeMode.Snapshot().Mode != SystemMode.Ready && !experimental)
         {
-            state.Update("entry_halted", options.Symbol, reason: "RuntimeNotReady");
+            state.UpdateSymbol(symbol, "entry_halted", symbol, reason: "RuntimeNotReady");
             return;
         }
         // Route first: an unsupported symbol must never inherit another asset class's cost model,
         // order policy, or permission check. Routing also precedes slot resolution, because an
         // unroutable symbol is a configuration abstention, not a runtime fault — throwing here
         // would trip the catch-all and degrade the whole runtime over a bad setting.
-        if (!router.TryRoute(options.Symbol, out OpportunityRoute? route, out string routeReason) ||
+        if (!router.TryRoute(symbol, out OpportunityRoute? route, out string routeReason) ||
             route is null)
         {
-            state.Update("abstained", options.Symbol, reason: routeReason);
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: routeReason);
             return;
         }
 
-        if (!symbols.TryResolveBySymbol(options.Symbol, out int slot))
+        if (!symbols.TryResolveBySymbol(symbol, out int slot))
         {
-            state.Update("abstained", options.Symbol, reason: "SymbolNotMappedToInstrumentSlot");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "SymbolNotMappedToInstrumentSlot");
             logger.LogWarning(
                 "Autonomous symbol {Symbol} routed to {AssetClass} but is not mapped to an instrument slot.",
-                options.Symbol, route.AssetClass);
+                symbol, route.AssetClass);
             return;
         }
 
@@ -151,7 +163,7 @@ public sealed class AutonomousPaperTradingService(
             probed.OptionsTrading, probed.OptionsTradingLevel);
         if (!route.IsPermittedBy(capabilities))
         {
-            state.Update("abstained", options.Symbol, reason: "AssetClassNotPermitted");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "AssetClassNotPermitted");
             logger.LogWarning(
                 "Autonomous route {AssetClass} is not permitted by the live account.", route.AssetClass);
             return;
@@ -160,16 +172,16 @@ public sealed class AutonomousPaperTradingService(
         ForecastSnapshotContract? forecast = research.Forecast;
         if (!experimental && (!research.Ready || forecast is null))
         {
-            state.Update("abstained", options.Symbol, reason: "VerifiedForecastUnavailable");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "VerifiedForecastUnavailable");
             return;
         }
-        if (!experimental && (!string.Equals(forecast!.Instrument, options.Symbol, StringComparison.OrdinalIgnoreCase) ||
+        if (!experimental && (!string.Equals(forecast!.Instrument, symbol, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(forecast.ForecastFamily, "directional_return_bps", StringComparison.OrdinalIgnoreCase) ||
             research.StrategyDefinition is null ||
-            !string.Equals(research.StrategyDefinition.Symbol, options.Symbol, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(research.StrategyDefinition.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
             )
         {
-            state.Update("abstained", options.Symbol, reason: "VerifiedForecastIncompatible");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "VerifiedForecastIncompatible");
             return;
         }
 
@@ -183,7 +195,7 @@ public sealed class AutonomousPaperTradingService(
         if (attribution.HasUnattributedExposure)
         {
             runtimeMode.Transition(SystemMode.EntryHalted, "broker_state_requires_reconciliation");
-            state.Update("entry_halted", options.Symbol, reason: "PortfolioUnreconciled");
+            state.UpdateSymbol(symbol, "entry_halted", symbol, reason: "PortfolioUnreconciled");
             logger.LogWarning(
                 "Entry halted: {Attribution}. Nothing will trade until this is explained or closed.",
                 attribution.Describe());
@@ -208,14 +220,14 @@ public sealed class AutonomousPaperTradingService(
         // Order of work: make spot execution delta-based, then net, then drop this.
         if (attribution.IsClaimed(route.Symbol))
         {
-            state.Update("abstained", options.Symbol, reason: "SymbolAlreadyHeld");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "SymbolAlreadyHeld");
             return;
         }
 
         PortfolioSnapshot initial = EmptyPortfolio(account);
         DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
         AutonomousPipelineDecision decision = pipeline.Evaluate(
-            slot, evidence, initial, true, true, capabilities,
+            slot, route, evidence, initial, true, true, capabilities,
             experimental ? null : (double)forecast!.PointForecast,
             experimental ? null : research.StrategyFamily,
             experimental ? null : research.StrategyDefinition,
@@ -227,11 +239,11 @@ public sealed class AutonomousPaperTradingService(
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {
-            state.Update("abstained", options.Symbol, reason: decision.Reason,
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: decision.Reason,
                 grossEdgeBps: decision.Committee is { } committee
                     ? (decimal)committee.ExpectedReturnBps
                     : null);
-            logger.LogInformation("Autonomous decision for {Symbol}: {Reason}.", options.Symbol, decision.Reason);
+            logger.LogInformation("Autonomous decision for {Symbol}: {Reason}.", symbol, decision.Reason);
             return;
         }
 
@@ -244,11 +256,11 @@ public sealed class AutonomousPaperTradingService(
         if (!route.Costs.IsEconomicallyViable(
                 options.OrderNotional, grossEdgeBps, spreadBps: 0m, out string viability))
         {
-            state.Update("abstained", options.Symbol, reason: viability);
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: viability);
             logger.LogInformation(
                 "Autonomous opportunity for {Symbol} refused as uneconomic at {Notional}: {Reason}. " +
                 "Minimum viable notional is {Minimum}.",
-                options.Symbol, options.OrderNotional, viability,
+                symbol, options.OrderNotional, viability,
                 route.Costs.MinimumViableNotionalUsd(grossEdgeBps));
             return;
         }
@@ -267,12 +279,12 @@ public sealed class AutonomousPaperTradingService(
         if (options.Expression == OpportunityExpression.DefinedRiskVertical)
         {
             await ExecuteOptionOpportunityAsync(
-                capabilities, candidate, decision, ownership, cancellationToken);
+                symbol, capabilities, candidate, decision, ownership, cancellationToken);
             return;
         }
 
         await ExecuteSpotOpportunityAsync(
-            candidate, decision, evidence, slot, ownership, cancellationToken);
+            symbol, candidate, decision, evidence, slot, ownership, cancellationToken);
     }
 
     /// <summary>
@@ -288,6 +300,7 @@ public sealed class AutonomousPaperTradingService(
     /// the durable hold, the managed exit, and reconciliation. The cycle returns immediately.
     /// </summary>
     private async Task ExecuteSpotOpportunityAsync(
+        string symbol,
         TradeCandidate candidate,
         AutonomousPipelineDecision decision,
         DirectionalMarketEvidence evidence,
@@ -300,12 +313,12 @@ public sealed class AutonomousPaperTradingService(
         if (quantity <= 0)
         {
             // Rounding to zero means the notional cannot buy a tradable unit at this price.
-            state.Update("abstained", options.Symbol, reason: "QuantityRoundedToZero");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "QuantityRoundedToZero");
             return;
         }
 
         string executionId = DeterministicClientOrderId.Create(
-            "autospot", OpportunityIdentity(candidate, slot), "execution");
+            "autospot", OpportunityIdentity(symbol, candidate, slot), "execution");
         decimal definedMaximumLoss = decision.Risk is { } risk && risk.RequiredRiskReservation.Value > 0
             ? risk.RequiredRiskReservation.Value
             : options.OrderNotional;
@@ -318,34 +331,34 @@ public sealed class AutonomousPaperTradingService(
         BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
 
         if (!spotExecution.TryReserve(
-                executionId, candidate.StrategyId, options.Symbol, slot, quantity,
+                executionId, candidate.StrategyId, symbol, slot, quantity,
                 definedMaximumLoss, candidate.ManagementPlan.MaximumHoldingPeriod,
                 ownership: ownership,
                 entryReferencePrice: referencePrice,
                 accountEquityBefore: account?.Equity))
         {
-            state.Update("abstained", options.Symbol, reason: "ReservationRejected");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: "ReservationRejected");
             return;
         }
 
-        state.Update("submitting_entry", options.Symbol, filledQuantity: quantity, reason: "Approved");
+        state.UpdateSymbol(symbol, "submitting_entry", symbol, filledQuantity: quantity, reason: "Approved");
         SpotExecutionRecord record = await spotExecution.AdvanceAsync(executionId, cancellationToken);
 
         if (record.State is SpotExecutionState.Failed)
         {
-            state.Update("abstained", options.Symbol, reason: record.FailureReason ?? "EntryFailed");
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: record.FailureReason ?? "EntryFailed");
             logger.LogWarning(
                 "Autonomous spot entry {ExecutionId} failed: {Reason}.",
                 executionId, record.FailureReason);
             return;
         }
 
-        state.Update("holding", options.Symbol, record.EntryBrokerOrderId,
+        state.UpdateSymbol(symbol, "holding", symbol, record.EntryBrokerOrderId,
             filledQuantity: record.EntryFilledQuantity, reason: record.State.ToString());
         logger.LogInformation(
             "Autonomous spot entry {ClientOrderId} submitted for {Symbol} at quantity {Quantity}; " +
             "the recovery worker owns fills, the hold, and the exit.",
-            record.EntryClientOrderId, options.Symbol, quantity);
+            record.EntryClientOrderId, symbol, quantity);
     }
 
     /// <summary>
@@ -356,6 +369,7 @@ public sealed class AutonomousPaperTradingService(
     /// that stays inside the risk budget — and commits the reservation durably before any POST.
     /// </summary>
     private async Task ExecuteOptionOpportunityAsync(
+        string symbol,
         AccountCapabilities capabilities,
         TradeCandidate candidate,
         AutonomousPipelineDecision decision,
@@ -367,11 +381,11 @@ public sealed class AutonomousPaperTradingService(
             ? (decimal)market.Mid
             : 0m;
         string executionId = DeterministicClientOrderId.Create(
-            "autoopt", OpportunityIdentity(candidate, candidate.InstrumentSlot), "execution");
+            "autoopt", OpportunityIdentity(symbol, candidate, candidate.InstrumentSlot), "execution");
 
-        state.Update("submitting_entry", options.Symbol, reason: "OptionSpreadAdmitted");
+        state.UpdateSymbol(symbol, "submitting_entry", symbol, reason: "OptionSpreadAdmitted");
         OptionExecutionOutcome outcome = await optionExecution.ExecuteAsync(
-            options.Symbol,
+            symbol,
             capabilities,
             executionId,
             underlyingPrice,
@@ -387,20 +401,20 @@ public sealed class AutonomousPaperTradingService(
 
         if (!outcome.Submitted)
         {
-            state.Update("abstained", options.Symbol, reason: outcome.Reason);
+            state.UpdateSymbol(symbol, "abstained", symbol, reason: outcome.Reason);
             logger.LogInformation(
                 "Autonomous option opportunity for {Symbol} was not submitted: {Reason}.",
-                options.Symbol, outcome.Reason);
+                symbol, outcome.Reason);
             return;
         }
 
         // The multi-leg recovery worker owns the record from here: fills, the durable hold, the
         // managed exit, and final reconciliation all advance without this cycle holding state.
-        state.Update("holding", options.Symbol, reason: outcome.State?.ToString());
+        state.UpdateSymbol(symbol, "holding", symbol, reason: outcome.State?.ToString());
         logger.LogInformation(
             "Autonomous option entry {ClientOrderId} submitted for {Symbol}; " +
             "defined maximum loss {Loss}, net debit {Debit}. Lifecycle owns the exit.",
-            outcome.EntryClientOrderId, options.Symbol,
+            outcome.EntryClientOrderId, symbol,
             outcome.DefinedMaximumLoss, outcome.NetDebitPerSpread);
     }
 
@@ -408,10 +422,10 @@ public sealed class AutonomousPaperTradingService(
     /// The reproducible identity of one opportunity. Every component is already persisted with the
     /// candidate, so the same opportunity yields the same client-order IDs on a later pass.
     /// </summary>
-    private string OpportunityIdentity(TradeCandidate candidate, int slot) =>
+    private static string OpportunityIdentity(string symbol, TradeCandidate candidate, int slot) =>
         string.Join(
             '|',
-            options.Symbol.Trim().ToUpperInvariant(),
+            symbol.Trim().ToUpperInvariant(),
             slot.ToString(System.Globalization.CultureInfo.InvariantCulture),
             candidate.StrategyId,
             candidate.CandidateId.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -479,9 +493,9 @@ public sealed class AutonomousPaperTradingService(
     /// keeps the original evidence failure visible rather than letting a second outage disguise the
     /// first as a quiet weekend.
     /// </summary>
-    private async Task<bool> IsSessionClosedAsync(CancellationToken cancellationToken)
+    private async Task<bool> IsSessionClosedAsync(string symbol, CancellationToken cancellationToken)
     {
-        if (!router.TryRoute(options.Symbol, out OpportunityRoute? route, out _)) return false;
+        if (!router.TryRoute(symbol, out OpportunityRoute? route, out _)) return false;
         if (route?.AssetClass is TradedAssetClass.SpotCrypto) return false;
 
         try

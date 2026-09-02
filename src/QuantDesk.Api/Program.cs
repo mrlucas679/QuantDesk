@@ -76,19 +76,6 @@ builder.Services.AddSingleton(services =>
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 builder.Services.AddSingleton<PaperOrderApplicationService>();
-// The gate is asset-class agnostic by design -- it takes a cost profile -- but it was registered
-// without one, so it fell back to the spot-crypto taker default whatever the lane traded. Pointed
-// at SPY that charges an ~80 bps round-trip hurdle against an instrument whose real cost is nearer
-// 9, and SPY does not move 80 bps in an hour: the lane would have abstained with
-// EXPECTED_EDGE_BELOW_COSTS at every cycle, forever, while looking like it was working.
-builder.Services.AddSingleton(services =>
-{
-    AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
-    return services.GetRequiredService<OpportunityRouter>()
-        .TryRoute(configured.Symbol, out OpportunityRoute? route, out _) && route is not null
-        ? new CryptoResearchGate(route.Costs)
-        : new CryptoResearchGate();
-});
 builder.Services.AddSingleton(services =>
     new MarketStateStore(services.GetRequiredService<PaperTradingOptions>().Symbols.Count));
 builder.Services.AddSingleton(new BoundedEventChannel<NormalizedMarketEvent>(8_192));
@@ -147,41 +134,14 @@ builder.Services.AddSingleton<IRealisedCostSource>(services =>
 // The cost the decision actually gets charged.
 //
 // The modelled figure alone was Alpaca's published 50 bps schedule rate plus the live spread. The
-// account lost 68 bps per round trip, because the venue also takes a USD cash charge that appears
-// in no fill. Every candidate whose edge sat between the two looked profitable and was not. The
-// floor charges whichever of the two is more pessimistic, so a widening spread still raises the
-// charge and a fee the model has never heard of still cannot be traded through.
-builder.Services.AddSingleton<ICostModel>(services =>
-{
-    AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
-    ICostModel modelled = services.GetRequiredService<OpportunityRouter>()
-        .TryRoute(configured.Symbol, out OpportunityRoute? route, out _) && route is not null
-        ? BuildModelledCost(route)
-        : new CryptoCostModel(
-            new BasisPoints((double)(services.GetRequiredService<CryptoFeeSchedule>().TakerBps * 2m)),
-            new BasisPoints(10));
-
-    return new MeasuredCostFloor(modelled, services.GetRequiredService<IRealisedCostSource>());
-});
-
-// The modelled cost for the instrument the lane actually trades.
-//
-// This was built unconditionally from the crypto fee schedule, so an equity lane had its
-// actionability check charged Alpaca's ~50 bps crypto taker fee against an instrument that pays
-// about one. Between that and the research gate's crypto hurdle, a profitable SPY move was being
-// refused twice over by numbers belonging to a different asset class.
-static ICostModel BuildModelledCost(OpportunityRoute route) => route.AssetClass switch
-{
-    TradedAssetClass.UsEquity => new EquityCostModel(
-        new BasisPoints((double)route.Costs.RoundTripFeeBps),
-        new BasisPoints((double)route.Costs.SlippageAllowanceBps)),
-    TradedAssetClass.UsEquityOption => new OptionCostModel(
-        new BasisPoints((double)route.Costs.RoundTripFeeBps),
-        new BasisPoints((double)route.Costs.SlippageAllowanceBps)),
-    _ => new CryptoCostModel(
-        new BasisPoints((double)route.Costs.RoundTripFeeBps),
-        new BasisPoints((double)route.Costs.SlippageAllowanceBps)),
-};
+// Both the admission hurdle and the cost model are resolved per instrument now, not once at
+// startup from a single configured symbol. See AssetClassPricing: binding them at registration is
+// what let an equity be charged a crypto hurdle and a crypto fee, refusing profitable trades twice
+// over while looking entirely reasonable. A lane trading several instruments cannot resolve either
+// once, and a lane that happens to be all-crypto today would re-acquire the same bug silently the
+// first time something else was added.
+builder.Services.AddSingleton(services =>
+    new AssetClassPricing(services.GetRequiredService<IRealisedCostSource>()));
 builder.Services.AddSingleton(new ActionabilityGate(0.01, new Usd(0.01m)));
 builder.Services.AddSingleton(services => new RiskGovernor(
     RiskLimitOptions.FromEnvironment(
@@ -366,7 +326,9 @@ app.MapGet("/api/system/capabilities", async (
     });
 });
 app.MapGet("/api/autonomous/status", (AutonomousTradingState autonomous) =>
-    Results.Ok(autonomous.Snapshot()));
+    // Every instrument, not just the most recently evaluated one. With one snapshot for the whole
+    // lane an operator could not tell a flat symbol from one that simply was not assessed last.
+    Results.Ok(new { lane = autonomous.Snapshot(), symbols = autonomous.SnapshotAll() }));
 app.MapGet("/api/research/status", (ResearchArtifactState artifacts) =>
     Results.Ok(artifacts.Snapshot()));
 app.MapGet("/api/research/microstructure-status", (MicrostructureEvidenceBuffer evidence) =>

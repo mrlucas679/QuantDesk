@@ -48,7 +48,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, AutonomousTradingState state) =
             Build(broker, symbol: "NOT-A-SYMBOL");
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("NOT-A-SYMBOL", CancellationToken.None);
 
         Assert.Equal("abstained", state.Snapshot().State);
         Assert.Equal(0, broker.AccountReads);
@@ -62,7 +62,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, AutonomousTradingState state) =
             Build(broker, symbol: "SPY", capabilities: Capabilities(equity: false));
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("SPY", CancellationToken.None);
 
         Assert.Equal("abstained", state.Snapshot().State);
         Assert.Equal("AssetClassNotPermitted", state.Snapshot().Reason);
@@ -79,7 +79,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, AutonomousTradingState state, RuntimeModeState mode) =
             BuildWithMode(broker);
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
 
         Assert.Equal("entry_halted", state.Snapshot().State);
         Assert.Equal("PortfolioUnreconciled", state.Snapshot().Reason);
@@ -96,7 +96,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         };
         (AutonomousPaperTradingService service, AutonomousTradingState state) = Build(broker);
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
 
         Assert.Equal("entry_halted", state.Snapshot().State);
         Assert.Empty(broker.Submitted);
@@ -110,7 +110,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, AutonomousTradingState state) =
             Build(broker, evidence: Evidence(100m, 100.01m, 100m, 100.3m));
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
 
         Assert.Equal("abstained", state.Snapshot().State);
         Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", state.Snapshot().Reason);
@@ -127,7 +127,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, AutonomousTradingState state) = Build(
             broker, symbol: "BTC/USD", notional: 5m, evidence: Evidence(100m, 100.01m, 100m, 104m));
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
 
         Assert.Equal("abstained", state.Snapshot().State);
         Assert.Equal("NotionalBelowVenueMinimum", state.Snapshot().Reason);
@@ -141,7 +141,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, AutonomousTradingState state) =
             Build(broker, evidence: Evidence(100m, 100.01m, 100m, 104m));
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
 
         // The record must exist on disk before the cycle returns, so a restart can resume it.
         Assert.True(File.Exists(_spotStorePath));
@@ -161,8 +161,8 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, _) =
             Build(broker, evidence: Evidence(100m, 100.01m, 100m, 104m));
 
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
-        await service.EvaluateOpportunityAsync(CancellationToken.None);
+        await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
+        await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
 
         // Identity is derived from the opportunity, so a repeat cycle cannot double-submit.
         Assert.Single(new SpotExecutionStore(_spotStorePath).ListAll());
@@ -176,7 +176,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         (AutonomousPaperTradingService service, _) = Build(broker);
 
         await Assert.ThrowsAnyAsync<Exception>(
-            () => service.EvaluateOpportunityAsync(CancellationToken.None));
+            () => service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None));
         Assert.Empty(broker.Submitted);
     }
 
@@ -224,14 +224,14 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new Dictionary<int, string> { [0] = "BTC/USD", [1] = "SPY" });
         var options = new AutonomousPaperTradingOptions(
             enabled, AutonomousTradingMode.ExperimentalPaper, OpportunityExpression.Spot,
-            null, symbol, notional, TimeSpan.FromMinutes(15), TimeSpan.FromSeconds(30),
+            null, [symbol], notional, TimeSpan.FromMinutes(15), TimeSpan.FromSeconds(30),
             TimeSpan.FromMinutes(5));
 
         var pipeline = new AutonomousDecisionPipeline(
             new MarketStateStore(2), new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(
                 new Usd(notional), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
-            new CryptoResearchGate(), new CryptoCostModel(new BasisPoints(50), new BasisPoints(10)),
+            new AssetClassPricing(new NoRealisedCosts()),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(RiskLimitOptions.FromEnvironment(notional)),
             clock, NullLogger<AutonomousDecisionPipeline>.Instance);
@@ -276,6 +276,12 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         KeyId = "test",
         SecretKey = "test",
     };
+
+    /// <summary>No measured dataset, so the modelled cost stands -- the designed fallback.</summary>
+    private sealed class NoRealisedCosts : QuantDesk.Runtime.Costs.IRealisedCostSource
+    {
+        public QuantDesk.Domain.Contracts.RealisedCostContract? Current() => null;
+    }
 
     private static CapabilityReport Capabilities(bool equity = true, bool options = true) =>
         new(true, equity, true, options, options ? 3 : null, true, false,

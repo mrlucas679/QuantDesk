@@ -21,7 +21,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void AlignedExpertsWithNetEdgeProduceManagedRiskApprovedCandidate()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled);
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.True(result.Approved);
         // Named for the mechanism, not the venue: the same momentum rule compiles for either asset class.
@@ -35,7 +35,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void PositiveForecastThatCannotPayCostsIsRejected()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.40m, 100m, 100.5m), Portfolio(), true, true, CryptoEnabled);
+            0, CryptoRoute, Evidence(100m, 100.40m, 100m, 100.5m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.False(result.Approved);
         Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", result.Reason);
@@ -46,7 +46,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void ResearchGateRejectionCannotReachActionabilityOrRisk()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 100.3m), Portfolio(), true, true, CryptoEnabled);
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 100.3m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.False(result.Approved);
         Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", result.Reason);
@@ -58,7 +58,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void BrokerHealthFailureCannotReachApproval()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), false, true, CryptoEnabled);
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), false, true, CryptoEnabled);
 
         Assert.False(result.Approved);
         Assert.Equal(RiskReason.BrokerUnhealthy.ToString(), result.Reason);
@@ -80,7 +80,7 @@ public sealed class AutonomousDecisionPipelineTests
             OptionsTradingLevel: null);
 
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, withoutCrypto);
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, withoutCrypto);
 
         Assert.False(result.Approved);
         Assert.Equal("NoOpportunity", result.Reason);
@@ -94,7 +94,7 @@ public sealed class AutonomousDecisionPipelineTests
         // A null set is a question that was never answered, not permission. Failing closed here is
         // what keeps the absence of an answer from reading as a yes.
         Assert.Throws<ArgumentNullException>(() => CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, null!));
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, null!));
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public sealed class AutonomousDecisionPipelineTests
         // fact. Once a measured cost bound is available the fuller test applies, and a forecast that
         // never stated how wrong it could be cannot pass it -- silence is not a claim of precision.
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
             verifiedForecastBps: 400d,
             verifiedStrategyFamily: null,
             verifiedStrategyDefinition: null,
@@ -119,7 +119,7 @@ public sealed class AutonomousDecisionPipelineTests
     public void ALargeSignalFromAFamilyWithNoDemonstratedEdgeIsRefused()
     {
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
             verifiedForecastBps: 400d,
             verifiedStrategyFamily: null,
             verifiedStrategyDefinition: null,
@@ -141,7 +141,7 @@ public sealed class AutonomousDecisionPipelineTests
         // 100 bps against a 70 bps cost passes a point comparison. At a standard error of 60 the
         // lower bound is about +1 bps, and the trade is a coin flip wearing a forecast.
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
             verifiedForecastBps: 100d,
             verifiedStrategyFamily: null,
             verifiedStrategyDefinition: null,
@@ -158,7 +158,7 @@ public sealed class AutonomousDecisionPipelineTests
         // An unmeasured cost is not a licence to assume one, and it is also not a reason to stop
         // trading entirely -- the gate falls back rather than failing closed on absent measurement.
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
-            0, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
+            0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled,
             verifiedForecastBps: 400d,
             verifiedStrategyFamily: null,
             verifiedStrategyDefinition: null,
@@ -166,6 +166,26 @@ public sealed class AutonomousDecisionPipelineTests
             allInCostUpperBoundBps: null);
 
         Assert.NotEqual("ForecastUncertaintyNotPublished", result.Reason);
+    }
+
+    /// <summary>
+    /// No measured dataset, so the modelled cost stands.
+    ///
+    /// That is the designed fallback: an unmeasured cost is not a licence to assume one, and it is
+    /// also not a reason to stop, so the model governs until real round trips say otherwise.
+    /// </summary>
+    private sealed class NoRealisedCosts : IRealisedCostSource
+    {
+        public RealisedCostContract? Current() => null;
+    }
+
+    /// <summary>The route the pipeline prices against; supplied per call now, not resolved at startup.</summary>
+    private static readonly OpportunityRoute CryptoRoute = Route("BTC/USD");
+
+    private static OpportunityRoute Route(string symbol)
+    {
+        Assert.True(new OpportunityRouter().TryRoute(symbol, out OpportunityRoute? route, out _));
+        return route!;
     }
 
     private static readonly AccountCapabilities CryptoEnabled = new(
@@ -183,8 +203,7 @@ public sealed class AutonomousDecisionPipelineTests
             new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(new Usd(20), 0.05,
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
-            new CryptoResearchGate(),
-            new CryptoCostModel(new BasisPoints(50), new BasisPoints(10)),
+            new AssetClassPricing(new NoRealisedCosts()),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),
                 new Usd(250), 1, 100_000, 100_000, 100_000, 0.01, 1)),
