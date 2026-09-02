@@ -16,6 +16,32 @@ public static class ResearchCostAssumptions
     public const double Equity = 8.0;
 }
 
+/// <summary>
+/// What the venue actually charges for a round trip, in basis points, excluding live spread.
+///
+/// Verified against delivered quantities rather than taken from a document. Alpaca's spot crypto
+/// fee is charged in kind, so the entry-side rate is directly observable as the shortfall between
+/// what an order bought and what the account could then sell. Measured across 62 matched round
+/// trips on 2026-09-02: a median of 25.0 bps retained per entry, which is exactly the published
+/// taker rate, and 50 bps for the round trip -- plus the separate USD charge on top.
+///
+/// This matters because it is not what the research scan charged. The scan used 33.7 bps, a figure
+/// taken from an earlier reconstruction that understated the fee, so every crypto net figure in the
+/// registry is roughly 26 bps too generous. Judging a rule by that net figure asks whether it beat
+/// a cost the account does not pay.
+/// </summary>
+public static class VenueRoundTripCosts
+{
+    /// <summary>25 bps taker per side, charged in kind, plus the slippage the lane budgets.</summary>
+    public const double Crypto = 60.0;
+
+    /// <summary>Commission-free, with pass-through fees and budgeted slippage.</summary>
+    public const double Equity = 8.0;
+
+    public static double For(TradedAssetClass assetClass) =>
+        assetClass is TradedAssetClass.SpotCrypto ? Crypto : Equity;
+}
+
 public enum StrategyQualification
 {
     /// <summary>
@@ -236,16 +262,38 @@ public static class SignalStrategies
     /// round-trip fees, and an account down 6.57 USD. Gross price movement was approximately
     /// nothing and the fee was the entire loss -- exactly what the research said would happen.
     /// </summary>
-    public static bool IsKnownToLose(this SignalStrategy strategy)
+    public static bool IsKnownToLose(this SignalStrategy strategy) =>
+        strategy.IsKnownToLose(strategy.ResearchCostAssumptionBps);
+
+    /// <inheritdoc cref="IsKnownToLose(SignalStrategy)"/>
+    /// <param name="strategy">The rule under test.</param>
+    /// <param name="venueRoundTripBps">
+    /// The round trip the account actually pays, which is not always what the scan charged.
+    /// </param>
+    public static bool IsKnownToLose(this SignalStrategy strategy, double venueRoundTripBps)
     {
         ArgumentNullException.ThrowIfNull(strategy);
 
-        // The published bound is two-sided at 95%, so the standard error is the gap over 1.96.
+        // Judged against the cost the account pays, not the cost the scan assumed.
+        //
+        // The 2026-09-02 scan charged 33.7 bps for a crypto round trip. Measured against delivered
+        // quantities the same day, the venue keeps 25.0 bps in kind on the entry alone -- 50 for
+        // the round trip, plus slippage and the separate USD charge. So every crypto net figure in
+        // the registry is about 26 bps too generous, and asking whether a rule beat 33.7 asks
+        // whether it beat a cost that does not exist.
+        //
+        // breakout.bollinger-upper.v1 is the case in point. It measured +1.5 bps net against 33.7
+        // and was the one rule the crypto lane still traded. Against the 60 the account is charged
+        // it is roughly -25, which is well outside its own error bar.
+        double gross = strategy.ResearchMeanNetBps + strategy.ResearchCostAssumptionBps;
+        double net = gross - venueRoundTripBps;
+
+        // The published bound is two-sided at 95%, so the standard error is the gap over 1.96. The
+        // spread of outcomes does not change when the cost assumption does; only the mean moves.
         double standardError = Math.Max(
             (strategy.ResearchMeanNetBps - strategy.ResearchLowerBoundBps) / 1.96, 0.0);
 
-        return strategy.Qualification != StrategyQualification.Qualified
-            && strategy.ResearchMeanNetBps < -standardError;
+        return strategy.Qualification != StrategyQualification.Qualified && net < -standardError;
     }
 
     /// <summary>
@@ -259,7 +307,8 @@ public static class SignalStrategies
     public static IReadOnlyList<SignalStrategy> Tradable(TradedAssetClass assetClass) =>
     [
         .. For(assetClass).Where(strategy =>
-            strategy.Qualification is not StrategyQualification.Stale && !strategy.IsKnownToLose()),
+            strategy.Qualification is not StrategyQualification.Stale
+            && !strategy.IsKnownToLose(VenueRoundTripCosts.For(assetClass))),
     ];
 
     /// <summary>

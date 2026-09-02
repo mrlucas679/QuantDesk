@@ -392,9 +392,11 @@ public sealed class StrategyRotationRestoreTests
         // is negative by more than its own standard error.
         //
         // If this test fails, the evidence changed. Read the new numbers before changing the test.
-        Assert.Equal(
-            ["breakout.bollinger-upper.v1"],
-            SignalStrategies.Tradable(TradedAssetClass.SpotCrypto).Select(item => item.Id));
+        // Nothing survives once the venue's own charge is applied. breakout.bollinger-upper.v1 was
+        // the last rule standing at +1.5 bps net against the 33.7 the scan charged; measured
+        // against delivered quantities the venue keeps 25.0 bps in kind on the entry alone, so the
+        // round trip is 60 and the rule is about -25 -- well outside its own error bar.
+        Assert.Empty(SignalStrategies.Tradable(TradedAssetClass.SpotCrypto));
 
         // Every equity rule is negative by more than its own standard error. The one that is not,
         // volume.surge-breakout.v1, is Stale rather than tradable: its -3.6 was measured against a
@@ -444,6 +446,37 @@ public sealed class StrategyRotationRestoreTests
             SignalStrategies.ForCrypto.Single(s => s.Id == "breakout.bollinger-upper.v1");
 
         Assert.InRange(fired.ResearchMeanGrossBps, 30d, 40d);
+    }
+
+    [Fact]
+    public void TheVenueChargeIsMeasuredFromDeliveredQuantityNotReadFromADocument()
+    {
+        // Alpaca's spot crypto fee is charged in kind, so the entry-side rate is directly
+        // observable as the shortfall between what an order bought and what the account could then
+        // sell. Across 62 matched round trips on 2026-09-02 the median retained was 25.0 bps --
+        // exactly the published taker rate, and 50 for the round trip before slippage.
+        Assert.Equal(60.0, VenueRoundTripCosts.Crypto);
+        Assert.Equal(60.0, VenueRoundTripCosts.For(TradedAssetClass.SpotCrypto));
+        Assert.Equal(8.0, VenueRoundTripCosts.For(TradedAssetClass.UsEquity));
+
+        // And it is not what the scan charged, which is the whole reason the two are separate.
+        Assert.True(VenueRoundTripCosts.Crypto > ResearchCostAssumptions.Crypto);
+    }
+
+    [Fact]
+    public void ARuleIsJudgedOnTheCostTheAccountPaysNotTheOneTheScanAssumed()
+    {
+        // Same measured outcome, two cost assumptions, opposite verdicts. Judging on the scan's
+        // figure asks whether the rule beat a cost that does not exist.
+        SignalStrategy marginal = Strategy("a.trend.v1", "trend") with
+        {
+            ResearchMeanNetBps = 1.5,
+            ResearchLowerBoundBps = -14.5,
+            ResearchCostAssumptionBps = 33.7,
+        };
+
+        Assert.False(marginal.IsKnownToLose(33.7));
+        Assert.True(marginal.IsKnownToLose(60.0));
     }
 
     private static SignalStrategy Strategy(string id, string mechanism) =>
@@ -576,9 +609,13 @@ public sealed class KnownLoserTests
             s => Assert.True(
                 s.IsKnownToLose() || s.Qualification is StrategyQualification.Stale, s.Id));
 
-        Assert.False(
-            SignalStrategies.ForCrypto.Single(s => s.Id == "breakout.bollinger-upper.v1")
-                .IsKnownToLose());
+        // Against the cost the scan charged it is not a known loser; against the cost the account
+        // is charged it is. Both statements are true and only the second decides whether it trades.
+        SignalStrategy lastStanding =
+            SignalStrategies.ForCrypto.Single(s => s.Id == "breakout.bollinger-upper.v1");
+
+        Assert.False(lastStanding.IsKnownToLose());
+        Assert.True(lastStanding.IsKnownToLose(VenueRoundTripCosts.Crypto));
     }
 
     [Fact]
