@@ -24,6 +24,17 @@ public sealed class SpotExecutionLifecycle(
     IHeldPositionMarker? referencePrices = null)
 {
     /// <summary>
+    /// The most of an entry the venue may take as an in-kind fee.
+    ///
+    /// Alpaca's spot crypto taker fee is 0.25%; half a percent leaves room for a schedule change
+    /// without being loose enough to absorb a real position. The diagnostic lane uses the same
+    /// bound for the same reason, and the two must not drift apart -- a residual written off here
+    /// and flagged there would make the two lanes disagree about whether an account is flat.
+    /// </summary>
+    private const decimal MaximumInKindFeeShare = 0.005m;
+
+
+    /// <summary>
     /// Persists the reservation. Nothing reaches the broker until this returns true, so an
     /// interrupted run always leaves a record naming the order that may exist.
     /// </summary>
@@ -450,16 +461,38 @@ public sealed class SpotExecutionLifecycle(
             .Where(position => BrokerSymbol.Matches(position.Symbol, record.Symbol))
             .Sum(position => position.Quantity);
 
+        // The internal ledger keeps a residual the account never held.
+        //
+        // The venue takes its spot crypto fee in kind, so an entry that filled 1.54344806 delivered
+        // 1.539589439. The exit sells what the account holds, correctly, and the ledger is then left
+        // believing 0.00385862 is still open -- the fee, recorded as exposure.
+        //
+        // That residual can never be sold: the broker holds nothing, so the exit finds nothing to
+        // sell and hands back to reconciliation, which sees internal exposure and sends it to
+        // ExitDue again. AAVE and UNI were both circling that loop, substance sold, unable to
+        // finish.
+        //
+        // A residual within the fee's share of the entry, against a broker position of zero, is the
+        // fee and not a position. Treating it as exposure is what keeps the record open; treating a
+        // *larger* gap as the fee would be how real exposure gets written off, which is why this is
+        // bounded by the same share the diagnostic lane already uses.
+        // The ledger is not rewritten -- the fill quantities are what the venue reported and stay
+        // that way. What changes is the reading: a residual this small, against a broker position
+        // of zero, is the fee rather than exposure.
+        bool internallyFlat = record.InternalOpenQuantity == 0m ||
+            (brokerQuantity == 0m && record.EntryFilledQuantity > 0m &&
+             record.InternalOpenQuantity <= record.EntryFilledQuantity * MaximumInKindFeeShare);
+
         // Complete only when the broker and the application agree there is nothing left.
-        if (brokerQuantity != 0m || record.InternalOpenQuantity != 0m)
+        if (brokerQuantity != 0m || !internallyFlat)
         {
             SpotExecutionRecord stillOpen = record with
             {
-                State = record.InternalOpenQuantity > 0
+                State = !internallyFlat
                     ? SpotExecutionState.ExitDue
                     : SpotExecutionState.Reconciling,
-                ExitSubmissionAttemptedAt = record.InternalOpenQuantity > 0 ? null : record.ExitSubmissionAttemptedAt,
-                FailureReason = brokerQuantity != 0m && record.InternalOpenQuantity == 0m
+                ExitSubmissionAttemptedAt = !internallyFlat ? null : record.ExitSubmissionAttemptedAt,
+                FailureReason = brokerQuantity != 0m && internallyFlat
                     ? "BROKER_POSITION_WITHOUT_INTERNAL_EXPOSURE"
                     : record.FailureReason
             };

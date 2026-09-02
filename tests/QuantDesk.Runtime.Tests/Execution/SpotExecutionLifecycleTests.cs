@@ -508,6 +508,54 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         Assert.Equal(SpotExecutionState.ExitDue, record.State);
     }
 
+    [Fact]
+    public async Task TheFeeTakenInKindIsNotTreatedAsAnOpenPosition()
+    {
+        // The loop AAVE and UNI were circling. The venue takes its fee out of the delivered
+        // quantity, the exit correctly sells what the account holds, and the ledger is left showing
+        // the fee as exposure -- a residual that can never be sold, because the broker holds
+        // nothing. Reconciliation saw internal exposure and sent it back to ExitDue, which found
+        // nothing to sell and handed it back, indefinitely.
+        var broker = new FakeBroker { AccountEquity = 100_000m };
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit due
+        broker.Order = null;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // submit exit
+        // The exit fills the 0.9975 the account actually held, leaving 0.0025 of fee on the ledger.
+        broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 0.9975m, 101m);
+        broker.Positions = [];
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit filled
+        SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Complete, done.State);
+        // The fills are not rewritten -- what changed is how the remainder is read.
+        Assert.Equal(0.0025m, done.InternalOpenQuantity);
+    }
+
+    [Fact]
+    public async Task AResidualTooLargeToBeTheFeeIsStillTreatedAsExposure()
+    {
+        // The bound matters as much as the tolerance. Writing off anything larger than the fee is
+        // how a real position gets quietly abandoned.
+        var broker = new FakeBroker { AccountEquity = 100_000m };
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        broker.Order = null;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 0.5m, 101m);
+        broker.Positions = [];
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        SpotExecutionRecord record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Complete, record.State);
+    }
+
     private bool Reserve(SpotExecutionLifecycle lifecycle) => lifecycle.TryReserve(
         ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15));
 
