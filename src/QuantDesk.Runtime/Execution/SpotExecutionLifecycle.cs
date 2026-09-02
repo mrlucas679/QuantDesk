@@ -109,7 +109,7 @@ public sealed class SpotExecutionLifecycle(
                 or SpotExecutionState.EntryPartiallyFilled =>
                 await TrackEntryAsync(record, cancellationToken),
             SpotExecutionState.EntryFilled => StartHold(record),
-            SpotExecutionState.Holding => EvaluateHold(record),
+            SpotExecutionState.Holding => await EvaluateHoldAsync(record, cancellationToken),
             SpotExecutionState.ExitDue or SpotExecutionState.ExitReserved =>
                 await SubmitExitAsync(record, cancellationToken),
             SpotExecutionState.ExitSubmitted or SpotExecutionState.ExitAccepted
@@ -252,6 +252,61 @@ public sealed class SpotExecutionLifecycle(
         };
         store.Update(updated);
         return updated;
+    }
+
+    private async Task<SpotExecutionRecord> EvaluateHoldAsync(
+        SpotExecutionRecord record, CancellationToken cancellationToken)
+    {
+        // Has the account stopped holding this while we were not looking?
+        //
+        // A position closed outside the system -- an operator flattening by hand, a venue-side
+        // liquidation -- left the record Holding until its timer expired. On 2026-09-02 that was a
+        // four-hour window in which the status endpoint reported exposure the account did not have,
+        // and in which the lane refused to consider the symbol at all because it believed it
+        // already held it. The reconciliation for this case existed; nothing reached it until the
+        // clock did.
+        //
+        // Only asked after the position has had time to appear. A fill takes a moment to become a
+        // visible position, and treating that gap as a disappearance would abandon every entry the
+        // instant it filled.
+        if (record.EntryFilledQuantity > 0m &&
+            record.HoldStartedAt is { } started &&
+            clock.UtcNow - started >= BrokerPositionGracePeriod &&
+            await BrokerHoldsNothingAsync(record, cancellationToken))
+        {
+            SpotExecutionRecord vanished = record with
+            {
+                State = SpotExecutionState.ExitDue,
+                EarlyExitReason = "ClosedOutsideSystem",
+                ExitReferencePrice =
+                    record.ExitReferencePrice ?? referencePrices?.CurrentMid(record.Symbol),
+            };
+            store.Update(vanished);
+            return vanished;
+        }
+
+        return EvaluateHold(record);
+    }
+
+    /// <summary>
+    /// How long a filled entry is given to become a visible broker position.
+    ///
+    /// Long enough that ordinary propagation delay is never mistaken for a disappearance, short
+    /// enough that a hand-closed position does not sit misreported for hours.
+    /// </summary>
+    private static readonly TimeSpan BrokerPositionGracePeriod = TimeSpan.FromMinutes(2);
+
+    private async Task<bool> BrokerHoldsNothingAsync(
+        SpotExecutionRecord record, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<BrokerPositionSnapshot> positions =
+            await broker.ListPositionsAsync(cancellationToken);
+
+        // An empty list is ambiguous: it is what a flat account returns and also what a failed
+        // call returns through a gateway that swallows errors. Reconciliation is the safe reading
+        // either way -- it re-asks the broker and completes only when the two agree -- so this
+        // does not need to tell them apart.
+        return !positions.Any(position => BrokerSymbol.Matches(position.Symbol, record.Symbol));
     }
 
     private SpotExecutionRecord EvaluateHold(SpotExecutionRecord record)

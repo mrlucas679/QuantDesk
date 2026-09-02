@@ -496,6 +496,61 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         Assert.Equal(101.5m, done.ExitReferencePrice);
     }
 
+    [Fact]
+    public async Task APositionClosedByHandIsNoticedWithoutWaitingForItsTimer()
+    {
+        // The live divergence. A position closed outside the system -- an operator flattening by
+        // hand, a venue-side liquidation -- left the record Holding until the timer expired. On
+        // 2026-09-02 that was a four-hour window in which the status endpoint reported exposure the
+        // account did not have, and in which the lane refused to consider the symbol at all because
+        // it believed it already held it. The reconciliation for this case existed; nothing reached
+        // it until the clock did.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+
+        broker.Positions = [];                       // closed by hand
+        _clock.Advance(TimeSpan.FromMinutes(3));     // past the propagation grace period
+
+        SpotExecutionRecord noticed = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.ExitDue, noticed.State);
+        Assert.Equal("ClosedOutsideSystem", noticed.EarlyExitReason);
+    }
+
+    [Fact]
+    public async Task AFillIsGivenTimeToBecomeAVisiblePosition()
+    {
+        // A fill takes a moment to appear as a position. Treating that gap as a disappearance would
+        // abandon every entry the instant it filled, which is a far more expensive mistake than
+        // noticing a hand-closed position a couple of minutes late.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+
+        broker.Positions = [];                       // not visible yet
+        _clock.Advance(TimeSpan.FromSeconds(30));    // inside the grace period
+
+        SpotExecutionRecord holding = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Holding, holding.State);
+        Assert.Null(holding.EarlyExitReason);
+    }
+
+    [Fact]
+    public async Task APositionTheBrokerStillHoldsKeepsRunningToItsTimer()
+    {
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+
+        _clock.Advance(TimeSpan.FromMinutes(3));
+
+        SpotExecutionRecord holding = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Holding, holding.State);
+    }
+
     private sealed class StubMarker(decimal? mid) : IHeldPositionMarker
     {
         public decimal? CurrentMid(string symbol) => mid;
