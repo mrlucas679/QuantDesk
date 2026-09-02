@@ -41,7 +41,10 @@ public sealed class AutonomousDecisionPipelineTests
             0, CryptoRoute, Evidence(100m, 100.40m, 100m, 100.5m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.False(result.Approved);
-        Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", result.Reason);
+        // The gate now asks whether the instrument moves enough to pay a round trip, rather than
+        // whether trailing momentum is large enough. The old question was one strategy's entry
+        // condition and made every mean-reversion rule unreachable.
+        Assert.Equal("EXPECTED_MOVE_BELOW_COSTS", result.Reason);
         Assert.Null(result.Risk);
     }
 
@@ -52,7 +55,10 @@ public sealed class AutonomousDecisionPipelineTests
             0, CryptoRoute, Evidence(100m, 100.01m, 100m, 100.3m), Portfolio(), true, true, CryptoEnabled);
 
         Assert.False(result.Approved);
-        Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", result.Reason);
+        // The gate now asks whether the instrument moves enough to pay a round trip, rather than
+        // whether trailing momentum is large enough. The old question was one strategy's entry
+        // condition and made every mean-reversion rule unreachable.
+        Assert.Equal("EXPECTED_MOVE_BELOW_COSTS", result.Reason);
         Assert.Null(result.Candidate);
         Assert.Null(result.Risk);
     }
@@ -206,7 +212,7 @@ public sealed class AutonomousDecisionPipelineTests
             new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(new Usd(20), 0.05,
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
-            new AssetClassPricing(new NoRealisedCosts()),
+            new AssetClassPricing(new NoRealisedCosts(), holdingBars: 12),
             new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),

@@ -59,7 +59,10 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
 
         output.WriteLine(trace.Render());
         Assert.False(trace.ReachedBroker);
-        Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", trace.StoppedAt);
+        // The gate now asks whether the instrument moves enough to pay a round trip, rather than
+        // whether trailing momentum is large enough. The old question was one strategy's entry
+        // condition and made every mean-reversion rule unreachable.
+        Assert.Equal("EXPECTED_MOVE_BELOW_COSTS", trace.StoppedAt);
     }
 
     [Fact]
@@ -215,7 +218,7 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
             new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(OrderNotional, 0.05,
                 TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
-            new AssetClassPricing(new NoRealisedCosts()),
+            new AssetClassPricing(new NoRealisedCosts(), holdingBars: 12),
             new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),

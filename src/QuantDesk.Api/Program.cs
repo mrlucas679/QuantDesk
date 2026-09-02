@@ -144,7 +144,13 @@ builder.Services.AddSingleton<IRealisedCostSource>(services =>
 // once, and a lane that happens to be all-crypto today would re-acquire the same bug silently the
 // first time something else was added.
 builder.Services.AddSingleton(services =>
-    new AssetClassPricing(services.GetRequiredService<IRealisedCostSource>()));
+{
+    // The holding period in five-minute bars, so the viability gate can ask whether the instrument
+    // moves far enough over the time a position is actually held.
+    AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
+    int holdingBars = Math.Max(1, (int)(configured.HoldDuration.TotalMinutes / 5));
+    return new AssetClassPricing(services.GetRequiredService<IRealisedCostSource>(), holdingBars);
+});
 builder.Services.AddSingleton(new ActionabilityGate(0.01, new Usd(0.01m)));
 builder.Services.AddSingleton(services => new RiskGovernor(
     RiskLimitOptions.FromEnvironment(

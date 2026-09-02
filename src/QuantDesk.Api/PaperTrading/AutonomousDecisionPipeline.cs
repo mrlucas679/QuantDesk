@@ -119,31 +119,37 @@ public sealed class AutonomousDecisionPipeline(
         ArgumentNullException.ThrowIfNull(route);
 
         // Priced for this instrument, not for whatever the lane was configured with at startup.
-        CryptoResearchGate researchGate = pricing.GateFor(route);
+        CostViabilityGate viabilityGate = pricing.ViabilityFor(route);
         ICostModel costs = pricing.CostsFor(route);
         AccountCapabilities effectiveCapabilities = capabilities;
         StrategySelection? selection = null;
         if (verifiedForecastBps is null)
         {
-            // The cost gate first: no strategy, however it fires, may open a position whose expected
-            // move cannot pay the round trip. This is the same hurdle the single momentum rule used
-            // to enforce, kept in front of all of them rather than embedded in one.
-            CryptoResearchDecision research = researchGate.Evaluate(evidence);
-            if (!research.Approved)
-            {
-                logger.LogInformation(
-                    "Experimental decision abstained: reason={Reason}, mediumMomentumBps={Medium}, shortMomentumBps={Short}, spreadBps={Spread}, lookbackBars={Lookback}, quoteAge=live",
-                    research.Reason, research.MediumMomentumBps, research.ShortMomentumBps,
-                    research.SpreadBps, research.LookbackBars);
-                return Reject(research.Reason);
-            }
-
-            // Then the strategies. The lane used to trade one rule reading closes alone; this asks
-            // thirteen mechanisms -- trend, mean reversion, breakout, volume and volatility -- and
-            // credits the trade to whichever has the least live evidence so far, so the sample
-            // spreads across mechanisms instead of filling up with whichever fires most often.
+            // Strategies first, then the cost hurdle.
+            //
+            // The order used to be the other way round, and it quietly made most of the strategy
+            // set unreachable. The gate's first test is that recent momentum is positive and
+            // exceeds the round trip -- which is the momentum strategy's own entry condition, not a
+            // property of trading in general. Running it in front of everything meant a
+            // mean-reversion rule could only fire when prices were already rising, so buying a dip
+            // required the dip not to have happened. Nine of thirteen strategies could never have
+            // opened a position.
             selection = SelectStrategy(evidence, route);
             if (selection is null) return Reject("NoStrategySignal");
+
+            // The hurdle a strategy of any direction has to clear: does this instrument move enough
+            // over the holding period to pay for the round trip at all? That is a necessary
+            // condition for every mechanism and specific to none of them, where trailing momentum
+            // is specific to one.
+            CostViability viability = viabilityGate.Evaluate(evidence, route);
+            if (!viability.Viable)
+            {
+                logger.LogInformation(
+                    "Strategy {Strategy} fired on {Instrument} but the instrument cannot pay its costs: " +
+                    "expected move {Move:0.0} bps against a {Hurdle:0.0} bps hurdle.",
+                    selection.Strategy.Id, instrumentSlot, viability.ExpectedMoveBps, viability.HurdleBps);
+                return Reject(viability.Reason);
+            }
 
             logger.LogInformation(
                 "Strategy {Strategy} admitted {Instrument}; also firing: {Agreeing}. " +

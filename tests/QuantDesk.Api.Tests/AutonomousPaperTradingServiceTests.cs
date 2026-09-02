@@ -114,7 +114,10 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         await service.EvaluateOpportunityAsync("BTC/USD", CancellationToken.None);
 
         Assert.Equal("abstained", state.Snapshot().State);
-        Assert.Equal("EXPECTED_EDGE_BELOW_COSTS", state.Snapshot().Reason);
+        // The gate now asks whether the instrument moves enough to pay a round trip, rather than
+        // whether trailing momentum is large enough. The old question was one strategy's entry
+        // condition and made every mean-reversion rule unreachable.
+        Assert.Equal("EXPECTED_MOVE_BELOW_COSTS", state.Snapshot().Reason);
         Assert.Empty(broker.Submitted);
     }
 
@@ -232,7 +235,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new MarketStateStore(2), new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(
                 new Usd(notional), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
-            new AssetClassPricing(new NoRealisedCosts()),
+            new AssetClassPricing(new NoRealisedCosts(), holdingBars: 12),
             new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(RiskLimitOptions.FromEnvironment(notional)),

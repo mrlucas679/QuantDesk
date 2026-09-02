@@ -20,25 +20,31 @@ namespace QuantDesk.Api.PaperTrading;
 /// and the failure would again be silent. Asking per symbol removes the possibility rather than
 /// documenting it.
 /// </summary>
-public sealed class AssetClassPricing(IRealisedCostSource realisedCosts)
+public sealed class AssetClassPricing(IRealisedCostSource realisedCosts, int holdingBars)
 {
     // Keyed on the cost profile's own name rather than the asset class, because the profile is what
     // determines the numbers. Two routes could share an asset class and price differently -- a
     // stressed profile against a base one -- and keying on the class would silently hand the second
     // the first one's hurdle.
-    private readonly Dictionary<string, CryptoResearchGate> _gates = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CostViabilityGate> _gates = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ICostModel> _costs = new(StringComparer.Ordinal);
     private readonly object _sync = new();
 
-    /// <summary>The admission hurdle for this instrument, charged at its own venue's costs.</summary>
-    public CryptoResearchGate GateFor(OpportunityRoute route)
+    /// <summary>
+    /// Whether this instrument moves enough to pay its own round trip, at its own venue's costs.
+    ///
+    /// Direction-neutral on purpose. The gate this replaced tested trailing momentum, which is one
+    /// strategy's entry condition rather than a property of trading, and using it as a universal
+    /// filter made every mean-reversion rule unreachable.
+    /// </summary>
+    public CostViabilityGate ViabilityFor(OpportunityRoute route)
     {
         ArgumentNullException.ThrowIfNull(route);
         lock (_sync)
         {
-            if (!_gates.TryGetValue(route.Costs.AssetClass, out CryptoResearchGate? gate))
+            if (!_gates.TryGetValue(route.Costs.AssetClass, out CostViabilityGate? gate))
             {
-                gate = new CryptoResearchGate(route.Costs);
+                gate = new CostViabilityGate(route.Costs, holdingBars);
                 _gates[route.Costs.AssetClass] = gate;
             }
 
