@@ -107,6 +107,46 @@ public static class SignalStrategies
     ];
 
     /// <summary>
+    /// Whether this strategy is known to lose, as opposed to merely unproven.
+    ///
+    /// The distinction the lane needs and did not have. Every strategy here is Unqualified, which
+    /// says only that none has *demonstrated* an edge. It says nothing about how badly each one is
+    /// measured to do, and those are very different situations: a family whose mean net return is
+    /// indistinguishable from breakeven is worth paying a little to learn about, and one measured
+    /// at minus sixty basis points against a sixty-eight basis point round trip is not -- it is a
+    /// known, repeatable loss with no information left to buy.
+    ///
+    /// The test is whether the mean sits more than one standard error below zero. Inside that, the
+    /// family might be flat and the sample too small to tell. Beyond it, the loss is the finding.
+    ///
+    /// Live confirmation, 2026-09-02: nine crypto round trips, 1,799 USD of notional, 9.00 USD of
+    /// round-trip fees, and an account down 6.57 USD. Gross price movement was approximately
+    /// nothing and the fee was the entire loss -- exactly what the research said would happen.
+    /// </summary>
+    public static bool IsKnownToLose(this SignalStrategy strategy)
+    {
+        ArgumentNullException.ThrowIfNull(strategy);
+
+        // The published bound is two-sided at 95%, so the standard error is the gap over 1.96.
+        double standardError = Math.Max(
+            (strategy.ResearchMeanNetBps - strategy.ResearchLowerBoundBps) / 1.96, 0.0);
+
+        return strategy.Qualification != StrategyQualification.Qualified
+            && strategy.ResearchMeanNetBps < -standardError;
+    }
+
+    /// <summary>
+    /// The strategies a lane may actually open a position with.
+    ///
+    /// Everything measured to lose is removed. On crypto that is all of them, so the crypto lane
+    /// stops opening positions -- which is the correct reading of the evidence rather than a
+    /// failure of the lane. On equities, where a round trip costs about eight basis points instead
+    /// of sixty-eight, several families sit close enough to breakeven to remain worth observing.
+    /// </summary>
+    public static IReadOnlyList<SignalStrategy> Tradable(TradedAssetClass assetClass) =>
+        [.. For(assetClass).Where(strategy => !strategy.IsKnownToLose())];
+
+    /// <summary>
     /// The strategies that need nothing but closing prices.
     ///
     /// Used when the feed returns closes without highs, lows and volumes, or returns too little

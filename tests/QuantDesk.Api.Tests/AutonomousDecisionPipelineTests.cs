@@ -221,7 +221,8 @@ public sealed class AutonomousDecisionPipelineTests
             new RiskGovernor(new RiskLimits(new Usd(5), new Usd(25), new Usd(100),
                 new Usd(250), 1, 100_000, 100_000, 100_000, 0.01, 1)),
             clock,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<AutonomousDecisionPipeline>.Instance);
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AutonomousDecisionPipeline>.Instance,
+            SignalStrategies.For);
     }
 
     private static DirectionalMarketEvidence Evidence(

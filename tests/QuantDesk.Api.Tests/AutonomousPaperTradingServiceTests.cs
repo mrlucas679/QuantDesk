@@ -239,7 +239,8 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(RiskLimitOptions.FromEnvironment(notional)),
-            clock, NullLogger<AutonomousDecisionPipeline>.Instance);
+            clock, NullLogger<AutonomousDecisionPipeline>.Instance,
+            SignalStrategies.For);
 
         var lifecycle = new MultiLegExecutionLifecycle(
             broker, broker, new MultiLegExecutionStore(_storePath), clock, TimeSpan.FromSeconds(30));

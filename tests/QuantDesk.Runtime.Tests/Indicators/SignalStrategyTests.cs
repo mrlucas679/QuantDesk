@@ -421,3 +421,70 @@ public sealed class MechanismCapacityTests
     private static IndicatorSet Bars() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
 }
+
+/// <summary>
+/// Separating "unproven" from "measured to lose".
+///
+/// Every strategy is Unqualified, which says only that none has demonstrated an edge. It says
+/// nothing about how badly each is measured to do, and those are different situations: a family
+/// indistinguishable from breakeven is worth a little to learn about; one measured at minus sixty
+/// basis points against a sixty-eight basis point round trip is a repeatable loss with no
+/// information left to buy.
+/// </summary>
+public sealed class KnownLoserTests
+{
+    [Fact]
+    public void EveryCryptoStrategyIsKnownToLoseSoTheLaneStopsOpeningPositions()
+    {
+        // The live confirmation: nine round trips, $1,799 of notional, $9.00 of round-trip fees,
+        // and an account down $6.57. Gross price movement was approximately nothing -- the fee was
+        // the entire loss, exactly as the research predicted.
+        Assert.All(SignalStrategies.ForCrypto, s => Assert.True(s.IsKnownToLose()));
+        Assert.Empty(SignalStrategies.Tradable(TradedAssetClass.SpotCrypto));
+    }
+
+    [Fact]
+    public void EquityStrategiesNearBreakevenSurviveBecauseTheCostIsAnOrderOfMagnitudeLower()
+    {
+        // At roughly eight basis points a round trip rather than sixty-eight, the same absent edge
+        // costs far less to keep observing, and several families sit close enough to breakeven that
+        // the sample genuinely cannot tell them from flat.
+        Assert.NotEmpty(SignalStrategies.Tradable(TradedAssetClass.UsEquity));
+    }
+
+    [Fact]
+    public void AStrategyMeasuredWellBelowZeroIsBlocked()
+    {
+        Assert.True(Strategy(mean: -60, lower: -70).IsKnownToLose());
+    }
+
+    [Fact]
+    public void AStrategyWithinItsOwnErrorOfBreakevenIsStillWorthObserving()
+    {
+        // Mean -1.5 with a standard error near 3.6: the sample cannot distinguish this from flat,
+        // which is a reason to keep looking rather than a reason to stop.
+        Assert.False(Strategy(mean: -1.5, lower: -8.6).IsKnownToLose());
+    }
+
+    [Fact]
+    public void APositiveMeanIsNeverBlocked()
+    {
+        Assert.False(Strategy(mean: 3.3, lower: -13.6).IsKnownToLose());
+    }
+
+    [Fact]
+    public void AQualifiedStrategyTradesOnItsOwnMeritWhateverTheResearchMeanSays()
+    {
+        // Qualification means live evidence has superseded the backtest. Blocking on a stale
+        // research figure would override the better evidence with the worse one.
+        SignalStrategy proven = Strategy(mean: -60, lower: -70) with
+        {
+            Qualification = StrategyQualification.Qualified,
+        };
+
+        Assert.False(proven.IsKnownToLose());
+    }
+
+    private static SignalStrategy Strategy(double mean, double lower) =>
+        new("x.v1", "trend", StrategyQualification.Unqualified, mean, lower, (_, _) => true);
+}

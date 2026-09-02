@@ -3,6 +3,7 @@ using QuantDesk.Domain.Capabilities;
 using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Experts;
 using QuantDesk.Domain.Forecasts;
+using QuantDesk.Domain.Trading;
 using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Portfolio;
@@ -38,8 +39,19 @@ public sealed class AutonomousDecisionPipeline(
     ActionabilityGate actionability,
     RiskGovernor riskGovernor,
     IRuntimeClock clock,
-    ILogger<AutonomousDecisionPipeline> logger)
+    ILogger<AutonomousDecisionPipeline> logger,
+    Func<TradedAssetClass, IReadOnlyList<SignalStrategy>>? tradableStrategies = null)
 {
+    /// <summary>
+    /// The strategies this pipeline may open a position with.
+    ///
+    /// Injectable so a test can state which strategies it is exercising rather than depending on
+    /// whichever ones currently survive the evidence filter -- a test about the cost gate should
+    /// not start failing because a strategy's measured mean moved.
+    /// </summary>
+    private readonly Func<TradedAssetClass, IReadOnlyList<SignalStrategy>> _tradable =
+        tradableStrategies ?? SignalStrategies.Tradable;
+
     /// <summary>
     /// What an unverified experimental candidate is called.
     ///
@@ -67,7 +79,9 @@ public sealed class AutonomousDecisionPipeline(
             ? IndicatorSet.Build(evidence.Closes, evidence.Highs, evidence.Lows, evidence.Volumes)
             : null;
 
-        IReadOnlyList<SignalStrategy> available = SignalStrategies.For(route.AssetClass);
+        // Only strategies not already measured to lose. See SignalStrategies.IsKnownToLose: being
+        // unproven is worth paying a little to resolve, being demonstrably unprofitable is not.
+        IReadOnlyList<SignalStrategy> available = _tradable(route.AssetClass);
         if (indicators is not null)
             return rotation.Select(available, indicators, openByMechanism, MechanismCap(available));
 
@@ -75,9 +89,12 @@ public sealed class AutonomousDecisionPipeline(
         // fall back to the families that genuinely need nothing else -- which is what the lane
         // traded before any of this existed. Going quiet here would be the worse failure: a feed
         // that briefly returns short history would stop the lane without any signal that it had.
-        return rotation.Select(
-            SignalStrategies.ClosesOnly(route.AssetClass), CloseOnlySet(evidence),
-            openByMechanism, MechanismCap(available));
+        IReadOnlyList<SignalStrategy> closesOnly =
+            [.. SignalStrategies.ClosesOnly(route.AssetClass)
+                .Where(item => _tradable(route.AssetClass).Any(t => t.Id == item.Id))];
+        return closesOnly.Count == 0
+            ? null
+            : rotation.Select(closesOnly, CloseOnlySet(evidence), openByMechanism, MechanismCap(available));
     }
 
     /// <summary>
@@ -167,7 +184,15 @@ public sealed class AutonomousDecisionPipeline(
             // required the dip not to have happened. Nine of thirteen strategies could never have
             // opened a position.
             selection = SelectStrategy(evidence, route, openByMechanism);
-            if (selection is null) return Reject("NoStrategySignal");
+            if (selection is null)
+            {
+                // No signal, or nothing left that is worth trading. The distinction matters to an
+                // operator: an asset class whose every strategy is measured to lose reports that
+                // rather than looking like a quiet market.
+                return Reject(_tradable(route.AssetClass).Count == 0
+                    ? "AllStrategiesKnownToLose"
+                    : "NoStrategySignal");
+            }
 
             // The hurdle a strategy of any direction has to clear: does this instrument move enough
             // over the holding period to pay for the round trip at all? That is a necessary
