@@ -71,17 +71,64 @@ public sealed class IndicatorAvailabilityTests
             SignalStrategies.ForCrypto.Single(s => s.Id == "breakout.bollinger-upper.v1").RequiredSeries);
     }
 
-    private static IndicatorSet Build(int hours)
+    [Fact]
+    public void AFeedThatBarelyReportsVolumeCannotSupportAVolumeWeightedAverage()
+    {
+        // Measured on 2026-09-02 over seven days of five-minute crypto bars: 65.6% of bars across
+        // the traded universe carry zero volume, from 12.6% on BTC/USD to 91.3% on BCH/USD. On BCH
+        // that meant VWAP was being computed from 170 of 1,960 bars -- not a sparser VWAP, a VWAP
+        // of a small and non-random subset of the day, which a rule then compared price against.
+        IndicatorSet set = Build(hours: 240, volumeCoverage: 0.09);
+
+        Assert.False(set.IsAvailable("Vwap48"));
+        Assert.Contains(set.Unavailable, item => item.Contains("reports volume on"));
+
+        // Named and blanked. A series that is reported unavailable but still readable will be read:
+        // the rules take it by index and have no way to consult the report.
+        Assert.All(set.Vwap48, value => Assert.False(double.IsFinite(value)));
+        Assert.All(set.ObvSlope12, value => Assert.False(double.IsFinite(value)));
+        Assert.All(set.VolumeZ48, value => Assert.False(double.IsFinite(value)));
+    }
+
+    [Fact]
+    public void AFeedThatReportsVolumeOnMostBarsIsUsable()
+    {
+        IndicatorSet set = Build(hours: 240, volumeCoverage: 0.9);
+
+        Assert.True(set.IsAvailable("Vwap48"));
+        Assert.Contains(set.Vwap48, double.IsFinite);
+    }
+
+    [Fact]
+    public void TheRulesThatCannotDecideWithoutVolumeSaySo()
+    {
+        Assert.Contains(
+            "Vwap48",
+            SignalStrategies.ForCrypto.Single(s => s.Id == "reversion.vwap.v1").RequiredSeries);
+
+        Assert.Contains(
+            "ObvSlope12",
+            SignalStrategies.ForCrypto
+                .Single(s => s.Id == "volume.obv-confirmed-trend.v1").RequiredSeries);
+    }
+
+    private static IndicatorSet Build(int hours, double volumeCoverage = 1.0)
     {
         int n = (int)(TimeSpan.FromHours(hours) / Bar);
         List<DateTimeOffset> stamps = [.. Enumerable.Range(0, n).Select(i => Start + (Bar * i))];
         List<decimal> closes = [.. Enumerable.Range(0, n).Select(i => 100m + (i % 7))];
 
+        // Zero volume on the share of bars the feed does not report, spread evenly so the coverage
+        // is the only thing under test.
+        int period = volumeCoverage >= 1.0 ? 1 : Math.Max((int)Math.Round(1.0 / volumeCoverage), 1);
+        List<decimal> volumes =
+            [.. Enumerable.Range(0, n).Select(i => i % period == 0 ? 1_000m + (i % 11) : 0m)];
+
         IndicatorSet? set = IndicatorSet.Build(
             closes,
             [.. closes.Select(c => c + 1m)],
             [.. closes.Select(c => c - 1m)],
-            [.. Enumerable.Range(0, n).Select(i => 1_000m + (i % 11))],
+            volumes,
             stamps);
 
         Assert.NotNull(set);

@@ -147,14 +147,14 @@ public static class SignalStrategies
         Reversion("reversion.rsi-oversold.v1", -15.9, -33.5, RsiOversold),
         Reversion("reversion.bollinger-lower.v1", -7.8, -21.2, BollingerLowerTouch),
         Reversion("reversion.stochastic-oversold.v1", -18.4, -30.9, StochasticOversold),
-        Reversion("reversion.vwap.v1", -10.2, -23.1, VwapReversion),
+        Reversion("reversion.vwap.v1", -10.2, -23.1, VwapReversion) with { RequiredSeries = ["Vwap48"] },
         // Stale: too few non-overlapping trades in the held-out half to re-measure.
         Breakout("breakout.donchian-20.v1", -70.0, -85.0, DonchianBreakout) with { Qualification = StrategyQualification.Stale },
         Breakout("breakout.bollinger-upper.v1", 1.5, -14.5, BollingerUpperBreak),
         // Stale: too few non-overlapping trades in the held-out half to re-measure.
         Volume("volume.surge-breakout.v1", -60.1, -94.2, VolumeSurgeBreakout)
             with { Qualification = StrategyQualification.Stale, RequiredSeries = ["VolumeZ48"] },
-        Volume("volume.obv-confirmed-trend.v1", -9.6, -24.4, ObvConfirmedTrend),
+        Volume("volume.obv-confirmed-trend.v1", -9.6, -24.4, ObvConfirmedTrend) with { RequiredSeries = ["ObvSlope12"] },
         Volatility("volatility.atr-expansion.v1", -13.8, -27.0, AtrExpansionTrend),
     ];
 
@@ -166,13 +166,13 @@ public static class SignalStrategies
     /// </summary>
     public static IReadOnlyList<SignalStrategy> ForEquity { get; } =
     [
-        Reversion("reversion.vwap.v1", -7.9, -10.6, VwapReversion),
+        Reversion("reversion.vwap.v1", -7.9, -10.6, VwapReversion) with { RequiredSeries = ["Vwap48"] },
         Reversion("reversion.rsi-oversold.v1", -5.7, -11.0, RsiOversold),
         Reversion("reversion.bollinger-lower.v1", -6.5, -9.7, BollingerLowerTouch),
         Trend("trend.macd-histogram-flip.v1", -9.6, -12.4, MacdFlip),
         Trend("trend.momentum-dual-horizon.v1", -11.2, -13.5, MomentumDualHorizon),
         Reversion("reversion.stochastic-oversold.v1", -9.3, -12.0, StochasticOversold),
-        Volume("volume.obv-confirmed-trend.v1", -12.7, -15.7, ObvConfirmedTrend),
+        Volume("volume.obv-confirmed-trend.v1", -12.7, -15.7, ObvConfirmedTrend) with { RequiredSeries = ["ObvSlope12"] },
         Trend("trend.adx-filtered.v1", -10.4, -14.7, AdxFilteredTrend),
         // Stale: too few non-overlapping trades in the held-out half to re-measure.
         Breakout("breakout.donchian-20.v1", -9.8, -14.5, DonchianBreakout) with { Qualification = StrategyQualification.Stale },

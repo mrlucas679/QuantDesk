@@ -147,6 +147,12 @@ public sealed class IndicatorSet
         (double[] k, double[] d) = Stochastic(h, l, c, 14, 3);
         (double[] adx, double[] plus, double[] minus) = DirectionalMovement(h, l, trueRange, 14);
 
+        IReadOnlyList<string> unavailable = t is null ? [] : Unmeasurable(v, t);
+
+        // Blanking is the point, not the reporting. A series named unavailable that is still
+        // readable will be read: the rules take it by index and have no way to consult the report.
+        bool volumeUnusable = unavailable.Any(item => item.StartsWith("Vwap48", StringComparison.Ordinal));
+
         return new IndicatorSet(n)
         {
             Close = c,
@@ -167,14 +173,16 @@ public sealed class IndicatorSet
             PlusDi = plus,
             MinusDi = minus,
             DonchianHigh = DonchianHighs(h, 20),
-            Vwap48 = sessionScoped && t is not null
-                ? SessionVwap(h, l, c, v, t)
+            Vwap48 = volumeUnusable ? Filled(n)
+                : sessionScoped && t is not null ? SessionVwap(h, l, c, v, t)
                 : RollingVwap(h, l, c, v, 48),
-            ObvSlope12 = ObvSlope(c, v, 12),
-            VolumeZ48 = t is not null ? TimeOfDayVolumeZ(v, t) : ZScore(v, 48),
+            ObvSlope12 = volumeUnusable ? Filled(n) : ObvSlope(c, v, 12),
+            VolumeZ48 = volumeUnusable ? Filled(n)
+                : t is not null ? TimeOfDayVolumeZ(v, t)
+                : ZScore(v, 48),
             Timestamps = t ?? [],
             SessionScoped = sessionScoped && t is not null,
-            Unavailable = t is null ? [] : Unmeasurable(v, t),
+            Unavailable = unavailable,
         };
     }
 
@@ -506,6 +514,33 @@ public sealed class IndicatorSet
     {
         List<string> missing = [];
 
+        // Does the feed actually report volume?
+        //
+        // Alpaca's crypto bars very often do not. Measured on 2026-09-02 over seven days of
+        // five-minute bars: 65.6% of bars across the traded universe carry zero volume, ranging
+        // from 12.6% on BTC/USD to 91.3% on BCH/USD. Equities are unaffected -- SPY reported zero
+        // such bars over the same window.
+        //
+        // That silently corrupts more than the obviously volume-shaped measures. VWAP is a
+        // volume-weighted average, so on BCH it was being computed from 170 of 1,960 bars: not a
+        // sparser VWAP, a VWAP of a small and non-random subset of the day. A rule comparing price
+        // to it reads a number that looks like VWAP and is not, which is exactly the class of
+        // defect this set exists to refuse rather than approximate.
+        int populated = 0;
+        foreach (double volume in v)
+        {
+            if (volume > 0) populated++;
+        }
+
+        double coverage = v.Length > 0 ? (double)populated / v.Length : 0d;
+        if (coverage < MinimumVolumeCoverage)
+        {
+            missing.Add(
+                $"Vwap48, ObvSlope12, VolumeZ48: the feed reports volume on {coverage:P1} of bars, " +
+                $"below the {MinimumVolumeCoverage:P0} a volume-weighted measure needs");
+            return missing;
+        }
+
         TimeSpan span = t.Length > 1 ? t[^1] - t[0] : TimeSpan.Zero;
         TimeSpan required = TimeSpan.FromDays(MinimumPriorDaysForTimeOfDay + 1);
         if (span < required)
@@ -517,6 +552,15 @@ public sealed class IndicatorSet
 
         return missing;
     }
+
+    /// <summary>
+    /// The share of bars that must carry volume before a volume-weighted measure means anything.
+    ///
+    /// Half, because below that the "average" is dominated by whichever bars the venue happened to
+    /// report, and that subset is not random -- it is the bars that traded, which is precisely the
+    /// selection a volume weighting is supposed to express rather than be silently restricted to.
+    /// </summary>
+    public const double MinimumVolumeCoverage = 0.5;
 
     /// <summary>
     /// Prior days required before volume can be scored against its own time of day.
