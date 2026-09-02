@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Time;
@@ -132,6 +133,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
 
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);      // submit entry
         broker.Order = Filled(broker.LastEntryClientOrderId!, 1m, 100m);
+        broker.HoldAfterFill(Symbol, 1m, 100m);                                // fee taken in kind
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);      // entry filled
         SpotExecutionRecord holding = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         Assert.Equal(SpotExecutionState.Holding, holding.State);
@@ -141,6 +143,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         broker.Order = null;
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);      // submit exit
         broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 1m, 101m);
+        broker.Positions = [];                                                 // flat after the exit
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);      // exit filled
         SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
 
@@ -337,6 +340,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         Reserve(lifecycle);
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         broker.Order = Filled(broker.LastEntryClientOrderId!, 1m, 100m);
+        broker.HoldAfterFill(Symbol, 1m, 100m);
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         SpotExecutionRecord holding = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         Assert.Equal(SpotExecutionState.Holding, holding.State);
@@ -379,6 +383,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         broker.Order = null;
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // submit exit
         broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 1m, 100.9m);
+        broker.Positions = [];                                               // flat after the exit
         broker.AccountEquity = 100_000.60m;                                  // 40 cents of cost
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit filled
         SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
@@ -409,6 +414,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         broker.Order = null;
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 1m, 101m);
+        broker.Positions = [];                                               // flat after the exit
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
         SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
 
@@ -419,6 +425,48 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
     private sealed class StubMarker(decimal? mid) : IHeldPositionMarker
     {
         public decimal? CurrentMid(string symbol) => mid;
+    }
+
+    [Fact]
+    public async Task TheExitSellsWhatIsHeldRatherThanWhatWasBought()
+    {
+        // The venue charges its spot crypto fee in kind, taking it out of the delivered quantity.
+        // An entry that filled 1.0 leaves slightly less than 1.0 in the account, so asking to sell
+        // the filled quantity asks for more than exists and is refused:
+        //   "insufficient balance for AAVE (requested: 1.54344806, available: 1.539589439)".
+        //
+        // A rejected exit correctly returns to ExitDue and retries, which turned that into a
+        // permanent failure -- every retry asked for the same impossible quantity, so the position
+        // could not be closed by the managed path and its holding period was not actually bounded.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit due
+        broker.Order = null;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // submit exit
+
+        // ReachHoldingAsync fills 1.0 and the fake holds 0.9975 of it, as the venue would.
+        Assert.Equal(0.9975m, broker.LastExitQuantity);
+        Assert.True(broker.LastExitQuantity < 1m,
+            "selling the filled quantity would be refused for insufficient balance");
+    }
+
+    [Fact]
+    public async Task AnExitFindsNothingToSellWhenTheBrokerHoldsNothing()
+    {
+        // Reconciliation decides whether being flat is correct; the exit simply has no work.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        await ReachHoldingAsync(lifecycle, broker);
+        broker.Positions = [];
+
+        _clock.Advance(TimeSpan.FromMinutes(20));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        SpotExecutionRecord record = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Reconciling, record.State);
     }
 
     private bool Reserve(SpotExecutionLifecycle lifecycle) => lifecycle.TryReserve(
@@ -456,8 +504,22 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
     {
         public int SubmitCount { get; private set; }
         public string? LastEntryClientOrderId { get; private set; }
+
+        /// <summary>Quantity the most recent sell asked for, which is what the venue enforces.</summary>
+        public decimal LastExitQuantity { get; private set; }
         public BrokerOrderSnapshot? Order { get; set; }
-        public IReadOnlyList<BrokerPositionSnapshot> Positions { get; init; } = [];
+        public IReadOnlyList<BrokerPositionSnapshot> Positions { get; set; } = [];
+
+        /// <summary>
+        /// Records a filled entry as a held position, less the fee the venue takes in kind.
+        ///
+        /// Alpaca deducts its spot crypto fee from the delivered quantity, so the account holds
+        /// slightly less than the entry filled. Modelling that here is what makes these tests
+        /// exercise the exit sizing at all: with a fake that reports the full filled quantity, an
+        /// exit asking to sell it would succeed in the test and be refused by the venue.
+        /// </summary>
+        public void HoldAfterFill(string symbol, decimal filledQuantity, decimal price) =>
+            Positions = [new BrokerPositionSnapshot(symbol, 0, filledQuantity * 0.9975m, price)];
         public bool IsPaper { get; init; } = true;
         public bool ThrowOnSubmit { get; init; }
 
@@ -477,6 +539,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         {
             SubmitCount++;
             LastEntryClientOrderId ??= command.ClientOrderId;
+            if (command.Side == OrderSide.Sell) LastExitQuantity = command.Quantity;
             if (ThrowOnSubmit) throw new HttpRequestException("connection reset");
             return Task.FromResult(new BrokerSubmitResult(
                 BrokerSubmitState.Acknowledged, "broker-1", null, null));

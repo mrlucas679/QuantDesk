@@ -272,6 +272,30 @@ public sealed class SpotExecutionLifecycle(
             return nothingToExit;
         }
 
+        // Sell what is actually held, not what was bought.
+        //
+        // Alpaca charges its spot crypto fee *in kind*: it takes the fee out of the quantity
+        // delivered, so an entry that filled 1.54344806 leaves 1.539589439 in the account. Asking to
+        // sell the filled quantity is asking to sell roughly 0.25% more than exists, and the venue
+        // refuses -- "insufficient balance for AAVE (requested: 1.54344806, available:
+        // 1.539589439)".
+        //
+        // A rejected exit correctly returns to ExitDue and retries, which turned the error into a
+        // permanent one: every retry asked for the same impossible quantity. The position could not
+        // be closed by the managed path at all, so the holding period was not actually bounded --
+        // and this would have happened to every crypto round trip, not just this one.
+        //
+        // The broker's own position is the only trustworthy figure here, for the same reason
+        // account equity is the only trustworthy cost: the fee is invisible in the fill.
+        decimal sellable = await SellableQuantityAsync(record, cancellationToken);
+        if (sellable <= 0m)
+        {
+            // Nothing left to sell. Reconciliation decides whether that is correct.
+            SpotExecutionRecord nothingHeld = record with { State = SpotExecutionState.Reconciling };
+            store.Update(nothingHeld);
+            return nothingHeld;
+        }
+
         if (!store.TryClaimExitSubmission(record.ExecutionId, clock.UtcNow, out SpotExecutionRecord? claimed) ||
             claimed is null)
             return await RecoverByClientOrderIdAsync(record, record.ExitClientOrderId, entry: false, cancellationToken);
@@ -287,7 +311,7 @@ public sealed class SpotExecutionLifecycle(
             PositionIntent.Close,
             claimed.ExitLimitPrice is > 0 ? ExecutionOrderType.Limit : ExecutionOrderType.Market,
             ExecutionTimeInForce.Ioc,
-            claimed.InternalOpenQuantity,
+            sellable,
             claimed.ExitLimitPrice,
             clock.MonotonicTimestamp,
             clock.MonotonicTimestamp,
@@ -326,6 +350,38 @@ public sealed class SpotExecutionLifecycle(
         };
         store.Update(updated);
         return updated;
+    }
+
+    /// <summary>
+    /// How much of this instrument can actually be sold right now.
+    ///
+    /// The lesser of what this execution believes it opened and what the broker says is in the
+    /// account. The two differ by the in-kind fee, and the broker's figure is the one the venue
+    /// will enforce; the internal figure caps it so a position opened by some other execution is
+    /// never sold by this one.
+    ///
+    /// A failure to read positions returns the internal quantity, preserving the previous
+    /// behaviour: a temporary inability to ask is not a reason to stop trying to close.
+    /// </summary>
+    private async Task<decimal> SellableQuantityAsync(
+        SpotExecutionRecord record, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<BrokerPositionSnapshot> positions =
+                await broker.ListPositionsAsync(cancellationToken);
+            decimal held = positions
+                .Where(position => string.Equals(
+                    position.Symbol, record.Symbol, StringComparison.OrdinalIgnoreCase))
+                .Sum(position => position.Quantity);
+
+            return held <= 0m ? 0m : Math.Min(record.InternalOpenQuantity, held);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException ||
+                                          !cancellationToken.IsCancellationRequested)
+        {
+            return record.InternalOpenQuantity;
+        }
     }
 
     private async Task<SpotExecutionRecord> TrackExitAsync(
