@@ -240,7 +240,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
             new ActionabilityGate(0.01, new Usd(0.01m)),
             new RiskGovernor(RiskLimitOptions.FromEnvironment(notional)),
             clock, NullLogger<AutonomousDecisionPipeline>.Instance,
-            SignalStrategies.For);
+            TestStrategies);
 
         var lifecycle = new MultiLegExecutionLifecycle(
             broker, broker, new MultiLegExecutionStore(_storePath), clock, TimeSpan.FromSeconds(30));
@@ -369,4 +369,23 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         public Task<IReadOnlyList<BrokerPositionSnapshot>> ListPositionsAsync(
             CancellationToken cancellationToken) => Task.FromResult(Positions);
     }
+
+    /// <summary>
+    /// A strategy book for exercising the pipeline, not the registry's current numbers.
+    ///
+    /// These tests are about what the pipeline does with a candidate, so they supply rules with a
+    /// plausible positive gross edge rather than depending on whatever the live evidence says this
+    /// week. Coupling them to the registry made every re-measurement break tests that were never
+    /// about the measurement: when the expected return became the rule's own measured edge instead
+    /// of the instrument's expected travel, seven of them failed because the rule that fires is
+    /// currently measured to lose -- which is the correct trading outcome and a useless test.
+    /// </summary>
+    private static IReadOnlyList<SignalStrategy> TestStrategies(TradedAssetClass assetClass) =>
+        [.. SignalStrategies.For(assetClass).Select(strategy => strategy with
+        {
+            ResearchMeanNetBps = 500.0,
+            ResearchLowerBoundBps = 300.0,
+            ResearchCostAssumptionBps = 0.0,
+        })];
+
 }

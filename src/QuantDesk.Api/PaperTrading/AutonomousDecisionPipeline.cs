@@ -102,9 +102,17 @@ public sealed class AutonomousDecisionPipeline(
         // fall back to the families that genuinely need nothing else -- which is what the lane
         // traded before any of this existed. Going quiet here would be the worse failure: a feed
         // that briefly returns short history would stop the lane without any signal that it had.
+        // Taken from the tradable book and filtered by the closes-only identities, not the other
+        // way round. Selecting the registry's own objects and merely checking their ids against the
+        // tradable set meant the two paths could hand back different objects for the same rule --
+        // same id, different measured figures, and now a different expected edge, because the
+        // expected return published for a candidate is read off the strategy that fired.
+        HashSet<string> closesOnlyIds =
+        [
+            .. SignalStrategies.ClosesOnly(route.AssetClass).Select(item => item.Id),
+        ];
         IReadOnlyList<SignalStrategy> closesOnly =
-            [.. SignalStrategies.ClosesOnly(route.AssetClass)
-                .Where(item => _tradable(route.AssetClass).Any(t => t.Id == item.Id))];
+            [.. available.Where(item => closesOnlyIds.Contains(item.Id))];
         return closesOnly.Count == 0
             ? StrategyEvaluation.None
             : rotation.Select(closesOnly, CloseOnlySet(evidence), openByMechanism, MechanismCap(available));
@@ -246,7 +254,28 @@ public sealed class AutonomousDecisionPipeline(
             // condition for every mechanism and specific to none of them, where trailing momentum
             // is specific to one.
             CostViability viability = viabilityGate.Evaluate(evidence, route);
-            expectedMoveBps = (double)viability.ExpectedMoveBps;
+
+            // What the candidate is expected to earn is the rule's own measured edge, not the
+            // instrument's expected travel.
+            //
+            // The viability figure above is an ATR magnitude scaled by the square root of the
+            // holding period: how far this instrument typically moves, saying nothing about which
+            // way. Publishing it as the expected return claimed the position would capture the
+            // whole typical move. On 2026-09-02 that put 170 bps on a candidate whose rule is
+            // measured at 1.5 bps net -- about 35 gross -- and it did two kinds of damage at once.
+            // The risk governor's net-edge gate compares gross expected P&L against cost, so a
+            // hundredfold overstatement turned a discriminating check into a rubber stamp. And the
+            // profit target is a fraction of the same number, so it sat five times further away
+            // than a round trip costs and could never be reached: every position ran to its timer
+            // or its stop, and the target looked wired up the whole time.
+            //
+            // Gross, because the cost is subtracted again downstream. Subtracting it twice would
+            // understate every edge by a full round trip.
+            expectedMoveBps = selection.Strategy.ResearchMeanGrossBps;
+
+            // The instrument still has to be able to move enough to pay for the round trip. That is
+            // a necessary condition and stays exactly where it was; it is simply no longer mistaken
+            // for a forecast.
             if (!viability.Viable)
             {
                 logger.LogInformation(

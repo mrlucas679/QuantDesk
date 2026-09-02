@@ -402,6 +402,50 @@ public sealed class StrategyRotationRestoreTests
         Assert.Empty(SignalStrategies.Tradable(TradedAssetClass.UsEquity));
     }
 
+    [Fact]
+    public void AGrossEdgeIsTheNetFigurePlusTheCostItWasMeasuredAgainst()
+    {
+        // A candidate's expected edge has to be gross, because the cost is subtracted again
+        // downstream. Carrying the assumption on the strategy is what makes the conversion
+        // auditable rather than a magic number added somewhere.
+        SignalStrategy crypto =
+            SignalStrategies.ForCrypto.Single(s => s.Id == "breakout.bollinger-upper.v1");
+
+        Assert.Equal(ResearchCostAssumptions.Crypto, crypto.ResearchCostAssumptionBps);
+        Assert.Equal(
+            crypto.ResearchMeanNetBps + ResearchCostAssumptions.Crypto,
+            crypto.ResearchMeanGrossBps,
+            precision: 6);
+    }
+
+    [Fact]
+    public void EachAssetClassCarriesTheRoundTripItsFiguresWereMeasuredAgainst()
+    {
+        // The two scans charged different costs -- 33.7 bps measured live on crypto, 8 modelled on
+        // equities -- so a single constant would misconvert one of them by the difference.
+        Assert.All(
+            SignalStrategies.ForCrypto,
+            s => Assert.Equal(ResearchCostAssumptions.Crypto, s.ResearchCostAssumptionBps));
+
+        Assert.All(
+            SignalStrategies.ForEquity,
+            s => Assert.Equal(ResearchCostAssumptions.Equity, s.ResearchCostAssumptionBps));
+    }
+
+    [Fact]
+    public void TheMeasuredGrossEdgeIsNowhereNearTheInstrumentsTypicalMove()
+    {
+        // The defect this replaces, pinned as a number. The lane published the instrument's
+        // expected travel over the holding period as the expected return -- 170 bps on the AVAX
+        // candidate of 2026-09-02 -- where the rule that fired is measured at 1.5 bps net and about
+        // 35 gross. That overstatement rubber-stamped the risk governor's net-edge gate and set a
+        // profit target the position could not reach.
+        SignalStrategy fired =
+            SignalStrategies.ForCrypto.Single(s => s.Id == "breakout.bollinger-upper.v1");
+
+        Assert.InRange(fired.ResearchMeanGrossBps, 30d, 40d);
+    }
+
     private static SignalStrategy Strategy(string id, string mechanism) =>
         new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
 

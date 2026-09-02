@@ -3,6 +3,19 @@ using QuantDesk.Domain.Trading;
 namespace QuantDesk.Runtime.Indicators;
 
 /// <summary>How much live evidence a strategy has earned, and therefore what it is allowed to do.</summary>
+/// <summary>
+/// Round-trip costs the 2026-09-02 out-of-sample scan charged, in basis points.
+///
+/// Crypto is the figure the broker-side reconstruction measured across 75 live round trips; equity
+/// is one basis point of fee, two of slippage and a fifth of a point of spread, rounded up. They
+/// live here because the net figures in this file are only interpretable against them.
+/// </summary>
+public static class ResearchCostAssumptions
+{
+    public const double Crypto = 33.7;
+    public const double Equity = 8.0;
+}
+
 public enum StrategyQualification
 {
     /// <summary>
@@ -63,6 +76,28 @@ public sealed record SignalStrategy(
     /// nothing, because Close is the one series whose presence makes a set exist at all.
     /// </summary>
     public IReadOnlyList<string> RequiredSeries { get; init; } = [];
+
+    /// <summary>
+    /// The round-trip cost the research figures were measured against, in basis points.
+    ///
+    /// Recorded so that a net figure can be turned back into a gross one without a magic number.
+    /// ResearchMeanNetBps is net of whatever the scan charged, and a candidate's gross expected
+    /// edge has to be gross -- the cost is subtracted again downstream, and subtracting it twice
+    /// would understate every edge by a full round trip.
+    /// </summary>
+    public double ResearchCostAssumptionBps { get; init; }
+
+    /// <summary>
+    /// What this rule is measured to earn before costs.
+    ///
+    /// The number a candidate's expected edge should carry. What the lane used instead was the
+    /// instrument's expected move over the holding period -- an ATR magnitude scaled by the square
+    /// root of time, which says how far the instrument typically travels and nothing about which
+    /// way. On 2026-09-02 that put 170 bps on a candidate whose rule is measured at 1.5 bps net,
+    /// about 35 gross: a hundredfold overstatement that both rubber-stamped the risk governor's
+    /// net-edge gate and set a profit target the position could never reach.
+    /// </summary>
+    public double ResearchMeanGrossBps => ResearchMeanNetBps + ResearchCostAssumptionBps;
 }
 
 /// <summary>
@@ -166,22 +201,22 @@ public static class SignalStrategies
     /// </summary>
     public static IReadOnlyList<SignalStrategy> ForEquity { get; } =
     [
-        Reversion("reversion.vwap.v1", -7.9, -10.6, VwapReversion) with { RequiredSeries = ["Vwap48"] },
-        Reversion("reversion.rsi-oversold.v1", -5.7, -11.0, RsiOversold),
-        Reversion("reversion.bollinger-lower.v1", -6.5, -9.7, BollingerLowerTouch),
-        Trend("trend.macd-histogram-flip.v1", -9.6, -12.4, MacdFlip),
-        Trend("trend.momentum-dual-horizon.v1", -11.2, -13.5, MomentumDualHorizon),
-        Reversion("reversion.stochastic-oversold.v1", -9.3, -12.0, StochasticOversold),
-        Volume("volume.obv-confirmed-trend.v1", -12.7, -15.7, ObvConfirmedTrend) with { RequiredSeries = ["ObvSlope12"] },
-        Trend("trend.adx-filtered.v1", -10.4, -14.7, AdxFilteredTrend),
+        Reversion("reversion.vwap.v1", -7.9, -10.6, VwapReversion, ResearchCostAssumptions.Equity) with { RequiredSeries = ["Vwap48"] },
+        Reversion("reversion.rsi-oversold.v1", -5.7, -11.0, RsiOversold, ResearchCostAssumptions.Equity),
+        Reversion("reversion.bollinger-lower.v1", -6.5, -9.7, BollingerLowerTouch, ResearchCostAssumptions.Equity),
+        Trend("trend.macd-histogram-flip.v1", -9.6, -12.4, MacdFlip, ResearchCostAssumptions.Equity),
+        Trend("trend.momentum-dual-horizon.v1", -11.2, -13.5, MomentumDualHorizon, ResearchCostAssumptions.Equity),
+        Reversion("reversion.stochastic-oversold.v1", -9.3, -12.0, StochasticOversold, ResearchCostAssumptions.Equity),
+        Volume("volume.obv-confirmed-trend.v1", -12.7, -15.7, ObvConfirmedTrend, ResearchCostAssumptions.Equity) with { RequiredSeries = ["ObvSlope12"] },
+        Trend("trend.adx-filtered.v1", -10.4, -14.7, AdxFilteredTrend, ResearchCostAssumptions.Equity),
         // Stale: too few non-overlapping trades in the held-out half to re-measure.
-        Breakout("breakout.donchian-20.v1", -9.8, -14.5, DonchianBreakout) with { Qualification = StrategyQualification.Stale },
-        Volatility("volatility.atr-expansion.v1", -13.0, -16.1, AtrExpansionTrend),
-        Breakout("breakout.bollinger-upper.v1", -13.2, -17.0, BollingerUpperBreak),
+        Breakout("breakout.donchian-20.v1", -9.8, -14.5, DonchianBreakout, ResearchCostAssumptions.Equity) with { Qualification = StrategyQualification.Stale },
+        Volatility("volatility.atr-expansion.v1", -13.0, -16.1, AtrExpansionTrend, ResearchCostAssumptions.Equity),
+        Breakout("breakout.bollinger-upper.v1", -13.2, -17.0, BollingerUpperBreak, ResearchCostAssumptions.Equity),
         // Stale: too few non-overlapping trades in the held-out half to re-measure.
-        Volume("volume.surge-breakout.v1", -3.6, -17.5, VolumeSurgeBreakout)
+        Volume("volume.surge-breakout.v1", -3.6, -17.5, VolumeSurgeBreakout, ResearchCostAssumptions.Equity)
             with { Qualification = StrategyQualification.Stale, RequiredSeries = ["VolumeZ48"] },
-        Trend("trend.ema-cross-12-48.v1", -11.8, -16.8, EmaCross),
+        Trend("trend.ema-cross-12-48.v1", -11.8, -16.8, EmaCross, ResearchCostAssumptions.Equity),
     ];
 
     /// <summary>
@@ -338,18 +373,33 @@ public static class SignalStrategies
         return s.Atr14[i] > s.Atr14[i - 1] && s.Close[i] > s.Ema48[i] && medium > 0;
     }
 
-    private static SignalStrategy Trend(string id, double mean, double lower, Func<IndicatorSet, int, bool> f) =>
-        new(id, "trend", StrategyQualification.Unqualified, mean, lower, f);
+    private static SignalStrategy Trend(
+        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
+        new(id, "trend", StrategyQualification.Unqualified, mean, lower, f)
+        { ResearchCostAssumptionBps = costAssumptionBps };
 
-    private static SignalStrategy Reversion(string id, double mean, double lower, Func<IndicatorSet, int, bool> f) =>
-        new(id, "reversion", StrategyQualification.Unqualified, mean, lower, f);
+    private static SignalStrategy Reversion(
+        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
+        new(id, "reversion", StrategyQualification.Unqualified, mean, lower, f)
+        { ResearchCostAssumptionBps = costAssumptionBps };
 
-    private static SignalStrategy Breakout(string id, double mean, double lower, Func<IndicatorSet, int, bool> f) =>
-        new(id, "breakout", StrategyQualification.Unqualified, mean, lower, f);
+    private static SignalStrategy Breakout(
+        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
+        new(id, "breakout", StrategyQualification.Unqualified, mean, lower, f)
+        { ResearchCostAssumptionBps = costAssumptionBps };
 
-    private static SignalStrategy Volume(string id, double mean, double lower, Func<IndicatorSet, int, bool> f) =>
-        new(id, "volume", StrategyQualification.Unqualified, mean, lower, f);
+    private static SignalStrategy Volume(
+        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
+        new(id, "volume", StrategyQualification.Unqualified, mean, lower, f)
+        { ResearchCostAssumptionBps = costAssumptionBps };
 
-    private static SignalStrategy Volatility(string id, double mean, double lower, Func<IndicatorSet, int, bool> f) =>
-        new(id, "volatility", StrategyQualification.Unqualified, mean, lower, f);
+    private static SignalStrategy Volatility(
+        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
+        new(id, "volatility", StrategyQualification.Unqualified, mean, lower, f)
+        { ResearchCostAssumptionBps = costAssumptionBps };
 }

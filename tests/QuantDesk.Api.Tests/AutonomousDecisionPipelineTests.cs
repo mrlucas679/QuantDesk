@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Trading;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Domain.Capabilities;
@@ -24,7 +25,7 @@ public sealed class AutonomousDecisionPipelineTests
         AutonomousPipelineDecision result = CreatePipeline().Evaluate(
             0, CryptoRoute, Evidence(100m, 100.01m, 100m, 104m), Portfolio(), true, true, CryptoEnabled);
 
-        Assert.True(result.Approved);
+        Assert.True(result.Approved, result.Reason);
         // Named for the rule that actually fired, not a generic family. The lane now asks several
         // strategies and credits the trade to one of them, so the record says which mechanism
         // opened the position -- without that the live evidence cannot be attributed to anything.
@@ -222,7 +223,7 @@ public sealed class AutonomousDecisionPipelineTests
                 new Usd(250), 1, 100_000, 100_000, 100_000, 0.01, 1, new Usd(100_000))),
             clock,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AutonomousDecisionPipeline>.Instance,
-            SignalStrategies.For);
+            TestStrategies);
     }
 
     private static DirectionalMarketEvidence Evidence(
@@ -236,4 +237,23 @@ public sealed class AutonomousDecisionPipelineTests
     private static PortfolioSnapshot Portfolio() => new(
         0, new Usd(100_000), new Usd(100_000), new Usd(100_000),
         Usd.Zero, Usd.Zero, Usd.Zero, Usd.Zero, 0, 0, 0, 0, 0, 0, 0, []);
+
+    /// <summary>
+    /// A strategy book for exercising the pipeline, not the registry's current numbers.
+    ///
+    /// These tests are about what the pipeline does with a candidate, so they supply rules with a
+    /// plausible positive gross edge rather than depending on whatever the live evidence says this
+    /// week. Coupling them to the registry made every re-measurement break tests that were never
+    /// about the measurement: when the expected return became the rule's own measured edge instead
+    /// of the instrument's expected travel, seven of them failed because the rule that fires is
+    /// currently measured to lose -- which is the correct trading outcome and a useless test.
+    /// </summary>
+    private static IReadOnlyList<SignalStrategy> TestStrategies(TradedAssetClass assetClass) =>
+        [.. SignalStrategies.For(assetClass).Select(strategy => strategy with
+        {
+            ResearchMeanNetBps = 500.0,
+            ResearchLowerBoundBps = 300.0,
+            ResearchCostAssumptionBps = 0.0,
+        })];
+
 }
