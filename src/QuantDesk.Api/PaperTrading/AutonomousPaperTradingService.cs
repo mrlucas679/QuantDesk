@@ -52,6 +52,7 @@ public sealed class AutonomousPaperTradingService(
     ReturnSeriesCache returnSeries,
     ShadowSignalLog shadow,
     IHeldPositionMarker heldMarker,
+    AlpacaCryptoOrderBookClient? orderBooks,
     ILogger<AutonomousPaperTradingService> logger) : BackgroundService
 {
     private static readonly TimeSpan PositionMonitorInterval = TimeSpan.FromSeconds(5);
@@ -647,12 +648,60 @@ public sealed class AutonomousPaperTradingService(
             marketState.Apply(new QuoteEvent(
                 eventNs, slot, (double)quote.Bid, (double)quote.Ask,
                 1, 1, eventNs, clock.MonotonicTimestamp, eventNs));
+
+            await RefreshOrderBookAsync(route, slot, eventNs, cancellationToken);
         }
         catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             // The stop declines on a missing quote by design, so a failed refresh leaves the hold
             // bounded by its timer -- which is where it was before this existed.
             logger.LogDebug(exception, "Could not refresh the quote for held {Symbol}.", route.Symbol);
+        }
+    }
+
+    /// <summary>
+    /// Reads the resting book and applies it, so depth stops being a field nothing populates.
+    ///
+    /// InstrumentSnapshot has carried an OrderBookImbalance since the state engine was written, the
+    /// store computes it, and the validator checks it -- and no client ever fetched a book, so it
+    /// has read zero on every instrument for the life of the system. That mattered more than one
+    /// unused field: every one of the thirteen entry rules reads the same OHLCV series, which is a
+    /// structural reason they move together. Measured on 2026-09-02 the seven traded pairs had a
+    /// mean pairwise correlation of 0.709 -- about 1.33 independent bets held as if they were seven
+    /// -- and depth is the only evidence available that is not derived from price.
+    ///
+    /// Crypto only. The free equity feed carries no depth, and asking for one would either fail or,
+    /// worse, return something partial that looked like a book.
+    ///
+    /// A failure here degrades the evidence and never stops the lane. Depth is a candidate
+    /// predictor that has not been shown to survive its own costs, so it has no business halting a
+    /// decision that does not depend on it.
+    /// </summary>
+    private async Task RefreshOrderBookAsync(
+        OpportunityRoute route, int slot, long eventNs, CancellationToken cancellationToken)
+    {
+        if (orderBooks is null) return;
+        if (route.AssetClass is not TradedAssetClass.SpotCrypto) return;
+
+        try
+        {
+            BookImbalance book = await orderBooks.GetImbalanceAsync(route.Symbol, cancellationToken);
+            if (!book.IsMeasurable) return;
+
+            marketState.Apply(new OrderBookEvent(
+                eventNs,
+                slot,
+                BestBid: 0d,
+                BestAsk: 0d,
+                BidDepth: (double)book.BidDepth,
+                AskDepth: (double)book.AskDepth,
+                eventNs,
+                clock.MonotonicTimestamp,
+                eventNs));
+        }
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
+        {
+            logger.LogDebug(exception, "Could not read the order book for {Symbol}.", route.Symbol);
         }
     }
 

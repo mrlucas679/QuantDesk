@@ -85,6 +85,7 @@ builder.Services.AddSingleton(services =>
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 // Shared across lanes on purpose: correlation is a property of the account, not of a lane.
+builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
 builder.Services.AddSingleton<ReturnSeriesCache>();
 // What every rule would have done, recorded without trading it. Shared across lanes because a
 // strategy's shadow record is a fact about the strategy, not about which lane happened to ask.
@@ -225,6 +226,7 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<ReturnSeriesCache>(),
         services.GetRequiredService<ShadowSignalLog>(),
         services.GetRequiredService<IHeldPositionMarker>(),
+        services.GetService<AlpacaCryptoOrderBookClient>(),
         services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
 }
 builder.Services.AddSingleton<AutonomousTradingState>();
