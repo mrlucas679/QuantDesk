@@ -27,6 +27,7 @@ public sealed class AutonomousPaperTradingService(
     IBrokerExecutionGateway broker,
     IInstrumentSymbolResolver symbols,
     IRealisedCostSource realisedCosts,
+    SpotExecutionStore spotStore,
     AlpacaMarketClock marketClock,
     IMarketEvidenceProvider evidenceProvider,
     BrokerExposureAttributor attributor,
@@ -220,7 +221,15 @@ public sealed class AutonomousPaperTradingService(
         // Order of work: make spot execution delta-based, then net, then drop this.
         if (attribution.IsClaimed(route.Symbol))
         {
-            state.UpdateSymbol(symbol, "abstained", symbol, reason: "SymbolAlreadyHeld");
+            // Reported as holding, not as an abstention. The *decision* is to abstain from a new
+            // entry, but the instrument's *state* is that it holds a position, and conflating the
+            // two made the lane read as entirely flat while it was holding: the entry cycle set
+            // "holding" once, then every subsequent cycle overwrote it with an abstention. An
+            // operator watching the status endpoint would have seen no open position anywhere.
+            state.UpdateSymbol(
+                symbol, "holding", symbol,
+                filledQuantity: HeldQuantity(route.Symbol),
+                reason: "SymbolAlreadyHeld");
             return;
         }
 
@@ -493,6 +502,17 @@ public sealed class AutonomousPaperTradingService(
     /// keeps the original evidence failure visible rather than letting a second outage disguise the
     /// first as a quiet weekend.
     /// </summary>
+    /// <summary>
+    /// What the durable store says is open in this instrument.
+    ///
+    /// Read from the record rather than remembered in the state object, because the state object is
+    /// rebuilt every cycle and the record is the thing that survives a restart.
+    /// </summary>
+    private decimal HeldQuantity(string brokerSymbol) =>
+        spotStore.ListNonterminal()
+            .Where(record => BrokerSymbol.Matches(record.Symbol, brokerSymbol))
+            .Sum(record => record.InternalOpenQuantity);
+
     private async Task<bool> IsSessionClosedAsync(string symbol, CancellationToken cancellationToken)
     {
         if (!router.TryRoute(symbol, out OpportunityRoute? route, out _)) return false;
