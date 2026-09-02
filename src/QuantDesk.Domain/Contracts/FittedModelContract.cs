@@ -20,7 +20,20 @@ public enum FittedModelRejection
 
     /// <summary>The artifact has not been promoted far enough to inform a decision.</summary>
     InsufficientPromotion,
+
+    /// <summary>The runtime could not reproduce the outputs the fitting process recorded.</summary>
+    ParityCheckFailed,
+
+    /// <summary>The artifact uses a model variant this runtime cannot reproduce exactly.</summary>
+    UnsupportedModelVariant,
 }
+
+/// <summary>
+/// One input the fitting process scored, and the answer it got.
+/// </summary>
+/// <param name="Features">The input vector, in the schema's order.</param>
+/// <param name="ExpectedOutput">What the fitted model produced for it, in Python.</param>
+public sealed record ModelParityCheck(IReadOnlyList<double> Features, double ExpectedOutput);
 
 /// <summary>
 /// A model fitted in Python, described completely enough that the runtime can refuse it.
@@ -72,6 +85,38 @@ public sealed record FittedModelContract(
     string GitCommit,
     DateTimeOffset CreatedAt)
 {
+    /// <summary>
+    /// Inputs the fitting process scored, with the answers it got.
+    ///
+    /// The mechanism that makes a reimplemented inference path safe rather than hopeful. Every
+    /// model crossing this boundary is evaluated twice -- once by the library that fitted it and
+    /// once by code written here -- and the failure mode is not a crash but a quiet divergence:
+    /// a tree traversal that resolves a tie the other way, a missing-value branch taken
+    /// differently, a covariance read as variance. None of those throw. All of them produce
+    /// confident numbers that are wrong in a way nothing downstream can detect.
+    ///
+    /// So the artifact carries the answers. On load, the runtime scores the same inputs with its
+    /// own code and refuses the artifact unless it reproduces them. That converts an unbounded
+    /// class of silent porting errors into one loud one at startup, and it is the only reason to
+    /// trust an inference path nobody has diffed line by line against the original.
+    /// </summary>
+    public IReadOnlyList<ModelParityCheck> ParityChecks { get; init; } = [];
+
+    /// <summary>
+    /// Free-form variant description from the fitting process -- covariance type, objective,
+    /// whether categorical splits were used. Each loader refuses what it cannot reproduce.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Variant { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Tolerance a parity check must fall within.
+    ///
+    /// Loose enough to allow the last bits of double arithmetic to differ between two languages
+    /// summing the same terms in a different order, tight enough that any real disagreement --
+    /// a different branch, a transposed matrix, a wrong sign -- is far outside it.
+    /// </summary>
+    public const double ParityTolerance = 1e-9d;
     /// <summary>Promotion states at which an artifact may inform a live decision.</summary>
     public static readonly IReadOnlySet<string> DecisionCapableStates =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -122,9 +167,37 @@ public sealed record FittedModelContract(
         if (!DecisionCapableStates.Contains(PromotionState))
             return FittedModelRejection.InsufficientPromotion;
 
+        // A model with no parity checks cannot be verified, and an unverified reimplementation is
+        // the thing this whole contract exists to prevent.
+        if (ParityChecks.Count == 0) return FittedModelRejection.ParityCheckFailed;
+
         return FittedModelRejection.None;
     }
 
     public bool IsUsableBy(string runtimeFeatureSchemaHash, IReadOnlySet<string> supportedModelTypes) =>
         Validate(runtimeFeatureSchemaHash, supportedModelTypes) is FittedModelRejection.None;
+
+    /// <summary>
+    /// Whether an inference path reproduces every answer the fitting process recorded.
+    /// </summary>
+    /// <param name="score">The runtime's own inference over a feature vector, or null if it cannot.</param>
+    public bool ReproducesParity(Func<IReadOnlyList<double>, double?> score)
+    {
+        ArgumentNullException.ThrowIfNull(score);
+        if (ParityChecks.Count == 0) return false;
+
+        foreach (ModelParityCheck check in ParityChecks)
+        {
+            double? actual = score(check.Features);
+            if (actual is not { } value || !double.IsFinite(value)) return false;
+
+            // Relative where the expected value is large enough for relative to mean anything,
+            // absolute near zero -- a fixed relative tolerance is meaningless at 1e-300 and a fixed
+            // absolute one is meaningless at 1e6.
+            double scale = Math.Max(1d, Math.Abs(check.ExpectedOutput));
+            if (Math.Abs(value - check.ExpectedOutput) > ParityTolerance * scale) return false;
+        }
+
+        return true;
+    }
 }

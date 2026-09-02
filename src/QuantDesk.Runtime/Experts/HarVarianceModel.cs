@@ -14,9 +14,13 @@ namespace QuantDesk.Runtime.Experts;
 /// gradient-boosted ensemble's traversal are not four numbers, and pretending otherwise is how a
 /// reimplementation quietly diverges from the model it claims to be.
 ///
-/// So this is the whole of the model bridge that belongs in C#. HMM and LightGBM need either a
-/// portable export or a warm Python worker publishing snapshots, and building a hand-rolled
-/// approximation of either would be worse than not having them.
+/// This was once described here as the whole of the bridge that belongs in C#, with HMM and
+/// LightGBM said to need a warm Python worker. That was wrong and is corrected in
+/// GaussianHmmFilter and GradientBoostedTreeModel: filtering an HMM and scoring a tree ensemble
+/// are both exactly reproducible, because neither involves the search that fitting them does.
+/// What separates HAR from those is not feasibility but surface area -- four numbers against a
+/// transition matrix or a forest -- which is why all of them are verified against parity vectors
+/// rather than trusted for being simple.
 ///
 /// What it replaces
 /// ----------------
@@ -84,9 +88,25 @@ public sealed class HarVarianceModel
             }
         }
 
-        model = new HarVarianceModel(artifact);
+        var candidate = new HarVarianceModel(artifact);
+
+        // Held to the same standard as every other model crossing this boundary. A dot product is
+        // the least likely of them to be ported wrong, which is not a reason to exempt it: the
+        // check costs nothing and the class of error it catches -- a coefficient read under the
+        // wrong name, a feature order that drifted -- does not care how simple the arithmetic is.
+        if (!artifact.ReproducesParity(candidate.Score))
+        {
+            rejection = FittedModelRejection.ParityCheckFailed;
+            model = Unfitted();
+            return false;
+        }
+
+        model = candidate;
         return true;
     }
+
+    private double? Score(IReadOnlyList<double> features) =>
+        features.Count == FeatureNames.Count ? Predict(features[0], features[1], features[2]) : null;
 
     /// <summary>True when a validated artifact is driving the forecast.</summary>
     public bool IsFitted => _artifact is not null;

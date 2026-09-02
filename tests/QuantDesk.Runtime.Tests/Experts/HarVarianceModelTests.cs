@@ -4,12 +4,12 @@ using QuantDesk.Runtime.Experts;
 namespace QuantDesk.Runtime.Tests.Experts;
 
 /// <summary>
-/// The one model that crosses the Python boundary, and the refusals that keep it honest.
+/// The simplest model that crosses the Python boundary, and the refusals that keep it honest.
 ///
-/// Section 20.3 puts HAR in C# because its inference is a dot product of four numbers, so porting
-/// it means copying four doubles rather than reimplementing a model. An HMM's filtering and a
-/// gradient-boosted traversal are not four numbers, and a hand-rolled approximation of either would
-/// be worse than not having it.
+/// Section 20.3 puts HAR in C# because its inference is a dot product of four numbers. GARCH, the
+/// HMM filter and the tree ensemble followed once it was clear each is exactly reproducible too --
+/// see ModelBridgeTests. What differs between them is not whether a port is possible but how much
+/// surface each has to get wrong, which is why all four are held to the same parity check.
 /// </summary>
 public sealed class HarVarianceModelTests
 {
@@ -137,6 +137,8 @@ public sealed class HarVarianceModelTests
             },
         };
 
+        negative = negative with { ParityChecks = [new ModelParityCheck([1d, 1d, 1d], 0d)] };
+
         Assert.True(HarVarianceModel.TryLoad(negative, RuntimeHash, out HarVarianceModel model, out _));
         Assert.Equal(0d, model.Predict(1d, 1d, 1d)!.Value, precision: 9);
     }
@@ -179,5 +181,10 @@ public sealed class HarVarianceModelTests
         EvidenceGrade: "B",
         PromotionState: "VALIDATED",
         GitCommit: "abc1234",
-        CreatedAt: DateTimeOffset.Parse("2026-09-02T00:00:00Z"));
+        CreatedAt: DateTimeOffset.Parse("2026-09-02T00:00:00Z"))
+    {
+        // What the fit produced for one input, so the runtime can prove it reproduces the model
+        // rather than merely accepting its coefficients.
+        ParityChecks = [new ModelParityCheck([2d, 3d, 4d], 2.501d)],
+    };
 }
