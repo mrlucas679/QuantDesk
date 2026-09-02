@@ -16,11 +16,10 @@ public sealed class RealisedCostEstimatorTests
         // This is the whole point of the measure. A fee model reading the fills would report only
         // the part of that $6 the venue itemised, and would miss the spread crossed on both legs
         // and the separate USD cash charge entirely.
-        DiagnosticExecutionRecord record = Completed(
-            id: "trip-1", entryReference: 100m, exitReference: 101m, quantity: 10m, realisedPnl: 4m);
-
-        RealisedCostContract contract = Estimate([record, record with { EntryClientOrderId = "trip-2" },
-            record with { EntryClientOrderId = "trip-3" }]);
+        RealisedCostContract contract = Estimate([
+            Completed("trip-1", 100m, 101m, 10m, 4m),
+            Completed("trip-2", 100m, 101m, 10m, 4m),
+            Completed("trip-3", 100m, 101m, 10m, 4m)]);
 
         Assert.Equal(60m, contract.Buckets.Single().MeanBps);
     }
@@ -30,11 +29,10 @@ public sealed class RealisedCostEstimatorTests
     {
         // Cost and profit are independent. A trip can pay 60 bps and still make money, and a cost
         // dataset that only recorded losers would understate what trading costs.
-        DiagnosticExecutionRecord record = Completed(
-            id: "won", entryReference: 100m, exitReference: 102m, quantity: 10m, realisedPnl: 14m);
-
-        RealisedCostContract contract = Estimate([record, record with { EntryClientOrderId = "won-2" },
-            record with { EntryClientOrderId = "won-3" }]);
+        RealisedCostContract contract = Estimate([
+            Completed("won-1", 100m, 102m, 10m, 14m),
+            Completed("won-2", 100m, 102m, 10m, 14m),
+            Completed("won-3", 100m, 102m, 10m, 14m)]);
 
         Assert.Equal(60m, contract.Buckets.Single().MeanBps);
     }
@@ -47,21 +45,20 @@ public sealed class RealisedCostEstimatorTests
         // 36 bps where the account had lost 68. A record without the equity reading is therefore
         // not a cheaper measurement, it is a different and wrong one, so it is excluded rather
         // than approximated.
-        DiagnosticExecutionRecord blind = Completed("blind", 100m, 101m, 10m, 4m)
-            with { RealisedAccountPnl = null };
-
         Assert.Null(RealisedCostEstimator.Estimate(
-            [blind, blind with { EntryClientOrderId = "b2" }, blind with { EntryClientOrderId = "b3" }],
+            [
+                Completed("b1", 100m, 101m, 10m, 4m) with { RealisedAccountPnl = null },
+                Completed("b2", 100m, 101m, 10m, 4m) with { RealisedAccountPnl = null },
+                Completed("b3", 100m, 101m, 10m, 4m) with { RealisedAccountPnl = null },
+            ],
             "d", "v1", "crypto", "alpaca"));
     }
 
     [Fact]
     public void TooFewRoundTripsProduceNoBucketRatherThanAWideOne()
     {
-        DiagnosticExecutionRecord record = Completed("only", 100m, 101m, 10m, 4m);
-
         Assert.Null(RealisedCostEstimator.Estimate(
-            [record, record with { EntryClientOrderId = "second" }],
+            [Completed("only", 100m, 101m, 10m, 4m), Completed("second", 100m, 101m, 10m, 4m)],
             "d", "v1", "crypto", "alpaca"));
     }
 
@@ -115,10 +112,8 @@ public sealed class RealisedCostEstimatorTests
         // small order too much and the large one too little.
         List<DiagnosticExecutionRecord> records =
         [
-            .. Enumerable.Range(0, 3).Select(i =>
-                Completed($"small-{i}", 10m, 10.1m, 1m, 0.09m)),
-            .. Enumerable.Range(0, 3).Select(i =>
-                Completed($"large-{i}", 100m, 101m, 2m, 1.4m)),
+            .. Enumerable.Range(0, 3).Select(i => Completed($"small-{i}", 10m, 10.1m, 1m, 0.09m)),
+            .. Enumerable.Range(0, 3).Select(i => Completed($"large-{i}", 100m, 101m, 2m, 1.4m)),
         ];
 
         RealisedCostContract contract = Estimate(records);
@@ -128,6 +123,149 @@ public sealed class RealisedCostEstimatorTests
         Assert.True(contract.Buckets[0].MeanBps < contract.Buckets[1].MeanBps);
     }
 
+    // ------------------------------------------------------- sole account ownership
+
+    [Fact]
+    public void ARoundTripThatSharedTheAccountCannotTestify()
+    {
+        // The live defect. Account equity is a portfolio quantity, so when two positions are open
+        // together each one's equity delta contains the other's movement in full. On 2026-09-02
+        // four spot positions reconciled within ten seconds of each other and each recorded roughly
+        // -28 USD against a portfolio that had moved about -28 in total; the shortfall arithmetic
+        // then priced them at 912, 1,319 and 1,261 bps against a true round trip of 33.7.
+        //
+        // Three overlapping trips would otherwise be exactly enough to publish a bucket.
+        DateTimeOffset open = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+        DateTimeOffset close = DateTimeOffset.Parse("2026-09-02T09:00:00Z");
+
+        List<DiagnosticExecutionRecord> concurrent =
+        [
+            .. Enumerable.Range(0, 3).Select(i =>
+                Completed($"shared-{i}", 100m, 101m, 10m, 4m)
+                    with { CreatedAt = open, EntryReservedAt = open, CompletedAt = close }),
+        ];
+
+        Assert.Null(RealisedCostEstimator.Estimate(
+            concurrent, "crypto-alpaca-paper", "v1", "crypto", "alpaca"));
+    }
+
+    [Fact]
+    public void APositionStillOpenContaminatesEveryTripThatClosesBeneathIt()
+    {
+        // An unclosed position has no end, so it is moving the account through every window that
+        // ends while it is held. Three otherwise-clean serialised trips must still be refused.
+        DiagnosticExecutionRecord held = Completed("held-through", 100m, 101m, 10m, 4m)
+            with
+            {
+                CreatedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+                EntryReservedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+                CompletedAt = null,
+                RealisedAccountPnl = null,
+            };
+
+        Assert.Null(RealisedCostEstimator.Estimate(
+            [
+                held,
+                Completed("clean-1", 100m, 101m, 10m, 4m),
+                Completed("clean-2", 100m, 101m, 10m, 4m),
+                Completed("clean-3", 100m, 101m, 10m, 4m),
+            ],
+            "crypto-alpaca-paper", "v1", "crypto", "alpaca"));
+    }
+
+    [Fact]
+    public void ARejectedOrderNeverHeldAnythingSoItContaminatesNothing()
+    {
+        // Seven equity orders were rejected outright on 2026-09-02 for being submitted outside
+        // market hours. They filled nothing, so they moved no equity, and treating them as exposure
+        // would discard good measurements to protect against a position that never existed.
+        DiagnosticExecutionRecord rejected = Completed("rejected", 100m, 101m, 10m, 4m)
+            with
+            {
+                EntryFilledQuantity = 0m,
+                CreatedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+                EntryReservedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+                CompletedAt = null,
+            };
+
+        RealisedCostContract contract = Estimate([
+            rejected,
+            Completed("clean-1", 100m, 101m, 10m, 4m),
+            Completed("clean-2", 100m, 101m, 10m, 4m),
+            Completed("clean-3", 100m, 101m, 10m, 4m)]);
+
+        Assert.Equal(60m, contract.Buckets.Single().MeanBps);
+        Assert.Equal(["clean-1", "clean-2", "clean-3"], contract.Buckets.Single().SourceRecordIds);
+    }
+
+    [Fact]
+    public void AWindowThatOnlyTouchesAnotherAtItsEdgeStillTestifies()
+    {
+        // Back-to-back trading is the configuration this measurement is designed for. A position
+        // that closes at the instant the next reserves never shared the account, and refusing it
+        // would leave the contract unable to fill from a lane that trades one position at a time.
+        DateTimeOffset start = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+        List<DiagnosticExecutionRecord> backToBack =
+        [
+            .. Enumerable.Range(0, 3).Select(i =>
+                Completed($"touching-{i}", 100m, 101m, 10m, 4m)
+                    with
+                    {
+                        CreatedAt = start.AddHours(i),
+                        EntryReservedAt = start.AddHours(i),
+                        CompletedAt = start.AddHours(i + 1),
+                    }),
+        ];
+
+        Assert.Equal(3, Estimate(backToBack).Buckets.Single().RoundTripCount);
+    }
+
+    [Fact]
+    public void ASpotTripIsRefusedWhenADiagnosticPositionWasOpenAcrossIt()
+    {
+        // The two lanes share one account, so contamination crosses between them. This is not
+        // hypothetical: the diagnostic lane placed 132 of the day's 151 orders while the spot lane
+        // was the one being measured.
+        DateTimeOffset open = DateTimeOffset.Parse("2026-09-02T05:00:00Z");
+
+        DiagnosticExecutionRecord diagnostic = Completed("diag-overlap", 100m, 101m, 10m, 4m)
+            with
+            {
+                CreatedAt = open,
+                EntryReservedAt = open,
+                CompletedAt = open.AddHours(6),
+            };
+
+        List<SpotExecutionRecord> spot =
+        [
+            .. Enumerable.Range(0, 3).Select(i => CompletedSpot(
+                $"spot-{i}", open.AddHours(i + 1), open.AddHours(i + 2))),
+        ];
+
+        Assert.Null(RealisedCostEstimator.Estimate(
+            [diagnostic], "crypto-alpaca-paper", "v1", "crypto", "alpaca", spot));
+
+        // The same three spot trips, with the diagnostic position gone, do testify.
+        RealisedCostContract? alone = RealisedCostEstimator.Estimate(
+            [], "crypto-alpaca-paper", "v1", "crypto", "alpaca", spot);
+        Assert.Equal(3, alone?.Buckets.Single().RoundTripCount);
+    }
+
+    // ---------------------------------------------------------------------- fixtures
+
+    /// <summary>
+    /// Hands out a distinct, non-overlapping window to each fixture record.
+    ///
+    /// Fixtures serialise by default because a set of records sharing one window is not a valid
+    /// cost dataset at all -- the equity delta each one reports would be the whole portfolio's.
+    /// xUnit constructs this class once per test method, so the sequence is per-test and stable
+    /// however the tests are ordered or parallelised. The concurrency tests override the times.
+    /// </summary>
+    private int _slot;
+
+    private DateTimeOffset NextSlot() =>
+        DateTimeOffset.Parse("2026-09-01T00:00:00Z").AddHours(_slot++ * 2);
+
     private static RealisedCostContract Estimate(IReadOnlyList<DiagnosticExecutionRecord> records)
     {
         RealisedCostContract? contract = RealisedCostEstimator.Estimate(
@@ -136,27 +274,57 @@ public sealed class RealisedCostEstimatorTests
         return contract;
     }
 
-    private static DiagnosticExecutionRecord Completed(
+    /// <summary>A completed round trip that held the account alone.</summary>
+    private DiagnosticExecutionRecord Completed(
         string id,
         decimal entryReference,
         decimal exitReference,
         decimal quantity,
-        decimal realisedPnl) =>
-        new(
+        decimal realisedPnl)
+    {
+        DateTimeOffset opened = NextSlot();
+        return new DiagnosticExecutionRecord(
             ExperimentId: "exp",
             Classification: "CryptoSpot",
             Symbol: "BTC/USD",
             State: "Completed",
             RequestedNotional: entryReference * quantity,
             HoldingDuration: TimeSpan.FromMinutes(5),
-            CreatedAt: DateTimeOffset.Parse("2026-09-01T12:00:00Z"),
+            CreatedAt: opened,
             EntryClientOrderId: id,
             ExitClientOrderId: $"{id}-exit")
         {
+            EntryReservedAt = opened,
             EntryFilledQuantity = quantity,
             EntryReferencePrice = entryReference,
             ExitReferencePrice = exitReference,
             RealisedAccountPnl = realisedPnl,
-            CompletedAt = DateTimeOffset.Parse("2026-09-01T12:05:00Z"),
+            CompletedAt = opened.AddMinutes(5),
+        };
+    }
+
+    private static SpotExecutionRecord CompletedSpot(
+        string id,
+        DateTimeOffset reservedAt,
+        DateTimeOffset completedAt) =>
+        new(
+            ExecutionId: id,
+            StrategyId: "trend.adx-filtered.v1",
+            Symbol: "BTC/USD",
+            InstrumentSlot: 1,
+            State: SpotExecutionState.Complete,
+            EntryClientOrderId: id,
+            ExitClientOrderId: $"{id}-exit",
+            Quantity: 10m,
+            CreatedAt: reservedAt,
+            EntryReservedAt: reservedAt)
+        {
+            EntryFilledQuantity = 10m,
+            ExitFilledQuantity = 10m,
+            EntryReferencePrice = 100m,
+            ExitReferencePrice = 101m,
+            AccountEquityBefore = 1000m,
+            AccountEquityAfter = 1004m,
+            CompletedAt = completedAt,
         };
 }
