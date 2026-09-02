@@ -371,13 +371,19 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         // trading, it has to measure its own round trips or the figure gating them goes stale while
         // still looking measured.
         var broker = new FakeBroker { AccountEquity = 100_000m };
-        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: new StubMarker(101m));
+
+        // One mid cannot serve two jobs. At entry it answers the fence -- is the price still where
+        // the decision was made -- and at exit it is the decision price for the exit. Here the
+        // market moves between the two, which is what it does.
+        var marker = new FadingMarker(100m);
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: marker);
 
         Assert.True(lifecycle.TryReserve(
             ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
             entryReferencePrice: 100m, accountEquityBefore: 100_000m));
 
         await ReachHoldingAsync(lifecycle, broker);
+        marker.Restore(101m);
         _clock.Advance(TimeSpan.FromMinutes(20));
         await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // exit due
         broker.Order = null;
@@ -435,7 +441,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         // was decided, not one taken later. This marker goes dark the instant the exit is decided,
         // so a record that still carries 101 proves the capture happened at the decision.
         var broker = new FakeBroker { AccountEquity = 100_000m };
-        var marker = new FadingMarker(101m);
+        var marker = new FadingMarker(100m);
         SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: marker);
 
         Assert.True(lifecycle.TryReserve(
@@ -443,6 +449,7 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
             entryReferencePrice: 100m, accountEquityBefore: 100_000m));
 
         await ReachHoldingAsync(lifecycle, broker);
+        marker.Restore(101m);
         _clock.Advance(TimeSpan.FromMinutes(20));
 
         SpotExecutionRecord exitDue = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
@@ -549,6 +556,83 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         SpotExecutionRecord holding = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
 
         Assert.Equal(SpotExecutionState.Holding, holding.State);
+    }
+
+    [Fact]
+    public async Task AnEntryWhosePriceRanAwayBeforeSubmissionIsRefused()
+    {
+        // The lane had no fence on this path at all. Evidence was fetched, the pipeline decided,
+        // the reservation was taken, and the order went out with nothing asking whether the price
+        // was still what the decision was made at. The generic ExecutionWorker re-checks expiry,
+        // reservation and system mode, but the autonomous spot lane does not route through it.
+        //
+        // Decided at 100, now 101: a hundred basis points against a long entry, well past the
+        // thirty allowed. The move the signal predicted has already happened.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: new StubMarker(101m));
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord fenced = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Failed, fenced.State);
+        Assert.StartsWith("ENTRY_FENCE_ADVERSE_MOVE", fenced.FailureReason);
+        Assert.Null(broker.Order);   // nothing reached the venue
+    }
+
+    [Fact]
+    public async Task AnEntryStillNearItsDecisionPriceProceeds()
+    {
+        // Ordinary jitter between one cycle and the next must not refuse a good entry. Ten basis
+        // points against is inside the thirty allowed.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: new StubMarker(100.1m));
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord submitted = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Failed, submitted.State);
+    }
+
+    [Fact]
+    public async Task APriceThatMovedInTheEntrysFavourIsNotRefused()
+    {
+        // The fence is adverse-only. A long entry whose price has fallen since the decision is a
+        // better entry, not a worse one, and the reference price is recorded either way so the
+        // round trip still measures against the price the decision was actually made at.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: new StubMarker(97m));
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord submitted = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Failed, submitted.State);
+    }
+
+    [Fact]
+    public async Task AMissingQuoteDoesNotStopTheLaneEntering()
+    {
+        // Refusing on absent data would stop the lane during a feed outage rather than protect it
+        // from one, and the reservation would be released and retaken every cycle until the feed
+        // returned.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: new StubMarker(null));
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord submitted = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Failed, submitted.State);
     }
 
     private sealed class StubMarker(decimal? mid) : IHeldPositionMarker

@@ -43,6 +43,20 @@ public sealed class SpotExecutionLifecycle(
     /// </summary>
     private const decimal ExitCostRate = 0.0025m;
 
+    /// <summary>
+    /// How far the price may move against a long entry between the decision and the submission.
+    ///
+    /// Thirty basis points: half a round trip at the 60 the venue charges. Past that the move the
+    /// signal was predicting has largely happened, and buying into it pays for an edge already
+    /// spent. Tight enough to catch a real run, loose enough that ordinary quote jitter between one
+    /// cycle and the next does not refuse a good entry.
+    ///
+    /// Adverse only. A price that has moved in the position's favour is not a reason to refuse --
+    /// the entry reference is recorded either way, so the round trip still measures honestly
+    /// against the price the decision was actually made at.
+    /// </summary>
+    private const decimal MaximumAdverseEntryMoveBps = 30m;
+
 
     /// <summary>
     /// Persists the reservation. Nothing reaches the broker until this returns true, so an
@@ -141,6 +155,29 @@ public sealed class SpotExecutionLifecycle(
     private async Task<SpotExecutionRecord> SubmitEntryAsync(
         SpotExecutionRecord record, CancellationToken cancellationToken)
     {
+        // The last thing checked before anything reaches the venue.
+        //
+        // The lane had no fence at all on this path. Evidence was fetched, the pipeline decided,
+        // the reservation was taken, and the order went out -- with nothing asking whether the
+        // price was still what the decision was made at. The generic ExecutionWorker does re-check
+        // expiry, reservation and system mode, but the autonomous spot lane does not route through
+        // it, so none of that applied here.
+        //
+        // Section 19.4 lists this as a release gate for exactly the reason today's forensics found:
+        // 62% of the day's loss was adverse price movement, and some of that is buying after the
+        // move that made the signal has already happened. An entry whose price has run away before
+        // the order is sent is not the opportunity that was approved.
+        if (EntryPriceHasRunAway(record) is { } moved)
+        {
+            SpotExecutionRecord fenced = record with
+            {
+                State = SpotExecutionState.Failed,
+                FailureReason = $"ENTRY_FENCE_ADVERSE_MOVE:{moved:0.0}bps",
+            };
+            store.Update(fenced);
+            return fenced;
+        }
+
         // Claim first. If a previous attempt already claimed, fall through to recovery rather than
         // sending a second order for the same opportunity.
         if (!store.TryClaimEntrySubmission(record.ExecutionId, clock.UtcNow, out SpotExecutionRecord? claimed) ||
@@ -237,6 +274,24 @@ public sealed class SpotExecutionLifecycle(
 
         store.Update(updated);
         return updated;
+    }
+
+    /// <summary>
+    /// How far the price has run against this entry since the decision, or null when it is still
+    /// within tolerance or cannot be judged.
+    ///
+    /// A missing quote is not a refusal. Declining to trade on absent data would stop the lane
+    /// during a feed outage rather than protect it from one, and the reservation would have to be
+    /// released and retaken every cycle until the feed returned.
+    /// </summary>
+    private decimal? EntryPriceHasRunAway(SpotExecutionRecord record)
+    {
+        if (record.EntryReferencePrice is not { } decided || decided <= 0m) return null;
+        if (referencePrices?.CurrentMid(record.Symbol) is not { } now || now <= 0m) return null;
+
+        // Long-only: a rise above the decision price is the move against the entry.
+        decimal movedBps = (now - decided) / decided * 10_000m;
+        return movedBps > MaximumAdverseEntryMoveBps ? movedBps : null;
     }
 
     /// <summary>Projects a spot record onto the view every early-exit rule reads.</summary>
