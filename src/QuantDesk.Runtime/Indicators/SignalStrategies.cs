@@ -49,7 +49,21 @@ public sealed record SignalStrategy(
     StrategyQualification Qualification,
     double ResearchMeanNetBps,
     double ResearchLowerBoundBps,
-    Func<IndicatorSet, int, bool> Fires);
+    Func<IndicatorSet, int, bool> Fires)
+{
+    /// <summary>
+    /// Indicator series this rule cannot decide without.
+    ///
+    /// Declared so that "nothing fired" can be told apart from "the feature this rule needs could
+    /// not be computed". Both look identical from outside -- an unavailable series is all NaN, and
+    /// every rule reading NaN declines -- but one is a market observation and the other is a
+    /// degraded system, and only the second is worth telling anyone about.
+    ///
+    /// Only the series whose absence is decisive are listed. A rule that reads Close alone declares
+    /// nothing, because Close is the one series whose presence makes a set exist at all.
+    /// </summary>
+    public IReadOnlyList<string> RequiredSeries { get; init; } = [];
+}
 
 /// <summary>
 /// The strategy set the lane may draw from.
@@ -138,7 +152,8 @@ public static class SignalStrategies
         Breakout("breakout.donchian-20.v1", -70.0, -85.0, DonchianBreakout) with { Qualification = StrategyQualification.Stale },
         Breakout("breakout.bollinger-upper.v1", 1.5, -14.5, BollingerUpperBreak),
         // Stale: too few non-overlapping trades in the held-out half to re-measure.
-        Volume("volume.surge-breakout.v1", -60.1, -94.2, VolumeSurgeBreakout) with { Qualification = StrategyQualification.Stale },
+        Volume("volume.surge-breakout.v1", -60.1, -94.2, VolumeSurgeBreakout)
+            with { Qualification = StrategyQualification.Stale, RequiredSeries = ["VolumeZ48"] },
         Volume("volume.obv-confirmed-trend.v1", -9.6, -24.4, ObvConfirmedTrend),
         Volatility("volatility.atr-expansion.v1", -13.8, -27.0, AtrExpansionTrend),
     ];
@@ -164,7 +179,8 @@ public static class SignalStrategies
         Volatility("volatility.atr-expansion.v1", -13.0, -16.1, AtrExpansionTrend),
         Breakout("breakout.bollinger-upper.v1", -13.2, -17.0, BollingerUpperBreak),
         // Stale: too few non-overlapping trades in the held-out half to re-measure.
-        Volume("volume.surge-breakout.v1", -3.6, -17.5, VolumeSurgeBreakout) with { Qualification = StrategyQualification.Stale },
+        Volume("volume.surge-breakout.v1", -3.6, -17.5, VolumeSurgeBreakout)
+            with { Qualification = StrategyQualification.Stale, RequiredSeries = ["VolumeZ48"] },
         Trend("trend.ema-cross-12-48.v1", -11.8, -16.8, EmaCross),
     ];
 

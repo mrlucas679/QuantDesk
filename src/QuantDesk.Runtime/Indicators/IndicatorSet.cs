@@ -57,6 +57,27 @@ public sealed class IndicatorSet
     /// <summary>True when session-scoped measures reset on the session rather than on a bar count.</summary>
     public bool SessionScoped { get; private init; }
 
+    /// <summary>
+    /// Series that could not be computed from the history supplied, and why.
+    ///
+    /// The gap this closes. A series that is entirely NaN behaves identically to one that is merely
+    /// warming up: every rule reading it declines, quietly and forever, and nothing anywhere says
+    /// the feature is missing rather than the market being quiet.
+    ///
+    /// That was live within hours of the time-of-day volume baseline landing. It needs five prior
+    /// observations at the same time of day, which means five prior days; the crypto client fetches
+    /// twenty-four hours and retains twenty, so every time-of-day bucket held exactly one
+    /// observation and VolumeZ48 was NaN for every bar in production. The research scan computes it
+    /// happily over sixty days -- so the scan and the live lane disagreed about what the feature
+    /// even is, which is the divergence this class exists to prevent and the hardest kind of defect
+    /// to attribute after the fact.
+    /// </summary>
+    public IReadOnlyList<string> Unavailable { get; private init; } = [];
+
+    /// <summary>Whether a named series could be computed at all from this history.</summary>
+    public bool IsAvailable(string series) =>
+        !Unavailable.Any(item => item.StartsWith(series, StringComparison.Ordinal));
+
     /// <summary>True when every bar carries the instant it opened.</summary>
     public bool HasTimeAxis => Timestamps.Length == Length && Length > 0;
 
@@ -153,6 +174,7 @@ public sealed class IndicatorSet
             VolumeZ48 = t is not null ? TimeOfDayVolumeZ(v, t) : ZScore(v, 48),
             Timestamps = t ?? [],
             SessionScoped = sessionScoped && t is not null,
+            Unavailable = t is null ? [] : Unmeasurable(v, t),
         };
     }
 
@@ -474,9 +496,40 @@ public sealed class IndicatorSet
     /// baseline that is mostly itself: a rule that reads NaN declines, which is the correct answer
     /// when the question cannot yet be asked.
     /// </summary>
+    /// <summary>
+    /// Names the series this history cannot support, with the shortfall spelled out.
+    ///
+    /// Checked against the requirement rather than against the output, so the message can say what
+    /// is missing instead of only that something is.
+    /// </summary>
+    private static IReadOnlyList<string> Unmeasurable(double[] v, DateTimeOffset[] t)
+    {
+        List<string> missing = [];
+
+        TimeSpan span = t.Length > 1 ? t[^1] - t[0] : TimeSpan.Zero;
+        TimeSpan required = TimeSpan.FromDays(MinimumPriorDaysForTimeOfDay + 1);
+        if (span < required)
+        {
+            missing.Add(
+                $"VolumeZ48: a time-of-day baseline needs {required.TotalDays:0} days of history; " +
+                $"this series spans {span.TotalHours:0.#} hours");
+        }
+
+        return missing;
+    }
+
+    /// <summary>
+    /// Prior days required before volume can be scored against its own time of day.
+    ///
+    /// Five, because a mean and a standard deviation over fewer observations than that describe the
+    /// sample rather than the population, and the whole point of the baseline is to be a population
+    /// the current bar can be unusual against.
+    /// </summary>
+    public const int MinimumPriorDaysForTimeOfDay = 5;
+
     private static double[] TimeOfDayVolumeZ(double[] v, DateTimeOffset[] t)
     {
-        const int MinimumPriorObservations = 5;
+        const int MinimumPriorObservations = MinimumPriorDaysForTimeOfDay;
 
         double[] output = Filled(v.Length);
 

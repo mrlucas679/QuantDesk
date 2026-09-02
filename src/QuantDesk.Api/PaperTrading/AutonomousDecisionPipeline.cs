@@ -73,8 +73,10 @@ public sealed class AutonomousDecisionPipeline(
     private StrategyEvaluation SelectStrategy(
         DirectionalMarketEvidence evidence,
         OpportunityRoute route,
-        IReadOnlyDictionary<string, int> openByMechanism)
+        IReadOnlyDictionary<string, int> openByMechanism,
+        out IReadOnlyList<string> unavailable)
     {
+        unavailable = [];
         // Session scoping is an asset-class property, not a setting. Crypto has no session to reset
         // on, so a session-scoped VWAP there would accumulate from whenever the history happens to
         // begin; equities have one, and VWAP is defined against it.
@@ -91,7 +93,10 @@ public sealed class AutonomousDecisionPipeline(
         // unproven is worth paying a little to resolve, being demonstrably unprofitable is not.
         IReadOnlyList<SignalStrategy> available = _tradable(route.AssetClass);
         if (indicators is not null)
+        {
+            unavailable = indicators.Unavailable;
             return rotation.Select(available, indicators, openByMechanism, MechanismCap(available));
+        }
 
         // Closes only, or too little history for the slower indicators. Rather than fall silent,
         // fall back to the families that genuinely need nothing else -- which is what the lane
@@ -193,7 +198,8 @@ public sealed class AutonomousDecisionPipeline(
             // mean-reversion rule could only fire when prices were already rising, so buying a dip
             // required the dip not to have happened. Nine of thirteen strategies could never have
             // opened a position.
-            StrategyEvaluation evaluation = SelectStrategy(evidence, route, openByMechanism);
+            StrategyEvaluation evaluation =
+                SelectStrategy(evidence, route, openByMechanism, out IReadOnlyList<string> unavailable);
             selection = evaluation.Selection;
             if (selection is null)
             {
@@ -206,6 +212,27 @@ public sealed class AutonomousDecisionPipeline(
                 {
                     return Reject(
                         $"StrategyEvaluationFaulted:{evaluation.Faults[0].StrategyId}");
+                }
+
+                // A feature the history cannot support is not a quiet market either. An entirely
+                // NaN series makes every rule reading it decline, silently and forever, which is
+                // indistinguishable from nothing happening -- and it happened within hours of the
+                // time-of-day volume baseline landing, because it needs five prior days and the
+                // crypto client fetches twenty-four hours.
+                //
+                // Reported only when a rule that could otherwise have traded actually needs the
+                // missing series. Saying "IndicatorUnavailable" because some series is missing
+                // would claim a cause that has not been established -- the market may simply be
+                // quiet -- and a reason that is confidently wrong is worse than a vague one.
+                string? blocking = unavailable.FirstOrDefault(missing =>
+                    _tradable(route.AssetClass).Any(strategy =>
+                        strategy.RequiredSeries.Any(series =>
+                            missing.StartsWith(series, StringComparison.Ordinal))));
+                if (blocking is not null)
+                {
+                    logger.LogWarning(
+                        "Indicator unavailable for {Symbol}: {Reason}.", route.Symbol, blocking);
+                    return Reject($"IndicatorUnavailable:{blocking}");
                 }
 
                 return Reject(_tradable(route.AssetClass).Count == 0
