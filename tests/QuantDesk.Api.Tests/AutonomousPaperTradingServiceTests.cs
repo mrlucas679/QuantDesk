@@ -262,6 +262,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
                 new DiagnosticExecutionStore(_diagnosticStorePath),
                 new SpotExecutionStore(_spotStorePath)),
             new SpotExecutionStore(_spotStorePath),
+            new MarketStateStore(2),
             new StrategyRotation(),
             // The session clock is only consulted after an evidence failure, and these tests supply
             // evidence, so an unreachable one is never reached.

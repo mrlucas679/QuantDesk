@@ -5,6 +5,7 @@ using QuantDesk.Alpaca.Mapping;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Contracts;
+using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Portfolio;
 using QuantDesk.Domain.Runtime;
@@ -14,6 +15,7 @@ using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Modes;
+using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Portfolio;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Reconciliation;
@@ -29,6 +31,7 @@ public sealed class AutonomousPaperTradingService(
     IInstrumentSymbolResolver symbols,
     IRealisedCostSource realisedCosts,
     SpotExecutionStore spotStore,
+    MarketStateStore marketState,
     StrategyRotation rotation,
     AlpacaMarketClock marketClock,
     IMarketEvidenceProvider evidenceProvider,
@@ -256,6 +259,25 @@ public sealed class AutonomousPaperTradingService(
         // Order of work: make spot execution delta-based, then net, then drop this.
         if (attribution.IsClaimed(route.Symbol))
         {
+            // Refresh the market state before standing down.
+            //
+            // Nothing else does it for a held symbol. The quote is applied inside the decision
+            // pipeline, and the pipeline is exactly what this early return skips -- so a position's
+            // price stopped updating the moment it opened, and stayed frozen at its entry for the
+            // whole holding period.
+            //
+            // Two things read that price, and both were quietly wrong. The adverse-loss stop
+            // compares the current mid against the entry to decide whether the position has lost
+            // more than it was authorised to: against a frozen mid the unrealised loss computes as
+            // roughly zero, so the stop could never fire however far the position ran. And the
+            // exit reference price is taken from the same state when the trip reconciles, so the
+            // implementation shortfall this system measures its costs with would have been
+            // calculated against an entry-era price.
+            //
+            // A failure here is not fatal: the stop declines on a missing quote by design, which is
+            // the same position it was in before, so the hold simply falls back to its timer.
+            await RefreshMarketStateAsync(route, slot, cancellationToken);
+
             // Reported as holding, not as an abstention. The *decision* is to abstain from a new
             // entry, but the instrument's *state* is that it holds a position, and conflating the
             // two made the lane read as entirely flat while it was holding: the entry cycle set
@@ -546,6 +568,35 @@ public sealed class AutonomousPaperTradingService(
     /// Read from the record rather than remembered in the state object, because the state object is
     /// rebuilt every cycle and the record is the thing that survives a restart.
     /// </summary>
+    /// <summary>
+    /// Applies the current quote for a held instrument to the market state.
+    ///
+    /// Held positions are otherwise never re-quoted, because the evaluation that applies quotes is
+    /// the one an open position skips. Everything that watches a live position -- the loss stop,
+    /// and the exit price the cost measurement is computed from -- reads this state.
+    /// </summary>
+    private async Task RefreshMarketStateAsync(
+        OpportunityRoute route, int slot, CancellationToken cancellationToken)
+    {
+        try
+        {
+            DirectionalMarketEvidence quote =
+                await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
+            if (quote.Bid <= 0m || quote.Ask < quote.Bid) return;
+
+            long eventNs = clock.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
+            marketState.Apply(new QuoteEvent(
+                eventNs, slot, (double)quote.Bid, (double)quote.Ask,
+                1, 1, eventNs, clock.MonotonicTimestamp, eventNs));
+        }
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
+        {
+            // The stop declines on a missing quote by design, so a failed refresh leaves the hold
+            // bounded by its timer -- which is where it was before this existed.
+            logger.LogDebug(exception, "Could not refresh the quote for held {Symbol}.", route.Symbol);
+        }
+    }
+
     private decimal HeldQuantity(string brokerSymbol) =>
         spotStore.ListNonterminal()
             .Where(record => BrokerSymbol.Matches(record.Symbol, brokerSymbol))
