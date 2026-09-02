@@ -295,9 +295,20 @@ public sealed class AutonomousPaperTradingService(
         PortfolioSnapshot initial = EmptyPortfolio(account);
         DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
 
-        // Kept for the correlation gate below. Costs no extra market-data call: these are the bars
-        // the decision is about to be made from anyway.
+        // Kept for the correlation measurement below. Costs no extra market-data call: these are
+        // the bars the decision is about to be made from anyway.
         returnSeries.Record(route.Symbol, evidence.Closes);
+
+        // What the book would actually be exposed to if this position opened, measured here because
+        // this is where the return history is, and handed to the risk governor because that is
+        // where risk is decided. It used to be enforced here, as a lane-local gate -- which left
+        // every other path to a position, the diagnostic and options lanes included, free of it.
+        CorrelationBreadthDecision breadth = CorrelationBreadthGate.Evaluate(
+            route.Symbol,
+            HeldSymbols(),
+            returnSeries.Snapshot(),
+            options.OrderNotional,
+            RiskLimitOptions.MaximumCorrelatedExposure(options.OrderNotional));
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, route, evidence, initial, true, true, capabilities,
             // What each mechanism already holds, so one cannot monopolise the universe and leave
@@ -310,7 +321,8 @@ public sealed class AutonomousPaperTradingService(
             // at its lower bound and cost at its upper, so neither estimate's error argues for the
             // trade. Experimental mode has no verified forecast and no bound to apply.
             experimental ? null : forecast!.Uncertainty,
-            experimental ? null : MeasuredCostUpperBoundBps());
+            experimental ? null : MeasuredCostUpperBoundBps(),
+            new Usd(breadth.CorrelatedExposure));
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||
             decision.Risk is not { Approved: true } risk)
         {
@@ -404,28 +416,6 @@ public sealed class AutonomousPaperTradingService(
         // cash charge. Every earlier round trip is unmeasurable for exactly this reason.
         decimal referencePrice = (evidence.Bid + evidence.Ask) / 2m;
         BrokerAccountSnapshot? account = await broker.GetAccountAsync(cancellationToken);
-
-        // Would this position add exposure without adding a bet?
-        //
-        // The risk envelope caps notional, stress loss, daily and campaign loss, position count and
-        // dollar delta -- and nothing at all caps correlation, so the governor sized every position
-        // as though it were independent of the others. On 2026-09-02 the lane held seven crypto
-        // symbols at 0.709 mean pairwise correlation: about 1.33 independent bets carried as if
-        // they were seven, with every configured limit satisfied the whole time.
-        CorrelationBreadthDecision breadth = CorrelationBreadthGate.Evaluate(
-            symbol,
-            HeldSymbols(),
-            returnSeries.Snapshot(),
-            options.OrderNotional,
-            RiskLimitOptions.MaximumCorrelatedExposure(options.OrderNotional));
-        if (!breadth.Allowed)
-        {
-            state.UpdateSymbol(symbol, "abstained", symbol, reason: breadth.Reason);
-            logger.LogInformation(
-                "Autonomous entry refused for {Symbol}: {Reason}. Nominal {Nominal:0.00}, correlated {Correlated:0.00}.",
-                symbol, breadth.Reason, breadth.NominalExposure, breadth.CorrelatedExposure);
-            return;
-        }
 
         // The gain at which this position has earned what its own thesis predicted.
         //

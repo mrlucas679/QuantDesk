@@ -94,7 +94,8 @@ public static class RiskLimitOptions
             MaximumAbsDollarVega1Vol: Number("QUANTDESK_RISK_MAX_DOLLAR_VEGA",
                 (double)orderNotional * DefaultDollarVegaMultiple),
             MaximumRelativeSpread: Number("QUANTDESK_RISK_MAX_RELATIVE_SPREAD", 0.01),
-            MaximumShortConvexityScore: Number("QUANTDESK_RISK_MAX_SHORT_CONVEXITY", 1));
+            MaximumShortConvexityScore: Number("QUANTDESK_RISK_MAX_SHORT_CONVEXITY", 1),
+            MaximumCorrelatedExposure: new Usd(MaximumCorrelatedExposure(orderNotional)));
 
         limits.Validate();
         return limits;

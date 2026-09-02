@@ -164,7 +164,8 @@ public sealed class AutonomousDecisionPipeline(
         string? verifiedStrategyFamily = null,
         StrategyDefinitionContract? verifiedStrategyDefinition = null,
         ForecastUncertaintyContract? forecastUncertainty = null,
-        double? allInCostUpperBoundBps = null)
+        double? allInCostUpperBoundBps = null,
+        Usd projectedCorrelatedExposure = default)
     {
         // Capabilities are required, not defaulted.
         //
@@ -366,7 +367,8 @@ public sealed class AutonomousDecisionPipeline(
             return new(false, actionable.Reason.ToString(), candidate, estimate, null, committeeDecision, market);
 
         RiskDecision risk = riskGovernor.Evaluate(
-            candidate, estimate, market, portfolio, brokerHealthy, portfolioReconciled, nowTicks);
+            candidate, estimate, market, portfolio, brokerHealthy, portfolioReconciled, nowTicks,
+            projectedCorrelatedExposure);
         return risk.Approved
             ? new(true, "Approved", candidate, estimate, risk, committeeDecision, market)
             : new(false, risk.Reason.ToString(), candidate, estimate, risk, committeeDecision, market);

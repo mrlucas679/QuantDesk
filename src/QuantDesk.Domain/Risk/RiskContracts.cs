@@ -12,7 +12,8 @@ public sealed record RiskLimits(
     double MaximumAbsDollarGamma1Pct,
     double MaximumAbsDollarVega1Vol,
     double MaximumRelativeSpread,
-    double MaximumShortConvexityScore)
+    double MaximumShortConvexityScore,
+    Usd MaximumCorrelatedExposure)
 {
     public void Validate()
     {
@@ -20,7 +21,8 @@ public sealed record RiskLimits(
             MaximumDailyLoss.Value <= 0 || MaximumCampaignLoss.Value <= 0 ||
             MaximumOpenPositions <= 0 || MaximumAbsDollarDelta <= 0 ||
             MaximumAbsDollarGamma1Pct <= 0 || MaximumAbsDollarVega1Vol <= 0 ||
-            MaximumRelativeSpread <= 0 || MaximumShortConvexityScore <= 0)
+            MaximumRelativeSpread <= 0 || MaximumShortConvexityScore <= 0 ||
+            MaximumCorrelatedExposure.Value <= 0)
         {
             throw new InvalidOperationException("Every risk limit must be positive and explicitly bounded.");
         }
