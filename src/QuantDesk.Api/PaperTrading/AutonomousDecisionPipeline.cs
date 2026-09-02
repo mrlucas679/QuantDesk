@@ -88,6 +88,15 @@ public sealed class AutonomousDecisionPipeline(
             ?? IndicatorSet.Unwarmed(evidence.Closes);
     }
 
+    /// <summary>
+    /// The expert that speaks for whichever strategy fired.
+    ///
+    /// One vote rather than two, because there is one hypothesis: the strategy's. The two momentum
+    /// experts remain for the path where no strategy layer runs, and their disagreement is
+    /// meaningful there because they are genuinely two readings of the same mechanism.
+    /// </summary>
+    private const int StrategyExpertId = 16;
+
     private const int MediumTrendExpertId = 14;
     private const int ShortMomentumExpertId = 15;
 
@@ -123,6 +132,7 @@ public sealed class AutonomousDecisionPipeline(
         ICostModel costs = pricing.CostsFor(route);
         AccountCapabilities effectiveCapabilities = capabilities;
         StrategySelection? selection = null;
+        double expectedMoveBps = 0d;
         if (verifiedForecastBps is null)
         {
             // Strategies first, then the cost hurdle.
@@ -142,6 +152,7 @@ public sealed class AutonomousDecisionPipeline(
             // condition for every mechanism and specific to none of them, where trailing momentum
             // is specific to one.
             CostViability viability = viabilityGate.Evaluate(evidence, route);
+            expectedMoveBps = (double)viability.ExpectedMoveBps;
             if (!viability.Viable)
             {
                 logger.LogInformation(
@@ -201,8 +212,25 @@ public sealed class AutonomousDecisionPipeline(
         InstrumentSnapshot market = marketState.Snapshot(instrumentSlot);
 
         long validUntil = nowTicks + (long)(TimeSpan.FromMinutes(5).TotalSeconds * System.Diagnostics.Stopwatch.Frequency);
+        // What the firing strategy expects, not what price has just done.
+        //
+        // These votes used to be built from trailing momentum whatever had fired, and everything
+        // downstream reads them: the committee refuses when they disagree, and their weighted value
+        // becomes the gross expected P&L the actionability gate charges costs against. So a
+        // mean-reversion strategy -- which by construction fires when momentum is *negative* --
+        // passed the strategy layer and was then refused as InsufficientExpertAvailability or
+        // NegativeNetEdge. Nine of thirteen strategies still could not trade; they simply failed a
+        // step later than before, with a reason that pointed at the wrong thing.
+        //
+        // A strategy that fires expects the instrument to move its own way by about as much as the
+        // instrument typically moves. That magnitude is measured; the direction is the strategy's
+        // hypothesis, and an explicitly unqualified one. Nothing here asserts the strategy is right
+        // -- it asserts only that the move it is betting on is large enough to be worth the costs,
+        // which is what this gate is for.
         ExpertVote[] votes = verifiedForecastBps is double modelBps
             ? [CreateVote(1001, instrumentSlot, modelBps, market.StateVersion, eventNs, nowTicks, validUntil)]
+            : selection is not null
+            ? [CreateVote(StrategyExpertId, instrumentSlot, expectedMoveBps, market.StateVersion, eventNs, nowTicks, validUntil)]
             :
             [
                 CreateVote(MediumTrendExpertId, instrumentSlot, ReturnBps(evidence.Closes[^13], evidence.Closes[^1]), market.StateVersion, eventNs, nowTicks, validUntil),

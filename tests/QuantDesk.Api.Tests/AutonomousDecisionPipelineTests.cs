@@ -31,7 +31,10 @@ public sealed class AutonomousDecisionPipelineTests
         Assert.Equal("trend.momentum-dual-horizon.v1", result.Candidate?.StrategyId);
         Assert.Equal("crypto-long-managed-v1", result.Candidate?.ManagementPlan.ExitPolicyVersion);
         Assert.True(result.Risk?.Approved);
-        Assert.Equal(2, result.Committee?.SupportingExperts.Count);
+        // One expert, not two: the vote now speaks for the strategy that fired rather than for two
+        // readings of trailing momentum. Two momentum experts disagreeing was meaningful when
+        // momentum was the only hypothesis; it is noise once the hypothesis is the strategy's.
+        Assert.Equal(1, result.Committee?.SupportingExperts.Count);
     }
 
     [Fact]
