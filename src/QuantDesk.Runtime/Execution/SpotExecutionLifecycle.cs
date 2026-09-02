@@ -268,6 +268,22 @@ public sealed class SpotExecutionLifecycle(
         {
             State = SpotExecutionState.ExitDue,
             EarlyExitReason = interrupt.Reason,
+
+            // The exit's decision price, captured here rather than at completion.
+            //
+            // Implementation shortfall measures the gap between the decision and the outcome, so
+            // the price that belongs in it is the mid at the moment the exit was decided -- which
+            // is now. Completion is the wrong moment on both counts: it is later than the decision,
+            // and it is reached through a broker round trip during which the market state can go
+            // cold. On 2026-09-02 two positions reconciled flat seconds after a restart, before
+            // their slots had a healthy quote, and completed with no exit reference at all. Four of
+            // the day's seven completed round trips could therefore never say what they cost, and
+            // nothing about the record showed that the measurement had been lost.
+            //
+            // Here the hold loop has just refreshed the quote for this symbol, so a mid is
+            // available whenever the feed is. Completion keeps its own fallback for a record that
+            // never passed through a quoted exit decision.
+            ExitReferencePrice = record.ExitReferencePrice ?? referencePrices?.CurrentMid(record.Symbol),
         };
         store.Update(updated);
         return updated;

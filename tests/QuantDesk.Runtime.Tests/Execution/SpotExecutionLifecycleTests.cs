@@ -422,9 +422,95 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         Assert.Null(done.EntryReferencePrice);
     }
 
+    [Fact]
+    public async Task TheExitReferenceIsTakenWhenTheExitIsDecidedNotWhenItReconciles()
+    {
+        // The live defect. The exit reference was read at completion, which is after a broker round
+        // trip during which the market state can go cold -- and on 2026-09-02 two positions
+        // reconciled flat seconds after a restart, before their slots had a healthy quote. They
+        // completed with no exit reference, so four of the day's seven completed round trips could
+        // never say what they cost, and nothing on the record showed the measurement had been lost.
+        //
+        // Implementation shortfall wants the decision price anyway: the mid at the moment the exit
+        // was decided, not one taken later. This marker goes dark the instant the exit is decided,
+        // so a record that still carries 101 proves the capture happened at the decision.
+        var broker = new FakeBroker { AccountEquity = 100_000m };
+        var marker = new FadingMarker(101m);
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: marker);
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        await ReachHoldingAsync(lifecycle, broker);
+        _clock.Advance(TimeSpan.FromMinutes(20));
+
+        SpotExecutionRecord exitDue = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        Assert.Equal(SpotExecutionState.ExitDue, exitDue.State);
+        Assert.Equal(101m, exitDue.ExitReferencePrice);
+
+        marker.GoDark();
+
+        broker.Order = null;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 1m, 100.9m);
+        broker.Positions = [];
+        broker.AccountEquity = 100_000.60m;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Complete, done.State);
+        Assert.Equal(101m, done.ExitReferencePrice);
+    }
+
+    [Fact]
+    public async Task AnExitDecidedWithNoQuoteStillTakesOneAtCompletionIfTheFeedReturns()
+    {
+        // The fallback is kept. A record that reached the exit decision during a feed outage has no
+        // decision price to capture, and taking a later one is better than taking none: the trip
+        // can then still testify, with a reference that is late rather than absent.
+        var broker = new FakeBroker { AccountEquity = 100_000m };
+        var marker = new FadingMarker(null);
+        SpotExecutionLifecycle lifecycle = Build(broker, referencePrices: marker);
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        await ReachHoldingAsync(lifecycle, broker);
+        _clock.Advance(TimeSpan.FromMinutes(20));
+
+        SpotExecutionRecord exitDue = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        Assert.Null(exitDue.ExitReferencePrice);
+
+        marker.Restore(101.5m);
+
+        broker.Order = null;
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        broker.Order = Filled(Store().Find(ExecutionId)!.ExitClientOrderId, 1m, 100.9m);
+        broker.Positions = [];
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+        SpotExecutionRecord done = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Complete, done.State);
+        Assert.Equal(101.5m, done.ExitReferencePrice);
+    }
+
     private sealed class StubMarker(decimal? mid) : IHeldPositionMarker
     {
         public decimal? CurrentMid(string symbol) => mid;
+    }
+
+    /// <summary>A marker whose quote can be taken away, standing in for a feed that goes cold.</summary>
+    private sealed class FadingMarker(decimal? mid) : IHeldPositionMarker
+    {
+        private decimal? _mid = mid;
+
+        public decimal? CurrentMid(string symbol) => _mid;
+
+        public void GoDark() => _mid = null;
+
+        public void Restore(decimal value) => _mid = value;
     }
 
     [Fact]
