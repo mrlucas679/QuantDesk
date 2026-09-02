@@ -21,15 +21,16 @@ namespace QuantDesk.Runtime.Strategies;
 /// exposure, so equity beta limits never bind and crypto limits bind against something that is not
 /// crypto.
 ///
-/// The asset class is now supplied rather than assumed, so the permission checked and the beta
-/// booked are the ones that belong to the instrument being traded.
+/// The asset class is supplied per call rather than per instance, because one lane now compiles for
+/// several instruments at once. Holding it on the compiler was correct only while every candidate
+/// came from the same venue; with stocks and crypto in one lane it would silently apply the first
+/// symbol's class to all of them, which is the same defect one level up.
 /// </summary>
 public sealed class CryptoDirectionalStrategyCompiler(
     Usd targetNotional,
     double stressLossFraction,
     TimeSpan candidateLifetime,
-    TimeSpan maximumHoldingPeriod,
-    TradedAssetClass assetClass = TradedAssetClass.SpotCrypto)
+    TimeSpan maximumHoldingPeriod)
 {
     public int Compile(
         in ForecastBundle forecasts,
@@ -37,8 +38,9 @@ public sealed class CryptoDirectionalStrategyCompiler(
         PortfolioSnapshot portfolio,
         AccountCapabilities capabilities,
         long nowMonotonicTicks,
+        TradedAssetClass assetClass,
         Span<TradeCandidate> destination) => Compile(
-            forecasts, market, portfolio, capabilities, nowMonotonicTicks,
+            forecasts, market, portfolio, capabilities, nowMonotonicTicks, assetClass,
             "crypto-long-momentum-v1", destination);
 
     public int Compile(
@@ -47,6 +49,7 @@ public sealed class CryptoDirectionalStrategyCompiler(
         PortfolioSnapshot portfolio,
         AccountCapabilities capabilities,
         long nowMonotonicTicks,
+        TradedAssetClass assetClass,
         string strategyFamily,
         StrategyDefinitionContract definition,
         Span<TradeCandidate> destination)
@@ -54,7 +57,7 @@ public sealed class CryptoDirectionalStrategyCompiler(
         ArgumentNullException.ThrowIfNull(definition);
         if (!definition.IsValid()) return 0;
         int count = Compile(
-            forecasts, market, portfolio, capabilities, nowMonotonicTicks,
+            forecasts, market, portfolio, capabilities, nowMonotonicTicks, assetClass,
             strategyFamily, destination);
         if (count == 0) return 0;
         TradeCandidate compiled = destination[0];
@@ -77,11 +80,12 @@ public sealed class CryptoDirectionalStrategyCompiler(
         PortfolioSnapshot portfolio,
         AccountCapabilities capabilities,
         long nowMonotonicTicks,
+        TradedAssetClass assetClass,
         string strategyFamily,
         Span<TradeCandidate> destination)
     {
         if (destination.IsEmpty || string.IsNullOrWhiteSpace(strategyFamily) ||
-            !capabilities.PaperEnvironment || !IsPermitted(capabilities))
+            !capabilities.PaperEnvironment || !IsPermitted(capabilities, assetClass))
             return 0;
         if (forecasts.Direction is not DirectionalForecast direction ||
             !ForecastValidity.IsFresh(direction.Metadata, nowMonotonicTicks) ||
@@ -104,19 +108,19 @@ public sealed class CryptoDirectionalStrategyCompiler(
             ValidUntilMonotonicTicks: AddDuration(nowMonotonicTicks, candidateLifetime),
             GrossExpectedPnl: new Usd(targetNotional.Value * (decimal)(direction.ExpectedReturnBps / 10_000d)),
             EstimatedStressLoss: stressLoss,
-            Exposure: BookExposure(stressLoss),
+            Exposure: BookExposure(stressLoss, assetClass),
             ManagementPlan: new PositionManagementPlan(
                 maximumHoldingPeriod,
                 ExitOnThesisInvalidation: true,
                 ExitOnRegimeChange: true,
                 MaximumAdverseLoss: stressLoss,
                 MinimumDteToHold: null,
-                ExitPolicyVersion: ExitPolicyVersion));
+                ExitPolicyVersion: ExitPolicyVersionFor(assetClass)));
         return 1;
     }
 
     /// <summary>The permission this instrument actually requires from the venue.</summary>
-    private bool IsPermitted(AccountCapabilities capabilities) => assetClass switch
+    private static bool IsPermitted(AccountCapabilities capabilities, TradedAssetClass assetClass) => assetClass switch
     {
         TradedAssetClass.SpotCrypto => capabilities.CryptoTrading,
         TradedAssetClass.UsEquity => capabilities.EquityTrading,
@@ -132,7 +136,7 @@ public sealed class CryptoDirectionalStrategyCompiler(
     /// equity booked as crypto leaves the equity limit unused and consumes a crypto limit against
     /// exposure the portfolio does not have.
     /// </summary>
-    private EconomicExposure BookExposure(Usd stressLoss)
+    private EconomicExposure BookExposure(Usd stressLoss, TradedAssetClass assetClass)
     {
         double notional = (double)targetNotional.Value;
         double equityBeta = assetClass is TradedAssetClass.SpotCrypto ? 0d : notional;
@@ -143,9 +147,10 @@ public sealed class CryptoDirectionalStrategyCompiler(
             stressLoss, new Usd(targetNotional.Value * 0.08m), 0);
     }
 
-    private string ExitPolicyVersion => assetClass is TradedAssetClass.SpotCrypto
-        ? "crypto-long-managed-v1"
-        : "equity-long-managed-v1";
+    private static string ExitPolicyVersionFor(TradedAssetClass assetClass) =>
+        assetClass is TradedAssetClass.SpotCrypto
+            ? "crypto-long-managed-v1"
+            : "equity-long-managed-v1";
 
     private static long AddDuration(long now, TimeSpan duration)
     {

@@ -59,8 +59,15 @@ builder.Services.AddSingleton<CryptoDiagnosticExecutionService>();
 builder.Services.AddSingleton<DiagnosticExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<DiagnosticExecutionRecoveryService>());
-builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.FromEnvironment(
+// The lane set. One per asset class: crypto and US equities are different instruments with
+// different costs, sessions, and sensible holding periods, and a single lane would have to average
+// all of that into one setting.
+builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.AllLanes(
     services.GetRequiredService<PaperTradingOptions>()));
+// The first lane, for the parts of the graph that are configured once for the whole process --
+// order-notional-derived risk limits and the compiler's default sizing.
+builder.Services.AddSingleton(services =>
+    services.GetRequiredService<IReadOnlyList<AutonomousPaperTradingOptions>>()[0]);
 builder.Services.AddSingleton(services =>
 {
     string configured = Environment.GetEnvironmentVariable("QUANTDESK_MLEG_STORE_PATH")
@@ -115,15 +122,10 @@ builder.Services.AddSingleton(services =>
     // The lane's own instrument decides which permission is required and which beta the position is
     // booked against. Assuming crypto meant an equity lane asked the venue for a permission it does
     // not need and reported its exposure to the risk governor under the wrong factor entirely.
-    TradedAssetClass assetClass =
-        services.GetRequiredService<OpportunityRouter>()
-            .TryRoute(configured.Symbol, out OpportunityRoute? route, out _) && route is not null
-            ? route.AssetClass
-            : TradedAssetClass.SpotCrypto;
-
+    // No asset class here: the compiler is told per call, from the route of the instrument being
+    // compiled. Holding it on the instance was correct only while one lane traded one venue.
     return new CryptoDirectionalStrategyCompiler(
-        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration,
-        assetClass);
+        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration);
 });
 builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
 builder.Services.AddSingleton<IRealisedCostSource>(services =>
@@ -148,13 +150,60 @@ builder.Services.AddSingleton(services => new RiskGovernor(
         services.GetRequiredService<AutonomousPaperTradingOptions>().OrderNotional)));
 builder.Services.AddSingleton<ExitEngine>();
 builder.Services.AddSingleton<AutonomousDecisionPipeline>();
+
+// Runs every configured lane. Registered as a single hosted service that owns them all rather than
+// one registration per lane, because the lane set is only known once configuration is read.
+static AutonomousLaneHost BuildLanes(IServiceProvider services) => new(
+    [.. services.GetRequiredService<IReadOnlyList<AutonomousPaperTradingOptions>>()
+        .Select(options => BuildLane(services, options))]);
+
+static AutonomousPaperTradingService BuildLane(
+    IServiceProvider services, AutonomousPaperTradingOptions options)
+{
+    // Its own compiler and pipeline: the compiler carries this lane's order size and holding
+    // period, so sharing one would silently give the equity lane crypto's sizing.
+    var compiler = new CryptoDirectionalStrategyCompiler(
+        new Usd(options.OrderNotional), 0.05, TimeSpan.FromMinutes(5), options.HoldDuration);
+    var pipeline = new AutonomousDecisionPipeline(
+        services.GetRequiredService<MarketStateStore>(),
+        services.GetRequiredService<ExpertCommittee>(),
+        compiler,
+        services.GetRequiredService<AssetClassPricing>(),
+        services.GetRequiredService<ActionabilityGate>(),
+        services.GetRequiredService<RiskGovernor>(),
+        services.GetRequiredService<IRuntimeClock>(),
+        services.GetRequiredService<ILogger<AutonomousDecisionPipeline>>());
+
+    return new AutonomousPaperTradingService(
+        services.GetRequiredService<IBrokerExecutionGateway>(),
+        services.GetRequiredService<IInstrumentSymbolResolver>(),
+        services.GetRequiredService<IRealisedCostSource>(),
+        services.GetRequiredService<SpotExecutionStore>(),
+        services.GetRequiredService<QuantDesk.Alpaca.MarketData.AlpacaMarketClock>(),
+        services.GetRequiredService<IMarketEvidenceProvider>(),
+        services.GetRequiredService<BrokerExposureAttributor>(),
+        services.GetRequiredService<OpportunityRouter>(),
+        services.GetRequiredService<OptionExecutionCoordinator>(),
+        services.GetRequiredService<SpotExecutionLifecycle>(),
+        services.GetRequiredService<IAlpacaCapabilityProbe>(),
+        pipeline,
+        services.GetRequiredService<ResearchArtifactState>(),
+        options,
+        services.GetRequiredService<RuntimeModeState>(),
+        services.GetRequiredService<AutonomousTradingState>(),
+        services.GetRequiredService<IRuntimeClock>(),
+        services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
+}
 builder.Services.AddSingleton<AutonomousTradingState>();
 // Registered as a singleton and then hosted from it, so /api/system/resume can ask for one
 // reconciliation pass on demand rather than waiting out the 30-second timer.
 builder.Services.AddSingleton<PaperRuntimePreflightService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<PaperRuntimePreflightService>());
-builder.Services.AddHostedService<AutonomousPaperTradingService>();
+// One running service per lane, each with its own compiler and pipeline so its order size and
+// holding period are its own. Everything below them -- the broker, the durable stores, attribution,
+// risk, and the per-symbol state -- is deliberately shared, because it is one account.
+builder.Services.AddHostedService(services => BuildLanes(services));
 builder.Services.AddHostedService<MarketDataRuntimeService>();
 builder.Services.AddHostedService<MicrostructureEvidenceCaptureService>();
 builder.Services.AddHostedService<CryptoQuoteCaptureService>();

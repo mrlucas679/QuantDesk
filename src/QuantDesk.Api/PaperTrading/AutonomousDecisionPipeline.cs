@@ -163,11 +163,12 @@ public sealed class AutonomousDecisionPipeline(
             ? compiler.Compile(
                 bundle, market, portfolio,
                 effectiveCapabilities,
-                nowTicks, verifiedStrategyFamily ?? DefaultStrategyFamily, candidates)
+                nowTicks, route.AssetClass, verifiedStrategyFamily ?? DefaultStrategyFamily,
+                candidates)
             : compiler.Compile(
                 bundle, market, portfolio,
                 effectiveCapabilities,
-                nowTicks, verifiedStrategyFamily ?? DefaultStrategyFamily,
+                nowTicks, route.AssetClass, verifiedStrategyFamily ?? DefaultStrategyFamily,
                 verifiedStrategyDefinition, candidates);
         if (count == 0) return Reject("NoOpportunity", committeeDecision, market);
 

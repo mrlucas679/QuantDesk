@@ -223,7 +223,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         var resolver = new DictionaryInstrumentSymbolResolver(
             new Dictionary<int, string> { [0] = "BTC/USD", [1] = "SPY" });
         var options = new AutonomousPaperTradingOptions(
-            enabled, AutonomousTradingMode.ExperimentalPaper, OpportunityExpression.Spot,
+            "test", enabled, AutonomousTradingMode.ExperimentalPaper, OpportunityExpression.Spot,
             null, [symbol], notional, TimeSpan.FromMinutes(15), TimeSpan.FromSeconds(30),
             TimeSpan.FromMinutes(5));
 

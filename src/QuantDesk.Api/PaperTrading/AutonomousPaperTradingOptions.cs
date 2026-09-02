@@ -17,6 +17,7 @@ public enum OpportunityExpression
 }
 
 public sealed record AutonomousPaperTradingOptions(
+    string LaneName,
     bool Enabled,
     AutonomousTradingMode Mode,
     OpportunityExpression Expression,
@@ -37,6 +38,70 @@ public sealed record AutonomousPaperTradingOptions(
     /// default.
     /// </summary>
     public string Symbol => Symbols[0];
+
+    /// <summary>
+    /// One lane per asset class, because they are not the same instrument.
+    ///
+    /// Crypto trades continuously and pays roughly 68 bps a round trip; US equities trade for six
+    /// and a half hours and pay about three. They want different notionals, different holding
+    /// periods, and different admission hurdles, and a single lane would have to average all of
+    /// that into one setting. Separate lanes also fail separately: an equity feed outage or a
+    /// closed session says nothing about whether crypto should keep trading.
+    /// </summary>
+    public static IReadOnlyList<AutonomousPaperTradingOptions> AllLanes(PaperTradingOptions trading)
+    {
+        var lanes = new List<AutonomousPaperTradingOptions>();
+
+        AutonomousPaperTradingOptions crypto = FromEnvironment(trading);
+        if (crypto.Enabled && crypto.Symbols.Count > 0) lanes.Add(crypto);
+
+        AutonomousPaperTradingOptions? equity = EquityLane(trading, crypto);
+        if (equity is not null) lanes.Add(equity);
+
+        // A disabled configuration still yields one lane, so the rest of the graph has options to
+        // resolve and the status endpoint has something to report.
+        return lanes.Count > 0 ? lanes : [crypto];
+    }
+
+    /// <summary>
+    /// The equity lane, or null when none is configured.
+    ///
+    /// It inherits the crypto lane's mode and authorization deliberately: both run under the same
+    /// experimental declaration, and letting them drift apart would mean one lane trading under a
+    /// registration the other had passed.
+    /// </summary>
+    private static AutonomousPaperTradingOptions? EquityLane(
+        PaperTradingOptions trading, AutonomousPaperTradingOptions crypto)
+    {
+        string[] symbols =
+        [
+            .. (Environment.GetEnvironmentVariable("QUANTDESK_AUTONOMOUS_EQUITY_SYMBOL") ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(item => item.ToUpperInvariant())
+                .Distinct(StringComparer.Ordinal),
+        ];
+        if (symbols.Length == 0 || !crypto.Enabled) return null;
+
+        foreach (string symbol in symbols)
+        {
+            if (!trading.Symbols.Values.Contains(symbol, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"QUANTDESK_AUTONOMOUS_EQUITY_SYMBOL '{symbol}' must be present in QUANTDESK_SYMBOLS.");
+        }
+
+        decimal notional = ParsePositiveDecimal("QUANTDESK_AUTONOMOUS_EQUITY_ORDER_NOTIONAL", crypto.OrderNotional);
+        if (notional > trading.MaximumOrderNotional)
+            throw new InvalidOperationException("Equity order notional exceeds the configured paper-order limit.");
+        int holdingHours = ParsePositiveInteger("QUANTDESK_AUTONOMOUS_EQUITY_MAX_HOLDING_HOURS", 2);
+
+        ExperimentalPaperAuthorization? authorization = crypto.Mode == AutonomousTradingMode.ExperimentalPaper
+            ? ReadExperimentalAuthorization(symbols)
+            : null;
+
+        return new(
+            "equity", true, crypto.Mode, OpportunityExpression.Spot, authorization, symbols,
+            notional, TimeSpan.FromHours(holdingHours), crypto.FillTimeout, crypto.CycleInterval);
+    }
 
     public static AutonomousPaperTradingOptions FromEnvironment(PaperTradingOptions trading)
     {
@@ -83,6 +148,7 @@ public sealed record AutonomousPaperTradingOptions(
             : null;
 
         return new(
+            "crypto",
             enabled,
             mode,
             ParseExpression(),

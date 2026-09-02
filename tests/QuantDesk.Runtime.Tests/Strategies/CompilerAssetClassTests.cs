@@ -82,12 +82,12 @@ public sealed class CompilerAssetClassTests
             0, 1, new DirectionalForecast(metadata, 50, 0.01, up, neutral, down, 0.8));
 
         var compiler = new CryptoDirectionalStrategyCompiler(
-            new Usd(1_000), 0.02, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(60), assetClass);
+            new Usd(1_000), 0.02, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(60));
 
         TradeCandidate[] destination = new TradeCandidate[1];
         int written = compiler.Compile(
             bundle, FinancialTestData.HealthyMarket(), FinancialTestData.Portfolio(),
-            capabilities, now, "directional-v1", destination);
+            capabilities, now, assetClass, "directional-v1", destination);
         candidate = destination[0];
         return written;
     }
