@@ -322,7 +322,13 @@ builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     services.GetRequiredService<IHoldInterrupt>(),
     // Supplies the closing decision price when an execution reconciles flat, so the lane can
     // measure what its own round trip cost instead of depending on another lane to do it.
-    services.GetRequiredService<IHeldPositionMarker>()));
+    services.GetRequiredService<IHeldPositionMarker>(),
+    // Read at submission, not at reservation. A reservation is permission to act on a decision,
+    // not permission to outlive it: a strategy stood down while the entry waited must not submit.
+    symbol => services.GetRequiredService<OpportunityRouter>()
+            .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
+        ? [.. SignalStrategies.Tradable(route.AssetClass).Select(strategy => strategy.Id)]
+        : []));
 builder.Services.AddHostedService<RealisedCostPublisherService>();
 builder.Services.AddSingleton<SpotExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>

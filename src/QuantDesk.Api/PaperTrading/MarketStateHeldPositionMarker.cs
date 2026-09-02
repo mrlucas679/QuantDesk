@@ -28,4 +28,16 @@ public sealed class MarketStateHeldPositionMarker(
 
         return (decimal)snapshot.Mid;
     }
+
+    public decimal? CurrentRelativeSpread(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol)) return null;
+        if (!symbols.TryResolveBySymbol(symbol, out int slot)) return null;
+
+        InstrumentSnapshot snapshot = market.Snapshot(slot);
+        if (snapshot.QuoteQuality != DataQuality.Healthy) return null;
+        if (snapshot.Bid <= 0d || snapshot.Ask <= 0d) return null;
+
+        return (decimal)snapshot.RelativeSpread;
+    }
 }

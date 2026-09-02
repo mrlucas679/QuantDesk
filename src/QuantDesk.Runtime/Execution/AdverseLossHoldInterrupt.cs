@@ -4,6 +4,18 @@ namespace QuantDesk.Runtime.Execution;
 public interface IHeldPositionMarker
 {
     decimal? CurrentMid(string symbol);
+
+    /// <summary>
+    /// The current quoted spread as a fraction of the mid, or null when there is no healthy quote.
+    ///
+    /// Separate from the mid because the two answer different questions. A stop wants to know where
+    /// the position is marked; an execution fence wants to know what crossing would cost right now,
+    /// which is the term that moves most between a decision and the order that follows it.
+    ///
+    /// Defaulted to null so an implementation that has no view of the book -- a test stub, a
+    /// snapshot source that carries only a price -- says so rather than inventing a tight spread.
+    /// </summary>
+    decimal? CurrentRelativeSpread(string symbol) => null;
 }
 
 /// <summary>

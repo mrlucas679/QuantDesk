@@ -21,7 +21,8 @@ public sealed class SpotExecutionLifecycle(
     IRuntimeClock clock,
     TimeSpan brokerSubmitTimeout,
     IHoldInterrupt? holdInterrupt = null,
-    IHeldPositionMarker? referencePrices = null)
+    IHeldPositionMarker? referencePrices = null,
+    Func<string, IReadOnlyList<string>>? tradableStrategies = null)
 {
     /// <summary>
     /// The most of an entry the venue may take as an in-kind fee.
@@ -56,6 +57,15 @@ public sealed class SpotExecutionLifecycle(
     /// against the price the decision was actually made at.
     /// </summary>
     private const decimal MaximumAdverseEntryMoveBps = 30m;
+
+    /// <summary>
+    /// The widest book an entry may cross into, in basis points of the mid.
+    ///
+    /// Fifty. The spread is paid on both legs, so a fifty basis point book costs a full round trip
+    /// on its own before the venue's fee is counted -- at which point the trade is paying for the
+    /// privilege of expressing a view rather than expressing it.
+    /// </summary>
+    private const decimal MaximumEntrySpreadBps = 50m;
 
 
     /// <summary>
@@ -167,12 +177,12 @@ public sealed class SpotExecutionLifecycle(
         // 62% of the day's loss was adverse price movement, and some of that is buying after the
         // move that made the signal has already happened. An entry whose price has run away before
         // the order is sent is not the opportunity that was approved.
-        if (EntryPriceHasRunAway(record) is { } moved)
+        if (EntryFenceRefusal(record) is { } refusal)
         {
             SpotExecutionRecord fenced = record with
             {
                 State = SpotExecutionState.Failed,
-                FailureReason = $"ENTRY_FENCE_ADVERSE_MOVE:{moved:0.0}bps",
+                FailureReason = refusal,
             };
             store.Update(fenced);
             return fenced;
@@ -284,14 +294,48 @@ public sealed class SpotExecutionLifecycle(
     /// during a feed outage rather than protect it from one, and the reservation would have to be
     /// released and retaken every cycle until the feed returned.
     /// </summary>
-    private decimal? EntryPriceHasRunAway(SpotExecutionRecord record)
+    private string? EntryFenceRefusal(SpotExecutionRecord record)
     {
+        // Section 13.3 lists seven conditions that invalidate an approved candidate. Only expiry
+        // was implemented; these are the three that can be answered from what this record and the
+        // live quote already carry, and they are the three that were live today.
+
+        // The strategy was stood down while this entry waited.
+        //
+        // Not hypothetical: this afternoon every rule in both books became known to lose against
+        // the venue's measured cost, and a reservation taken minutes earlier would have gone on to
+        // submit under a rule the system had just disqualified. A reservation is permission to act
+        // on a decision, not permission to outlive it.
+        if (tradableStrategies is not null &&
+            !tradableStrategies(record.Symbol).Contains(record.StrategyId, StringComparer.Ordinal))
+        {
+            return $"ENTRY_FENCE_STRATEGY_STOOD_DOWN:{record.StrategyId}";
+        }
+
         if (record.EntryReferencePrice is not { } decided || decided <= 0m) return null;
+
+        // No healthy quote is not a refusal. Declining on absent data would stop the lane during a
+        // feed outage rather than protect it from one, and the reservation would be released and
+        // retaken every cycle until the feed returned.
         if (referencePrices?.CurrentMid(record.Symbol) is not { } now || now <= 0m) return null;
 
         // Long-only: a rise above the decision price is the move against the entry.
         decimal movedBps = (now - decided) / decided * 10_000m;
-        return movedBps > MaximumAdverseEntryMoveBps ? movedBps : null;
+        if (movedBps > MaximumAdverseEntryMoveBps)
+            return $"ENTRY_FENCE_ADVERSE_MOVE:{movedBps:0.0}bps";
+
+        // The book widened after the decision.
+        //
+        // Spread is the cost term that moves most between deciding and submitting, and it is paid
+        // twice. A candidate approved on a tight book and submitted into a wide one is paying for
+        // an edge that was priced against a different market.
+        if (referencePrices.CurrentRelativeSpread(record.Symbol) is { } spread &&
+            spread * 10_000m > MaximumEntrySpreadBps)
+        {
+            return $"ENTRY_FENCE_SPREAD_WIDENED:{spread * 10_000m:0.0}bps";
+        }
+
+        return null;
     }
 
     /// <summary>Projects a spot record onto the view every early-exit rule reads.</summary>

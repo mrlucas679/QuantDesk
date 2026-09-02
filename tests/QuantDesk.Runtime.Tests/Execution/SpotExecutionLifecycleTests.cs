@@ -635,6 +635,92 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         Assert.NotEqual(SpotExecutionState.Failed, submitted.State);
     }
 
+    [Fact]
+    public async Task AnEntryWhoseStrategyWasStoodDownWhileItWaitedIsRefused()
+    {
+        // Not hypothetical. This afternoon every rule in both books became known to lose against
+        // the venue's measured cost, and a reservation taken minutes earlier would have gone on to
+        // submit under a rule the system had just disqualified. A reservation is permission to act
+        // on a decision, not permission to outlive it.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(
+            broker,
+            referencePrices: new StubMarker(100m),
+            tradable: _ => ["some.other.rule.v1"]);
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord fenced = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Failed, fenced.State);
+        Assert.StartsWith("ENTRY_FENCE_STRATEGY_STOOD_DOWN", fenced.FailureReason);
+        Assert.Null(broker.Order);
+    }
+
+    [Fact]
+    public async Task AnEntryWhoseStrategyIsStillTradableProceeds()
+    {
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(
+            broker,
+            referencePrices: new StubMarker(100m),
+            tradable: _ => ["crypto-long-momentum-v1"]);
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord submitted = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Failed, submitted.State);
+    }
+
+    [Fact]
+    public async Task AnEntryIntoABookThatWidenedAfterTheDecisionIsRefused()
+    {
+        // Spread is the cost term that moves most between deciding and submitting, and it is paid
+        // on both legs. A sixty basis point book costs more than a full round trip on its own.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(
+            broker, referencePrices: new SpreadMarker(mid: 100m, relativeSpread: 0.0060m));
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord fenced = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Failed, fenced.State);
+        Assert.StartsWith("ENTRY_FENCE_SPREAD_WIDENED", fenced.FailureReason);
+        Assert.Null(broker.Order);
+    }
+
+    [Fact]
+    public async Task AnEntryIntoATightBookProceeds()
+    {
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(
+            broker, referencePrices: new SpreadMarker(mid: 100m, relativeSpread: 0.0005m));
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m));
+
+        SpotExecutionRecord submitted = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Failed, submitted.State);
+    }
+
+    /// <summary>A marker that knows the book as well as the price.</summary>
+    private sealed class SpreadMarker(decimal? mid, decimal? relativeSpread) : IHeldPositionMarker
+    {
+        public decimal? CurrentMid(string symbol) => mid;
+
+        public decimal? CurrentRelativeSpread(string symbol) => relativeSpread;
+    }
+
     private sealed class StubMarker(decimal? mid) : IHeldPositionMarker
     {
         public decimal? CurrentMid(string symbol) => mid;
@@ -836,8 +922,9 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
     private SpotExecutionLifecycle Build(
         FakeBroker broker,
         IHoldInterrupt? interrupt = null,
-        IHeldPositionMarker? referencePrices = null) =>
-        new(broker, Store(), _clock, TimeSpan.FromSeconds(30), interrupt, referencePrices);
+        IHeldPositionMarker? referencePrices = null,
+        Func<string, IReadOnlyList<string>>? tradable = null) =>
+        new(broker, Store(), _clock, TimeSpan.FromSeconds(30), interrupt, referencePrices, tradable);
 
     private static BrokerOrderSnapshot Filled(string clientOrderId, decimal quantity, decimal price) =>
         new("broker-1", clientOrderId, "filled", quantity, price);

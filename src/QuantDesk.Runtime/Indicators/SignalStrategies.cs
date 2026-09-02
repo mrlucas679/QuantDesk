@@ -304,6 +304,51 @@ public static class SignalStrategies
     /// failure of the lane. On equities, where a round trip costs about eight basis points instead
     /// of sixty-eight, several families sit close enough to breakeven to remain worth observing.
     /// </summary>
+    /// <summary>
+    /// The rules an exploration budget may buy information about, least-bad first.
+    ///
+    /// What this is not
+    /// ----------------
+    /// It is not a relaxation of IsKnownToLose. That test still says exactly what it said before,
+    /// and every rule here still fails it: at the sixty basis points the venue charges, nothing in
+    /// either book has a positive expected edge. The 2026-09-02 AVAX round trip put a number on
+    /// what that costs -- the price moved 46.6 bps in the rule's favour and the account still lost
+    /// 69 cents, because the round trip cost 81.2.
+    ///
+    /// What it is
+    /// ----------
+    /// A deliberate decision to pay for evidence. Section 12.2 calls for an exploration bonus for
+    /// under-tested but eligible rules, and section 20.4 gives it a rung of its own between shadow
+    /// and exploitation. A desk that only ever trades what it has already proven can never learn
+    /// anything new; one that trades everything learns expensively. The compromise is a bounded
+    /// budget, spent on the candidates that are closest to viable, with the expected loss stated in
+    /// advance rather than discovered afterwards.
+    ///
+    /// Ordered by measured gross edge, so the budget goes to the rules with the most to prove
+    /// rather than to whichever fires first. Stale rules are excluded: their figures describe a
+    /// different rule, so there is no sense in which they are "closest to viable".
+    /// </summary>
+    public static IReadOnlyList<SignalStrategy> Explorable(TradedAssetClass assetClass) =>
+    [
+        .. For(assetClass)
+            .Where(strategy => strategy.Qualification is not StrategyQualification.Stale)
+            .OrderByDescending(strategy => strategy.ResearchMeanGrossBps)
+            .ThenBy(strategy => strategy.Id, StringComparer.Ordinal),
+    ];
+
+    /// <summary>
+    /// What an exploration position is expected to cost, in basis points, as a positive number.
+    ///
+    /// Stated so that nothing downstream has to infer it. This is the price of the evidence, and a
+    /// budget that does not know its own price is not a budget.
+    /// </summary>
+    public static double ExpectedExplorationCostBps(
+        this SignalStrategy strategy, double venueRoundTripBps)
+    {
+        ArgumentNullException.ThrowIfNull(strategy);
+        return Math.Max(venueRoundTripBps - strategy.ResearchMeanGrossBps, 0d);
+    }
+
     public static IReadOnlyList<SignalStrategy> Tradable(TradedAssetClass assetClass) =>
     [
         .. For(assetClass).Where(strategy =>
