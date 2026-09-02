@@ -43,7 +43,8 @@ public sealed class AutonomousDecisionPipeline(
     ILogger<AutonomousDecisionPipeline> logger,
     Func<TradedAssetClass, IReadOnlyList<SignalStrategy>>? tradableStrategies = null,
     ShadowSignalLog? shadow = null,
-    TimeSpan shadowHoldingPeriod = default)
+    TimeSpan shadowHoldingPeriod = default,
+    IndicatorRegimeSource? regimes = null)
 {
     /// <summary>
     /// The strategies this pipeline may open a position with.
@@ -78,7 +79,8 @@ public sealed class AutonomousDecisionPipeline(
         OpportunityRoute route,
         IReadOnlyDictionary<string, int> openByMechanism,
         bool explorationBudgetAvailable,
-        out IReadOnlyList<string> unavailable)
+        out IReadOnlyList<string> unavailable,
+        int instrumentSlotForRegime = 0)
     {
         unavailable = [];
         // Session scoping is an asset-class property, not a setting. Crypto has no session to reset
@@ -115,6 +117,14 @@ public sealed class AutonomousDecisionPipeline(
             // because it has no evidence. Shadow is the rung of section 20.4's ladder that closes
             // that loop, and it costs nothing but a dictionary write.
             RecordShadowSignals(SignalStrategies.For(route.AssetClass), indicators, route, evidence);
+
+            // Classify the regime while the bars are in hand. The exit engine needs it on another
+            // thread and has no way to build an indicator set of its own.
+            regimes?.Observe(
+                route.Symbol, indicators, instrumentSlotForRegime,
+                clock.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L,
+                clock.MonotonicTimestamp,
+                sourceStateVersion: 0);
 
             return rotation.Select(available, indicators, openByMechanism, MechanismCap(available));
         }

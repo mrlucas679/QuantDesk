@@ -8,6 +8,7 @@ using QuantDesk.Api.PaperTrading;
 using QuantDesk.Api.Security;
 using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Risk;
@@ -86,6 +87,12 @@ builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
 // Shared across lanes on purpose: correlation is a property of the account, not of a lane.
 builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
+// The regime classifier, and the shared place its answer is written and read. Bounded by the
+// traded universe, which is fixed at startup.
+builder.Services.AddSingleton<MarketRegimeExpert>();
+builder.Services.AddSingleton<IndicatorRegimeSource>();
+builder.Services.AddSingleton<IRegimeSource>(services =>
+    services.GetRequiredService<IndicatorRegimeSource>());
 builder.Services.AddSingleton<ReturnSeriesCache>();
 // What every rule would have done, recorded without trading it. Shared across lanes because a
 // strategy's shadow record is a fact about the strategy, not about which lane happened to ask.
@@ -201,7 +208,8 @@ static AutonomousPaperTradingService BuildLane(
         assetClass => SignalStrategies.Tradable(
             assetClass, services.GetRequiredService<ShadowSignalLog>().Summarise()),
         services.GetRequiredService<ShadowSignalLog>(),
-        options.HoldDuration);
+        options.HoldDuration,
+        services.GetRequiredService<IndicatorRegimeSource>());
 
     return new AutonomousPaperTradingService(
         services.GetRequiredService<IBrokerExecutionGateway>(),
@@ -330,7 +338,11 @@ builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInter
             ? [.. SignalStrategies
                 .Tradable(route.AssetClass, services.GetRequiredService<ShadowSignalLog>().Summarise())
                 .Select(strategy => strategy.Id)]
-            : [])));
+            : []),
+    // The rule that had no input. ExitOnRegimeChange has been set on every candidate since the
+    // compiler was written and ExitEngine has implemented it throughout; the Regime family was
+    // declared and never emitted, so it was reading a number nothing computed.
+    new RegimeChangeHoldInterrupt(services.GetRequiredService<IRegimeSource>())));
 
 builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     services.GetRequiredService<IBrokerExecutionGateway>(),
@@ -523,6 +535,20 @@ app.MapGet("/api/diagnostics/{experimentId}", (
         return Results.Unauthorized();
     DiagnosticExecutionRecord? record = store.Find(experimentId);
     return record is null ? Results.NotFound() : Results.Ok(record);
+});
+app.MapGet("/api/research/regimes", (IndicatorRegimeSource regimes) =>
+{
+    // The context family, visible. Two exit rules were written against regime and could not be
+    // implemented while nothing emitted one; this is what they now read.
+    IReadOnlyDictionary<string, MarketRegime> current = regimes.Snapshot();
+    return Results.Ok(new
+    {
+        classified = current.Count,
+        basis = "deterministic baseline from volatility percentile and trend strength; no HMM fitted",
+        regimes = current
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => new { symbol = pair.Key, regime = pair.Value.ToString() }),
+    });
 });
 app.MapGet("/api/research/shadow", (ShadowSignalLog shadow) =>
 {
