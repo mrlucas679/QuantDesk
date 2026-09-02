@@ -427,8 +427,34 @@ public static class SignalStrategies
             strategy.Id is "trend.momentum-dual-horizon.v1" or "trend.ema-cross-12-48.v1"
                 or "trend.macd-histogram-flip.v1")];
 
-    public static IReadOnlyList<SignalStrategy> For(TradedAssetClass assetClass) =>
-        assetClass is TradedAssetClass.SpotCrypto ? ForCrypto : ForEquity;
+    public static IReadOnlyList<SignalStrategy> For(TradedAssetClass assetClass)
+    {
+        IReadOnlyList<SignalStrategy> book =
+            assetClass is TradedAssetClass.SpotCrypto ? ForCrypto : ForEquity;
+        if (Active.IsDefault) return book;
+
+        // A moved threshold makes a different rule wearing the same name and the same statistics.
+        // Marking it Stale is the same treatment given to a rule whose indicator definition changed:
+        // the figures on record describe something else, so they are not evidence about this.
+        IReadOnlySet<string> invalidated = Active.RulesInvalidatedBy();
+        return
+        [
+            .. book.Select(strategy => invalidated.Contains(strategy.Id)
+                ? strategy with { Qualification = StrategyQualification.Stale }
+                : strategy),
+        ];
+    }
+
+    /// <summary>
+    /// The thresholds the rules are currently reading.
+    ///
+    /// Resolved once from the environment. A rule whose threshold has been moved no longer matches
+    /// the figures recorded against its name, so <see cref="For"/> marks it Stale -- unmeasured
+    /// rather than unproven, and therefore not tradable until someone measures it again. That is
+    /// what makes a sweep safe: the knob turns, and the evidence stops claiming to describe the
+    /// result.
+    /// </summary>
+    public static StrategyThresholds Active { get; } = StrategyThresholds.FromEnvironment();
 
     // ------------------------------------------------------------------ rules
     // Each reads the bar at `i` and the one before it. A rule that needs a value the set has not
@@ -475,11 +501,11 @@ public static class SignalStrategies
 
     private static bool AdxFilteredTrend(IndicatorSet s, int i) =>
         s.IsReadyAt(i, s.Adx14, s.PlusDi, s.MinusDi, s.Ema48)
-        && s.Adx14[i] > 25 && s.PlusDi[i] > s.MinusDi[i] && s.Close[i] > s.Ema48[i];
+        && s.Adx14[i] > Active.AdxTrendFloor && s.PlusDi[i] > s.MinusDi[i] && s.Close[i] > s.Ema48[i];
 
     private static bool RsiOversold(IndicatorSet s, int i) =>
         i > 0 && s.IsReadyAt(i, s.Rsi14) && s.IsReadyAt(i - 1, s.Rsi14)
-        && s.Rsi14[i] > 30 && s.Rsi14[i - 1] <= 30;
+        && s.Rsi14[i] > Active.RsiOversoldLevel && s.Rsi14[i - 1] <= Active.RsiOversoldLevel;
 
     private static bool BollingerLowerTouch(IndicatorSet s, int i) =>
         i > 0 && s.IsReadyAt(i, s.BollingerLower) && s.IsReadyAt(i - 1, s.BollingerLower)
@@ -489,7 +515,7 @@ public static class SignalStrategies
         i > 0 && s.IsReadyAt(i, s.StochasticK, s.StochasticD)
         && s.IsReadyAt(i - 1, s.StochasticK, s.StochasticD)
         && s.StochasticK[i] > s.StochasticD[i] && s.StochasticK[i - 1] <= s.StochasticD[i - 1]
-        && s.StochasticK[i] < 30;
+        && s.StochasticK[i] < Active.StochasticOversoldCeiling;
 
     private static bool VwapReversion(IndicatorSet s, int i)
     {
@@ -497,7 +523,7 @@ public static class SignalStrategies
         double gap = s.Close[i] - s.Vwap48[i];
         // Measured in ATRs rather than raw price, so the same rule means the same thing on a
         // 60,000-dollar instrument and a 12-dollar one.
-        return gap < 0 && s.Atr14[i] > 0 && Math.Abs(gap) / s.Atr14[i] > 1.5;
+        return gap < 0 && s.Atr14[i] > 0 && Math.Abs(gap) / s.Atr14[i] > Active.VwapGapAtrs;
     }
 
     private static bool DonchianBreakout(IndicatorSet s, int i) =>
@@ -510,11 +536,11 @@ public static class SignalStrategies
 
     private static bool VolumeSurgeBreakout(IndicatorSet s, int i) =>
         s.IsReadyAt(i, s.DonchianHigh, s.VolumeZ48)
-        && s.Close[i] > s.DonchianHigh[i] && s.VolumeZ48[i] > 2.0;
+        && s.Close[i] > s.DonchianHigh[i] && s.VolumeZ48[i] > Active.VolumeSurgeDeviations;
 
     private static bool ObvConfirmedTrend(IndicatorSet s, int i) =>
         s.IsReadyAt(i, s.ObvSlope12, s.Ema48, s.Rsi14)
-        && s.ObvSlope12[i] > 0 && s.Close[i] > s.Ema48[i] && s.Rsi14[i] > 50;
+        && s.ObvSlope12[i] > 0 && s.Close[i] > s.Ema48[i] && s.Rsi14[i] > Active.RsiTrendFloor;
 
     private static bool AtrExpansionTrend(IndicatorSet s, int i)
     {
