@@ -70,7 +70,7 @@ public sealed class AutonomousDecisionPipeline(
     /// only honest answer there: an indicator seeded on too little history returns a number that
     /// looks valid and is wrong.
     /// </summary>
-    private StrategySelection? SelectStrategy(
+    private StrategyEvaluation SelectStrategy(
         DirectionalMarketEvidence evidence,
         OpportunityRoute route,
         IReadOnlyDictionary<string, int> openByMechanism)
@@ -93,7 +93,7 @@ public sealed class AutonomousDecisionPipeline(
             [.. SignalStrategies.ClosesOnly(route.AssetClass)
                 .Where(item => _tradable(route.AssetClass).Any(t => t.Id == item.Id))];
         return closesOnly.Count == 0
-            ? null
+            ? StrategyEvaluation.None
             : rotation.Select(closesOnly, CloseOnlySet(evidence), openByMechanism, MechanismCap(available));
     }
 
@@ -183,12 +183,21 @@ public sealed class AutonomousDecisionPipeline(
             // mean-reversion rule could only fire when prices were already rising, so buying a dip
             // required the dip not to have happened. Nine of thirteen strategies could never have
             // opened a position.
-            selection = SelectStrategy(evidence, route, openByMechanism);
+            StrategyEvaluation evaluation = SelectStrategy(evidence, route, openByMechanism);
+            selection = evaluation.Selection;
             if (selection is null)
             {
-                // No signal, or nothing left that is worth trading. The distinction matters to an
-                // operator: an asset class whose every strategy is measured to lose reports that
-                // rather than looking like a quiet market.
+                // No signal, nothing left worth trading, or nothing that could be asked. All three
+                // look identical from outside and mean entirely different things to an operator: a
+                // quiet market, an asset class whose every strategy is measured to lose, and a
+                // strategy book that threw. The last one used to be reported as the first, so a
+                // broken rule set would have read as patience.
+                if (evaluation.Faulted)
+                {
+                    return Reject(
+                        $"StrategyEvaluationFaulted:{evaluation.Faults[0].StrategyId}");
+                }
+
                 return Reject(_tradable(route.AssetClass).Count == 0
                     ? "AllStrategiesKnownToLose"
                     : "NoStrategySignal");

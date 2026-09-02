@@ -5,6 +5,39 @@ namespace QuantDesk.Runtime.Indicators;
 /// <param name="AlsoFired">Every other strategy that agreed, kept because agreement is evidence too.</param>
 public sealed record StrategySelection(SignalStrategy Strategy, IReadOnlyList<string> AlsoFired);
 
+/// <summary>A rule that threw instead of answering, and what it said on the way out.</summary>
+/// <param name="StrategyId">The rule that failed.</param>
+/// <param name="Reason">The exception's message, kept for the operator rather than for control flow.</param>
+public sealed record StrategyFault(string StrategyId, string Reason);
+
+/// <summary>How many times a rule has thrown, and what it said the last time.</summary>
+public readonly record struct StrategyFaultTally(int Count, string LastReason);
+
+/// <summary>
+/// One evaluation of the strategy book: what was chosen, and what could not answer.
+///
+/// Why this is not simply a nullable selection
+/// -------------------------------------------
+/// A rule that throws was being caught and skipped, which made it indistinguishable from a rule
+/// that looked at the bar and declined. Those are different facts. "Nothing fired" is a market
+/// observation; "nothing fired because every rule threw" is an outage, and a lane that reports the
+/// second as the first will sit quiet through a broken indicator set and call it patience.
+///
+/// So the evaluation carries its failures alongside its result, and a caller that finds no
+/// selection can tell which of the two happened.
+/// </summary>
+/// <param name="Selection">The chosen strategy, or null when none fired.</param>
+/// <param name="Faults">Rules that threw during this evaluation.</param>
+public sealed record StrategyEvaluation(
+    StrategySelection? Selection,
+    IReadOnlyList<StrategyFault> Faults)
+{
+    public static readonly StrategyEvaluation None = new(null, []);
+
+    /// <summary>True when nothing fired and at least one rule could not be asked.</summary>
+    public bool Faulted => Selection is null && Faults.Count > 0;
+}
+
 /// <summary>
 /// Picks which of the firing strategies gets credited with a trade.
 ///
@@ -32,12 +65,14 @@ public sealed class StrategyRotation
 {
     private readonly Dictionary<string, int> _tradesByStrategy = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _tradesByMechanism = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StrategyFaultTally> _faults = new(StringComparer.Ordinal);
     private readonly object _gate = new();
 
     /// <summary>
-    /// Evaluates every strategy at the last bar and selects one, or null when none fired.
+    /// Evaluates every strategy at the last bar and selects one, reporting any that could not
+    /// answer.
     /// </summary>
-    public StrategySelection? Select(
+    public StrategyEvaluation Select(
         IReadOnlyList<SignalStrategy> strategies,
         IndicatorSet indicators,
         IReadOnlyDictionary<string, int>? openByMechanism = null,
@@ -48,21 +83,26 @@ public sealed class StrategyRotation
 
         int last = indicators.Length - 1;
         List<SignalStrategy> fired = [];
+        List<StrategyFault> faults = [];
         foreach (SignalStrategy strategy in strategies)
         {
-            // A rule that throws on unusual data must not take the lane down with it, and must not
-            // be silently counted as having declined either -- it is excluded and the rest proceed.
+            // A rule that throws on unusual data must not take the lane down with it. It must not
+            // be counted as having declined either: swallowing the throw made a broken rule and a
+            // quiet one report the same thing, so the failure is recorded and returned to the
+            // caller, which is the distinction between FAILED and ABSTAIN that the rest of the
+            // system already keeps.
             try
             {
                 if (strategy.Fires(indicators, last)) fired.Add(strategy);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                continue;
+                faults.Add(new StrategyFault(strategy.Id, exception.Message));
+                RecordFault(strategy.Id, exception.Message);
             }
         }
 
-        if (fired.Count == 0) return null;
+        if (fired.Count == 0) return new StrategyEvaluation(null, faults);
 
         // A mechanism that already holds its share stands down, even though it fired.
         //
@@ -88,7 +128,7 @@ public sealed class StrategyRotation
 
             // Nothing is forced through when every firing mechanism is full. Abstaining is the
             // honest outcome: the capacity genuinely is spoken for.
-            if (withCapacity.Count == 0) return null;
+            if (withCapacity.Count == 0) return new StrategyEvaluation(null, faults);
             fired = withCapacity;
         }
 
@@ -101,9 +141,12 @@ public sealed class StrategyRotation
                 .ThenBy(item => item.Id, StringComparer.Ordinal)
                 .First();
 
-            return new StrategySelection(
-                chosen,
-                [.. fired.Where(item => item.Id != chosen.Id).Select(item => item.Id).Order(StringComparer.Ordinal)]);
+            return new StrategyEvaluation(
+                new StrategySelection(
+                    chosen,
+                    [.. fired.Where(item => item.Id != chosen.Id).Select(item => item.Id)
+                        .Order(StringComparer.Ordinal)]),
+                faults);
         }
     }
 
@@ -169,5 +212,27 @@ public sealed class StrategyRotation
     public IReadOnlyDictionary<string, int> TradeCounts()
     {
         lock (_gate) return new Dictionary<string, int>(_tradesByStrategy, StringComparer.Ordinal);
+    }
+
+    private void RecordFault(string strategyId, string reason)
+    {
+        lock (_gate)
+        {
+            int previous = _faults.TryGetValue(strategyId, out StrategyFaultTally tally) ? tally.Count : 0;
+            _faults[strategyId] = new StrategyFaultTally(previous + 1, reason);
+        }
+    }
+
+    /// <summary>
+    /// How often each rule has thrown, and what it last said.
+    ///
+    /// A single throw on an odd bar is not interesting; the same rule throwing on every evaluation
+    /// is a rule that has left the book without anyone deciding to remove it. Only a running tally
+    /// distinguishes the two, which is why the count is kept here rather than only returned per
+    /// evaluation.
+    /// </summary>
+    public IReadOnlyDictionary<string, StrategyFaultTally> FaultCounts()
+    {
+        lock (_gate) return new Dictionary<string, StrategyFaultTally>(_faults, StringComparer.Ordinal);
     }
 }

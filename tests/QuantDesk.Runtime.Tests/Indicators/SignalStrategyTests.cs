@@ -135,7 +135,7 @@ public sealed class StrategyRotationTests
         rotation.RecordTrade(busy);
         rotation.RecordTrade(busy);
 
-        StrategySelection? selection = rotation.Select([busy, quiet], Set());
+        StrategySelection? selection = rotation.Select([busy, quiet], Set()).Selection;
 
         Assert.Equal("b.quiet.v1", selection!.Strategy.Id);
     }
@@ -150,7 +150,7 @@ public sealed class StrategyRotationTests
         SignalStrategy volume = Always("b.volume.v1", "volume");
         rotation.RecordTrade(Always("other.trend.v1", "trend"));
 
-        Assert.Equal("b.volume.v1", rotation.Select([trend, volume], Set())!.Strategy.Id);
+        Assert.Equal("b.volume.v1", rotation.Select([trend, volume], Set()).Selection!.Strategy.Id);
     }
 
     [Fact]
@@ -167,7 +167,7 @@ public sealed class StrategyRotationTests
         rotation.RecordTrade(proven);
         rotation.RecordTrade(proven);
 
-        Assert.Equal("b.proven.v1", rotation.Select([candidate, proven], Set())!.Strategy.Id);
+        Assert.Equal("b.proven.v1", rotation.Select([candidate, proven], Set()).Selection!.Strategy.Id);
     }
 
     [Fact]
@@ -176,7 +176,7 @@ public sealed class StrategyRotationTests
         var rotation = new StrategyRotation();
 
         StrategySelection? selection = rotation.Select(
-            [Always("a.v1", "trend"), Always("b.v1", "reversion"), Never("c.v1")], Set());
+            [Always("a.v1", "trend"), Always("b.v1", "reversion"), Never("c.v1")], Set()).Selection;
 
         Assert.Equal("a.v1", selection!.Strategy.Id);
         Assert.Equal(["b.v1"], selection.AlsoFired);
@@ -185,7 +185,7 @@ public sealed class StrategyRotationTests
     [Fact]
     public void NothingFiringSelectsNothing()
     {
-        Assert.Null(new StrategyRotation().Select([Never("a.v1")], Set()));
+        Assert.Null(new StrategyRotation().Select([Never("a.v1")], Set()).Selection);
     }
 
     [Fact]
@@ -199,7 +199,66 @@ public sealed class StrategyRotationTests
             Fires = (_, _) => throw new InvalidOperationException("bad rule"),
         };
 
-        Assert.Equal("b.ok.v1", rotation.Select([broken, Always("b.ok.v1", "trend")], Set())!.Strategy.Id);
+        StrategyEvaluation evaluation = rotation.Select([broken, Always("b.ok.v1", "trend")], Set());
+
+        Assert.Equal("b.ok.v1", evaluation.Selection!.Strategy.Id);
+
+        // The throw is reported rather than swallowed. It was being caught and skipped, which made
+        // a broken rule and a quiet one report the same thing.
+        StrategyFault fault = Assert.Single(evaluation.Faults);
+        Assert.Equal("a.broken.v1", fault.StrategyId);
+        Assert.Equal("bad rule", fault.Reason);
+    }
+
+    [Fact]
+    public void AStrategyBookThatEveryRuleThrowsInIsAnOutageNotAQuietMarket()
+    {
+        // The distinction the handbook insists on: FAILED and ABSTAIN are different, because
+        // missing evaluation must not masquerade as agreement to stand down. Before this, a lane
+        // whose entire rule set threw looked exactly like a lane watching a market with nothing
+        // in it, and would have sat quiet indefinitely reporting patience.
+        var rotation = new StrategyRotation();
+        SignalStrategy broken = Always("a.broken.v1", "trend") with
+        {
+            Fires = (_, _) => throw new InvalidOperationException("bad rule"),
+        };
+
+        StrategyEvaluation evaluation = rotation.Select([broken], Set());
+
+        Assert.Null(evaluation.Selection);
+        Assert.True(evaluation.Faulted);
+        Assert.Single(evaluation.Faults);
+    }
+
+    [Fact]
+    public void AQuietMarketIsNotReportedAsAFault()
+    {
+        var rotation = new StrategyRotation();
+
+        StrategyEvaluation evaluation = rotation.Select([Never("a.quiet.v1")], Set());
+
+        Assert.Null(evaluation.Selection);
+        Assert.False(evaluation.Faulted);
+        Assert.Empty(evaluation.Faults);
+    }
+
+    [Fact]
+    public void ARuleThatKeepsThrowingAccumulatesACountSoItStopsLookingLikeOneBadBar()
+    {
+        // One throw on an odd bar is not interesting. The same rule throwing on every evaluation is
+        // a rule that has left the book without anyone deciding to remove it, and only a running
+        // tally tells the two apart.
+        var rotation = new StrategyRotation();
+        SignalStrategy broken = Always("a.broken.v1", "trend") with
+        {
+            Fires = (_, _) => throw new InvalidOperationException("bad rule"),
+        };
+
+        for (int i = 0; i < 3; i++) rotation.Select([broken], Set());
+
+        StrategyFaultTally tally = rotation.FaultCounts()["a.broken.v1"];
+        Assert.Equal(3, tally.Count);
+        Assert.Equal("bad rule", tally.LastReason);
     }
 
     [Fact]
@@ -275,7 +334,7 @@ public sealed class StrategyRotationRestoreTests
 
         rotation.RestoreFrom(["a.busy.v1", "a.busy.v1", "a.busy.v1"], [busy, quiet]);
 
-        Assert.Equal("b.quiet.v1", rotation.Select([busy, quiet], Bars())!.Strategy.Id);
+        Assert.Equal("b.quiet.v1", rotation.Select([busy, quiet], Bars()).Selection!.Strategy.Id);
     }
 
     [Fact]
@@ -346,7 +405,7 @@ public sealed class RotationCountsOnlyRealTradesTests
         // Only executions that actually filled are restored -- the refused ones never reach here.
         rotation.RestoreFrom(["b.traded.v1", "b.traded.v1"], [refused, traded]);
 
-        Assert.Equal("a.refused.v1", rotation.Select([refused, traded], Bars())!.Strategy.Id);
+        Assert.Equal("a.refused.v1", rotation.Select([refused, traded], Bars()).Selection!.Strategy.Id);
         Assert.False(rotation.TradeCounts().ContainsKey("a.refused.v1"));
     }
 
@@ -375,7 +434,8 @@ public sealed class MechanismCapacityTests
         SignalStrategy reversion = Strategy("b.reversion.v1", "reversion");
         Dictionary<string, int> open = new(StringComparer.Ordinal) { ["trend"] = 4 };
 
-        StrategySelection? selection = rotation.Select([trend, reversion], Bars(), open, maximumPerMechanism: 4);
+        StrategySelection? selection =
+            rotation.Select([trend, reversion], Bars(), open, maximumPerMechanism: 4).Selection;
 
         Assert.Equal("b.reversion.v1", selection!.Strategy.Id);
     }
@@ -390,7 +450,7 @@ public sealed class MechanismCapacityTests
         Dictionary<string, int> open = new(StringComparer.Ordinal) { ["trend"] = 1 };
 
         Assert.Equal("b.quiet.v1",
-            rotation.Select([busy, quiet], Bars(), open, maximumPerMechanism: 4)!.Strategy.Id);
+            rotation.Select([busy, quiet], Bars(), open, maximumPerMechanism: 4).Selection!.Strategy.Id);
     }
 
     [Fact]
@@ -402,7 +462,7 @@ public sealed class MechanismCapacityTests
         Dictionary<string, int> open = new(StringComparer.Ordinal) { ["trend"] = 4 };
 
         Assert.Null(rotation.Select(
-            [Strategy("a.trend.v1", "trend")], Bars(), open, maximumPerMechanism: 4));
+            [Strategy("a.trend.v1", "trend")], Bars(), open, maximumPerMechanism: 4).Selection);
     }
 
     [Fact]
@@ -412,7 +472,7 @@ public sealed class MechanismCapacityTests
         // given a different allocation policy than it asked for.
         var rotation = new StrategyRotation();
 
-        Assert.NotNull(rotation.Select([Strategy("a.trend.v1", "trend")], Bars()));
+        Assert.NotNull(rotation.Select([Strategy("a.trend.v1", "trend")], Bars()).Selection);
     }
 
     private static SignalStrategy Strategy(string id, string mechanism) =>
