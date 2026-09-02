@@ -146,6 +146,22 @@ public sealed record SpotExecutionRecord(
     public IReadOnlyList<PositionMark> PositionMarksAfter { get; init; } = [];
 
     /// <summary>
+    /// True when this entry was admitted by the exploration budget rather than by having an edge.
+    ///
+    /// Recorded because two safety mechanisms were cancelling each other out without either being
+    /// wrong on its own. The budget deliberately admits a rule the evidence has stood down, to buy
+    /// information at a price fixed in advance; the entry fence deliberately refuses a stood-down
+    /// rule at submission, because a reservation must not outlive the decision behind it. Together
+    /// they produced an exploration entry that reserved, reached the fence, and died -- so the
+    /// budget could never actually buy anything, and the only visible trace was a Failed record
+    /// saying the strategy was stood down, which was true and beside the point.
+    ///
+    /// The fence still applies every other check to these. Exploration buys evidence about a rule;
+    /// it is not permission to trade into a price that has run away or a book that has widened.
+    /// </summary>
+    public bool AdmittedAsExploration { get; init; }
+
+    /// <summary>
     /// What the round trip actually did to the account.
     ///
     /// The only figure here that owes nothing to a fee model. Alpaca charges a "Coin Pair

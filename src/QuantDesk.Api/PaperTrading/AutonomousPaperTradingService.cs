@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Risk;
 using System.Diagnostics;
 using QuantDesk.Alpaca.Capabilities;
 using QuantDesk.Domain.Capabilities;
@@ -460,7 +461,9 @@ public sealed class AutonomousPaperTradingService(
                 entryReferencePrice: referencePrice,
                 accountEquityBefore: account?.Equity,
                 profitTarget: profitTarget,
-                positionMarksBefore: marksBefore))
+                positionMarksBefore: marksBefore,
+                admittedAsExploration:
+                    decision.Risk?.Reason == RiskReason.ApprovedAsExploration))
         {
             state.UpdateSymbol(symbol, "abstained", symbol, reason: "ReservationRejected");
             return;

@@ -86,7 +86,8 @@ public sealed class SpotExecutionLifecycle(
         decimal? entryReferencePrice = null,
         decimal? accountEquityBefore = null,
         decimal profitTarget = 0m,
-        IReadOnlyList<PositionMark>? positionMarksBefore = null)
+        IReadOnlyList<PositionMark>? positionMarksBefore = null,
+        bool admittedAsExploration = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -126,7 +127,8 @@ public sealed class SpotExecutionLifecycle(
             EntryReferencePrice = entryReferencePrice,
             AccountEquityBefore = accountEquityBefore,
             ProfitTarget = profitTarget,
-            PositionMarksBefore = positionMarksBefore ?? []
+            PositionMarksBefore = positionMarksBefore ?? [],
+            AdmittedAsExploration = admittedAsExploration
         });
     }
 
@@ -308,7 +310,12 @@ public sealed class SpotExecutionLifecycle(
         // the venue's measured cost, and a reservation taken minutes earlier would have gone on to
         // submit under a rule the system had just disqualified. A reservation is permission to act
         // on a decision, not permission to outlive it.
-        if (tradableStrategies is not null &&
+        // An exploration entry is admitted knowing the rule is stood down -- that is the whole
+        // point of the budget -- so this check would refuse exactly the entries it exists to buy.
+        // Every other check below still applies: exploration pays for evidence about a rule, not
+        // for the right to trade into a price that has run away or a book that has widened.
+        if (!record.AdmittedAsExploration &&
+            tradableStrategies is not null &&
             !tradableStrategies(record.Symbol).Contains(record.StrategyId, StringComparer.Ordinal))
         {
             return $"ENTRY_FENCE_STRATEGY_STOOD_DOWN:{record.StrategyId}";

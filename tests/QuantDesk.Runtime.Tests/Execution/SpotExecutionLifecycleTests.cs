@@ -660,6 +660,49 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
     }
 
     [Fact]
+    public async Task AnExplorationEntryIsNotRefusedForBeingStoodDown()
+    {
+        // Two safety mechanisms were cancelling each other out, neither wrong on its own. The
+        // exploration budget deliberately admits a rule the evidence has stood down, to buy
+        // information at a price fixed in advance; the fence deliberately refuses a stood-down rule
+        // at submission. Together, an exploration entry reserved, reached the fence and died -- so
+        // the budget could never buy anything, and the only trace was a Failed record saying the
+        // strategy was stood down, which was true and beside the point.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(
+            broker, referencePrices: new StubMarker(100m), tradable: _ => ["some.other.rule.v1"]);
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m,
+            admittedAsExploration: true));
+
+        SpotExecutionRecord submitted = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.NotEqual(SpotExecutionState.Failed, submitted.State);
+    }
+
+    [Fact]
+    public async Task AnExplorationEntryIsStillRefusedWhenThePriceRanAway()
+    {
+        // Exploration buys evidence about a rule. It is not permission to trade into a price that
+        // has already made the move the rule was predicting.
+        var broker = new FakeBroker();
+        SpotExecutionLifecycle lifecycle = Build(
+            broker, referencePrices: new StubMarker(101m), tradable: _ => ["some.other.rule.v1"]);
+
+        Assert.True(lifecycle.TryReserve(
+            ExecutionId, "crypto-long-momentum-v1", Symbol, 0, 1m, 20m, TimeSpan.FromMinutes(15),
+            entryReferencePrice: 100m, accountEquityBefore: 100_000m,
+            admittedAsExploration: true));
+
+        SpotExecutionRecord fenced = await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Equal(SpotExecutionState.Failed, fenced.State);
+        Assert.StartsWith("ENTRY_FENCE_ADVERSE_MOVE", fenced.FailureReason);
+    }
+
+    [Fact]
     public async Task AnEntryWhoseStrategyIsStillTradableProceeds()
     {
         var broker = new FakeBroker();
