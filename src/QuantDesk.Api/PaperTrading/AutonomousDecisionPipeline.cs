@@ -231,6 +231,24 @@ public sealed class AutonomousDecisionPipeline(
     }
 
     /// <summary>
+    /// The lane's word for each way the committee can decline.
+    ///
+    /// Kept as distinct strings because they call for different responses. A conflict between two
+    /// mechanisms is the committee working -- contradiction is evidence of uncertainty, and section
+    /// 26.2 refuses to average it into a direction. Missing experts is a plumbing fault. Reading
+    /// one as the other sends whoever is on the other end of the status page looking in the wrong
+    /// place, which is what happened at this morning's open.
+    /// </summary>
+    private static string CommitteeRefusal(string reasonCode) => reasonCode switch
+    {
+        "no_experts" => "NoExpertsVoted",
+        "insufficient_valid_evidence" => "InsufficientExpertAvailability",
+        "mechanism_conflict" => "MechanismConflict",
+        "committee_disagreement" => "CommitteeDisagreement",
+        _ => "CommitteeRefused",
+    };
+
+    /// <summary>
     /// An indicator set carrying closes alone, with the bar's high and low taken as the close.
     ///
     /// Only the closes-only strategies are ever evaluated against it, so nothing reads the
@@ -480,7 +498,25 @@ public sealed class AutonomousDecisionPipeline(
         CommitteeDecision committeeDecision = committee.Evaluate(
             instrumentSlot, votes, nowTicks, market.StateVersion);
         if (!committeeDecision.Actionable)
-            return new(false, "InsufficientExpertAvailability", null, null, null, committeeDecision, market);
+        {
+            // The committee's own reason, not a single label for all of them.
+            //
+            // Four distinct outcomes reached here -- no_experts, insufficient_valid_evidence,
+            // mechanism_conflict and committee_disagreement -- and every one was reported as
+            // "InsufficientExpertAvailability", which names only the first two and actively
+            // misdescribes the others. With the equity book stood down and the fallback votes
+            // being a thirteen-bar and a four-bar return, the usual outcome is the two disagreeing
+            // in sign: a mechanism conflict, reported for sixteen minutes after the opening bell as
+            // an availability problem that did not exist.
+            //
+            // This file already carries the scar: the comment above records a mean-reversion
+            // strategy being refused under this same label "with a reason that pointed at the wrong
+            // thing". Collapsing them again is how that recurs.
+            return new(
+                false,
+                CommitteeRefusal(committeeDecision.ReasonCode),
+                null, null, null, committeeDecision, market);
+        }
 
         DirectionalForecast aggregate = CreateForecast(
             expertId: 1000,
