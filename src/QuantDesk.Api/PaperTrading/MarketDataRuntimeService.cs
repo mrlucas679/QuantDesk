@@ -17,7 +17,8 @@ public sealed class MarketDataRuntimeService(
     FullSystemReadinessState readiness,
     PaperTradingOptions options,
     ILogger<MarketDataRuntimeService> logger,
-    IRuntimeClock clock) : BackgroundService
+    IRuntimeClock clock,
+    MarketDataSessionRecorder recorder) : BackgroundService
 {
     private static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(15);
     private long _lastEventTicks;
@@ -41,6 +42,12 @@ public sealed class MarketDataRuntimeService(
         {
             await foreach (NormalizedMarketEvent marketEvent in stream.ReadAsync(cryptoSymbols, stoppingToken))
             {
+                // Recorded before anything is decided about it, including before the capacity
+                // check below. A session that dropped an event because a channel was full still
+                // saw that event, and a replay reconstructing the day needs to know it arrived --
+                // otherwise the log describes a quieter market than the one that caused the drop.
+                recorder.Record(marketEvent);
+
                 if (!channel.TryPublish(marketEvent, clock.MonotonicTimestamp))
                 {
                     readiness.RecordStreams(false, readiness.Snapshot().TradeUpdatesHealthy);

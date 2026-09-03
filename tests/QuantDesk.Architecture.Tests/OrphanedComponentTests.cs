@@ -100,14 +100,16 @@ public sealed class OrphanedComponentTests
         ["ExpertDefinition"] = "One catalog entry.",
         ["ExpertRuntimePlane"] = "Which plane an expert runs on.",
 
-        // -- Deterministic replay. Section 22's release gate, built and never recorded into.
-        ["ReplayRunner"] = "Replays a recorded session. Nothing records one yet.",
-        ["ReplayEventRecorder"] = "Records one. Not wired into the market data path.",
+        // -- Deterministic replay. The recorder is wired now; the runner still has no live caller.
+        ["ReplayRunner"] =
+            "Replays a recorded session and proves it deterministic. Sessions are recorded now, so "
+            + "the input exists -- what is missing is something in the running system that replays "
+            + "one, rather than a test doing it.",
         ["ReplayRefusal"] = "Its refusal reasons.",
         ["ReplayRefusedException"] = "Its refusal.",
         ["VirtualRuntimeClock"] =
-            "Drives replay time. Reachable from tests and from the replay runner, which is itself "
-            + "disconnected.",
+            "Drives replay time. Reachable from tests and from the replay runner, which still has "
+            + "no production caller.",
 
         // -- Model inference paths with no caller. HAR and GARCH are connected; these are not.
         ["GaussianHmmFilter"] = "Regime posteriors. The deterministic MarketRegimeExpert runs instead.",

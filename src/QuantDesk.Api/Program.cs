@@ -109,6 +109,11 @@ builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
 // expert's output does not carry are applied in one place rather than at each call site.
 // What the experts report as their own calibration, measured by the scorer rather than assumed.
 // Refreshed when an outcome resolves, which is the only moment the answer can have changed.
+// One replay log per session, written as the stream is read. Section 22's gate is only a gate for
+// sessions that were recorded, and until now none were.
+builder.Services.AddSingleton(services => new MarketDataSessionRecorder(
+    services.GetRequiredService<IRuntimeClock>(),
+    services.GetRequiredService<ILoggerFactory>().CreateLogger<MarketDataSessionRecorder>()));
 builder.Services.AddSingleton<MeasuredCalibrationSource>();
 builder.Services.AddSingleton<IForecastCalibrationSource>(services =>
     services.GetRequiredService<MeasuredCalibrationSource>());
