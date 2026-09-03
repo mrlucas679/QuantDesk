@@ -124,6 +124,7 @@ public sealed class AgentCompletionClientTests
         ApiKey: null,
         CycleInterval: TimeSpan.FromMinutes(1),
         RequestTimeout: TimeSpan.FromSeconds(5),
+        ReasoningEffort: null,
         PolicyLease: TimeSpan.FromHours(1),
         PolicyBounds: new PolicyBounds(0.6, new Usd(2m), 0.05, 0.35, new HashSet<int> { 1 }),
         StorePath: "agent.json");

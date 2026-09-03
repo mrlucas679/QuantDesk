@@ -47,7 +47,7 @@ public sealed class AgentServicesTests
         "strategy", "cost", "risk", "execution", "market");
 
     private static AgentRuntimeOptions Options() => new(true, new Uri("http://localhost:11434/"),
-        "test", null, TimeSpan.FromMinutes(1), TimeSpan.FromSeconds(1), TimeSpan.FromHours(1),
+        "test", null, TimeSpan.FromMinutes(1), TimeSpan.FromSeconds(1), null, TimeSpan.FromHours(1),
         new PolicyBounds(0.6, new Usd(0.5m), 0.05, 0.35, new HashSet<int> { 1 }), "agent.json");
 
     private sealed class FakeAgentClient(params object[] outputs) : IAgentCompletionClient

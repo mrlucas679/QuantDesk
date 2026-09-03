@@ -11,6 +11,20 @@ public sealed record AgentRuntimeOptions(
     string? ApiKey,
     TimeSpan CycleInterval,
     TimeSpan RequestTimeout,
+
+    /// <summary>
+    /// How much thinking budget the model should spend, when it takes such a parameter.
+    ///
+    /// Null means the field is omitted entirely, which is the right default: an unknown parameter
+    /// is ignored by some OpenAI-compatible providers and rejected by others, so sending one
+    /// nobody asked for turns a working configuration into a 400.
+    ///
+    /// Worth setting for a reasoning model. GLM-5.3-Flash documents that this defaults to
+    /// <c>max</c> when absent, and these agents read a small JSON document and return a small JSON
+    /// document -- there is nothing here worth a maximum thinking budget, and paying for one buys
+    /// latency and tokens rather than a better answer.
+    /// </summary>
+    string? ReasoningEffort,
     TimeSpan PolicyLease,
     PolicyBounds PolicyBounds,
     string StorePath)
@@ -30,6 +44,47 @@ public sealed record AgentRuntimeOptions(
     /// anything on its own.
     /// </summary>
     private const decimal DefaultMinimumNetEdgeUsd = 2.00m;
+
+    /// <summary>
+    /// How long a hosted model is given to answer.
+    ///
+    /// This was a hardcoded forty-five seconds, and it was not enough. A 31B model on a shared
+    /// inference provider took longer than that to finish streaming its reply, so the client
+    /// cancelled mid-body: the request had reached the provider, the answer was on its way, and the
+    /// timeout threw it away. What the operator saw was a TaskCanceledException and a degraded
+    /// agent plane, which reads like a broken endpoint or a bad key rather than a model that is
+    /// simply large.
+    ///
+    /// Two minutes by default, and configurable so a slower or larger model does not need a
+    /// deployment. Nothing waits on this: the cycle runs every ten minutes, the agents are
+    /// proposal-only, and no trading decision blocks on their answer -- so a generous budget costs
+    /// nothing while a mean one silently discards work the provider already did.
+    /// </summary>
+    private static TimeSpan ParseRequestTimeout()
+    {
+        string? configured = Environment.GetEnvironmentVariable(
+            "QUANTDESK_AGENT_REQUEST_TIMEOUT_SECONDS");
+
+        return int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out int seconds)
+            && seconds > 0
+            ? TimeSpan.FromSeconds(seconds)
+            : TimeSpan.FromSeconds(120);
+    }
+
+    /// <summary>
+    /// The configured thinking budget, or nothing when the operator has not asked for one.
+    ///
+    /// Only the three values GLM documents are passed through. An arbitrary string would be
+    /// forwarded to the provider verbatim and rejected there, which surfaces as a failed agent
+    /// cycle rather than as the configuration mistake it is.
+    /// </summary>
+    private static string? NormalisedReasoningEffort()
+    {
+        string? configured = Environment
+            .GetEnvironmentVariable("QUANTDESK_AGENT_REASONING_EFFORT")?.Trim().ToLowerInvariant();
+
+        return configured is "low" or "high" or "max" ? configured : null;
+    }
 
     private static int[] ParseAllowedExperts(string configured)
     {
@@ -78,7 +133,9 @@ public sealed record AgentRuntimeOptions(
         return new AgentRuntimeOptions(
             enabled, baseUri, Environment.GetEnvironmentVariable("QUANTDESK_AGENT_MODEL") ?? "qwen3:8b",
             Environment.GetEnvironmentVariable("QUANTDESK_AGENT_API_KEY"), TimeSpan.FromMinutes(10),
-            TimeSpan.FromSeconds(45), TimeSpan.FromHours(1),
+            ParseRequestTimeout(),
+            NormalisedReasoningEffort(),
+            TimeSpan.FromHours(1),
             new PolicyBounds(
                 0.60, MinimumNetEdgeFloor(), 0.05, 0.35, allowedExperts.ToHashSet()),
             Path.GetFullPath(Environment.GetEnvironmentVariable("QUANTDESK_AGENT_STORE_PATH")

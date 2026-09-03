@@ -34,6 +34,25 @@ public interface IAgentCompletionClient
 public sealed class AgentCompletionClient(HttpClient http, AgentRuntimeOptions options) : IAgentCompletionClient
 {
     /// <summary>
+    /// Where a reasoning model may leave its answer when <c>content</c> comes back empty.
+    ///
+    /// Ordered, and deliberately short. These are the field names OpenAI-compatible providers
+    /// actually use for a reasoning model's visible output; anything not listed is reported by name
+    /// in the failure rather than guessed at, so an unfamiliar provider produces a diagnosis
+    /// instead of a silent wrong answer.
+    /// </summary>
+    /// <remarks>
+    /// A reasoning field is deliberately not on this list, and was briefly on it by mistake.
+    ///
+    /// GLM-5.3-Flash through Featherless returns <c>finish_reason=stop</c> with message fields
+    /// <c>[role, reasoning, content]</c> and an empty content, so reading <c>reasoning</c> looked
+    /// like the fix. It is not: that field holds the model's thinking, not its answer, and feeding
+    /// it to a JSON parser turned a clear "the model emitted no answer" into a JsonException that
+    /// pointed at the parser. Thinking is not output, however inconvenient the empty content is.
+    /// </remarks>
+    private static readonly string[] AlternativeContentFields = ["text", "output_text"];
+
+    /// <summary>
     /// The chat-completions endpoint, however the operator wrote the base URL.
     ///
     /// This was <c>new Uri(baseUri, "v1/chat/completions")</c>, and relative resolution makes that
@@ -81,17 +100,25 @@ public sealed class AgentCompletionClient(HttpClient http, AgentRuntimeOptions o
         using var request = new HttpRequestMessage(HttpMethod.Post, CompletionsEndpoint(options.BaseUri));
         if (!string.IsNullOrWhiteSpace(options.ApiKey))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
-        request.Content = JsonContent.Create(new
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            model = options.Model,
-            temperature = 0,
-            response_format = new { type = "json_object" },
-            messages = new object[]
+            ["model"] = options.Model,
+            ["temperature"] = 0,
+            ["response_format"] = new { type = "json_object" },
+            ["messages"] = new object[]
             {
                 new { role = "system", content = invocation.SystemPrompt + "\nReturn only JSON matching: " + invocation.OutputContract },
                 new { role = "user", content = invocation.InputJson }
-            }
-        });
+            },
+        };
+
+        // Added only when the operator asks for it. An unknown field is ignored by some
+        // OpenAI-compatible providers and rejected by others, so sending one unconditionally would
+        // break every provider that does not implement it in order to tune the one that does.
+        if (!string.IsNullOrWhiteSpace(options.ReasoningEffort))
+            payload["reasoning_effort"] = options.ReasoningEffort;
+
+        request.Content = JsonContent.Create(payload);
 
         using HttpResponseMessage response = await http.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -117,7 +144,39 @@ public sealed class AgentCompletionClient(HttpClient http, AgentRuntimeOptions o
         string? output = message.TryGetProperty("content", out JsonElement content)
             ? content.GetString()
             : null;
-        if (string.IsNullOrWhiteSpace(output)) throw new InvalidDataException("EMPTY_AGENT_OUTPUT");
+
+        // Some models put the answer somewhere other than content. A reasoning model can spend its
+        // whole budget thinking and return an empty content with the working in a sibling field,
+        // and providers differ on what that field is called. Reading the known ones is not a
+        // fallback for a broken reply -- it is where these models put the reply.
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            foreach (string alternative in AlternativeContentFields)
+            {
+                if (message.TryGetProperty(alternative, out JsonElement other)
+                    && other.ValueKind is JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(other.GetString()))
+                {
+                    output = other.GetString();
+                    break;
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            // Naming what did come back, because "EMPTY_AGENT_OUTPUT" on its own sends an operator
+            // to check a key and a URL that are both fine. finish_reason distinguishes a model that
+            // ran out of tokens from one that refused, and the field list says whether the answer
+            // arrived under a name this does not read yet.
+            string fields = string.Join(",", message.EnumerateObject().Select(item => item.Name));
+            string finish = choices[0].TryGetProperty("finish_reason", out JsonElement reason)
+                ? reason.GetString() ?? "none"
+                : "absent";
+
+            throw new InvalidDataException(
+                $"EMPTY_AGENT_OUTPUT: finish_reason={finish}, message fields=[{fields}]");
+        }
 
         return new AgentCompletion(options.Model, output, ReadToolCalls(message));
     }
