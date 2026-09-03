@@ -32,7 +32,9 @@ services:
       context: research/python
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      # Agent harnesses on this machine can connect; other LAN hosts cannot reach the unauthenticated
+      # research surface. Container peers still use quantdesk-research:8000 on the Compose network.
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         - CMD
@@ -67,6 +69,10 @@ services:
       QUANTDESK_ENABLE_ALPACA: "false"
       # Keep the worker's HMM capability identical to the research API.
       LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+      # The commit a fitted model artifact was produced by. The exporter refuses to write one
+      # without it: an artifact that cannot name the code behind it cannot be traced back from a
+      # live decision, which is most of what its manifest is for.
+      QUANTDESK_GIT_COMMIT: ${QUANTDESK_GIT_COMMIT:-14cb624}
     volumes:
       - quantdesk-research-data:/app/data
       - quantdesk-research-artifacts:/app/artifacts
@@ -74,6 +80,14 @@ services:
       quantdesk-research:
         condition: service_healthy
     restart: unless-stopped
+
+  quantdesk-fault-campaign:
+    build:
+      context: .
+      dockerfile: Dockerfile.fault-campaign
+    volumes:
+      - quantdesk-runtime-data:/runtime-data
+    restart: "no"
 
   quantdesk-api:
     build:
@@ -120,6 +134,12 @@ services:
       # volume so recovery survives a container restart rather than only a process restart.
       QUANTDESK_MLEG_STORE_PATH: /app/runtime-data/mleg-executions.json
       QUANTDESK_SPOT_STORE_PATH: /app/runtime-data/spot-executions.json
+      QUANTDESK_FAULT_CAMPAIGN_PATH: /app/runtime-data/fault-campaign.json
+      QUANTDESK_AGENT_STORE_PATH: /app/runtime-data/agent-runs.json
+      # Agent providers are opt-in. When disabled, deterministic trading and exits continue.
+      QUANTDESK_AGENTS_ENABLED: ${QUANTDESK_AGENTS_ENABLED:-false}
+      QUANTDESK_AGENT_BASE_URL: ${QUANTDESK_AGENT_BASE_URL:-}
+      QUANTDESK_AGENT_MODEL: ${QUANTDESK_AGENT_MODEL:-qwen3:8b}
       # No execution symbol is implicit. Disabled research services retain their own BTC/USD
       # dataset fallback, but enabling autonomy requires an explicit chosen symbol.
       # Spot holds the instrument; DefinedRiskVertical expresses the view as a debit spread.
@@ -133,16 +153,37 @@ services:
       # Research requires SIP and rejects anything else; IEX is the default because SIP is paid.
       # Bound authenticated quote collection while building the next point-in-time research dataset.
       QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS: ${QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS:-5}
+      # Where each session's replay log is written. On a volume rather than the container
+      # filesystem, because the start-up replay reads the *previous* session -- and a log that died
+      # with the container it was written in would leave nothing to replay after every restart,
+      # which is precisely when the check is worth running.
+      QUANTDESK_REPLAY_LOG_ROOT: /app/replay-logs
     volumes:
       - quantdesk-runtime-data:/app/runtime-data
       - quantdesk-research-data:/app/research-data
       - quantdesk-research-artifacts:/app/research-artifacts:ro
+      - quantdesk-replay-logs:/app/replay-logs
     depends_on:
       quantdesk-research:
+        condition: service_healthy
+      quantdesk-fault-campaign:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  quantdesk-dashboard:
+    build:
+      context: dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      quantdesk-api:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
+  # One replay log per session, kept across restarts so the previous one can be replayed.
+  quantdesk-replay-logs:
   quantdesk-runtime-data:
     name: quantdesk-runtime-data
   quantdesk-research-data:

@@ -270,14 +270,21 @@ def publish_fitted_models(data_root: Path, artifacts_root: Path) -> FittedModelP
     if not dataset.exists():
         raise ModelFittingSkipped(f"manifest names {dataset.name}, which is not present")
 
+    git_commit = _git_commit()
+
     destination = artifacts_root / MODELS_DIRECTORY
     pointer_path = destination / POINTER_NAME
     if pointer_path.exists():
         published = json.loads(pointer_path.read_text(encoding="utf-8"))
-        if published.get("dataset_hash") == dataset_hash:
-            return FittedModelPublication([], {"all": "dataset already published"}, dataset_hash)
 
-    git_commit = _git_commit()
+        # Keyed on the code as well as the data. Keyed on the dataset alone, a change to a feature
+        # schema or an exporter never republished -- the artifact on the volume stayed as it was and
+        # the runtime refused it as a schema mismatch forever, with the fitting loop reporting
+        # "already published" every cycle. That happened: a GARCH schema change left a stale
+        # artifact that could not be adopted and would not be replaced.
+        if (published.get("dataset_hash") == dataset_hash
+                and published.get("git_commit") == git_commit):
+            return FittedModelPublication([], {"all": "dataset and code already published"}, dataset_hash)
     closes = _closes_from(dataset)
     # The manifest hash arrives prefixed "sha256:", and a colon is not a filename on every platform
     # this repository is cloned onto. The full hash still travels inside the artifact.
@@ -316,6 +323,7 @@ def publish_fitted_models(data_root: Path, artifacts_root: Path) -> FittedModelP
         pointer_path,
         {
             "dataset_hash": dataset_hash,
+            "git_commit": git_commit,
             "generated_at": as_of.isoformat(),
             "models": pointer,
             "skipped": skipped,
