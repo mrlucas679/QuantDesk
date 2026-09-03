@@ -156,14 +156,30 @@ public sealed class ReplayRunner
     /// dictionary enumeration order, ambient static state and anything reading the wall clock all
     /// survive a single run and fail here -- which is why the release gate is this method rather
     /// than the existence of a replay facility.
+    ///
+    /// The parameter is a factory so each pass gets its own decider. A stateful decider is the
+    /// normal case rather than the exception -- replaying a decision means replaying what it
+    /// accumulated -- and sharing one between the passes would compare a cold run against a warm
+    /// one and call the difference non-determinism.
     /// </summary>
     public ReplayRunResult RunAndProveDeterministic(
         ReplayManifest manifest,
         IReadOnlyList<ReplayEnvelope> log,
-        Func<IRuntimeClock, ReplayEnvelope, (string Code, string Payload)?> decide)
+        Func<Func<IRuntimeClock, ReplayEnvelope, (string Code, string Payload)?>> decider)
     {
-        ReplayRunResult first = Run(manifest, log, decide);
-        ReplayRunResult second = Run(manifest, log, decide);
+        ArgumentNullException.ThrowIfNull(decider);
+
+        // A factory, not a decider. The first version took one delegate and called it twice, which
+        // is unsound for exactly the deciders this exists to check: anything that accumulates state
+        // -- a market-state machine, a position, a warmed recursion -- carries the first pass's
+        // state into the second and then disagrees with itself. Connecting the real market-state
+        // replay produced that divergence immediately, and it was the runner's fault rather than
+        // the system's.
+        //
+        // Taking a factory makes the fresh start structural: there is no way to hand this a decider
+        // that both passes share.
+        ReplayRunResult first = Run(manifest, log, decider());
+        ReplayRunResult second = Run(manifest, log, decider());
 
         if (!string.Equals(
                 first.DeterministicTraceHash, second.DeterministicTraceHash, StringComparison.Ordinal))

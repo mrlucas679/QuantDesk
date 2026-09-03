@@ -114,6 +114,11 @@ builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
 builder.Services.AddSingleton(services => new MarketDataSessionRecorder(
     services.GetRequiredService<IRuntimeClock>(),
     services.GetRequiredService<ILoggerFactory>().CreateLogger<MarketDataSessionRecorder>()));
+// Replays the previous session on start-up and reports whether it reproduced. This is what makes
+// section 22 a gate rather than a facility: until something in the running system replays what the
+// recorder writes, determinism is only ever demonstrated by tests against their own deciders.
+builder.Services.AddSingleton<SessionReplayState>();
+builder.Services.AddHostedService<SessionReplayService>();
 builder.Services.AddSingleton<MeasuredCalibrationSource>();
 builder.Services.AddSingleton<IForecastCalibrationSource>(services =>
     services.GetRequiredService<MeasuredCalibrationSource>());
@@ -625,6 +630,8 @@ app.MapGet("/api/diagnostics/{experimentId}", (
     DiagnosticExecutionRecord? record = store.Find(experimentId);
     return record is null ? Results.NotFound() : Results.Ok(record);
 });
+app.MapGet("/api/system/replay", (SessionReplayState replay) => Results.Ok(replay.Snapshot()));
+
 app.MapGet("/api/system/latency", (LatencyRecorder latency) =>
 {
     // Percentiles, not an average. Section 24.1 says average latency alone is insufficient, and a

@@ -34,7 +34,7 @@ public sealed class MarketDataSessionRecorderTests : IDisposable
         IReadOnlyList<ReplayEnvelope> log = RecordSession(events: 60);
 
         ReplayRunResult result = new ReplayRunner()
-            .RunAndProveDeterministic(Manifest(), log, Decide);
+            .RunAndProveDeterministic(Manifest(), log, () => Decide);
 
         Assert.Equal(60, result.EventCount);
     }

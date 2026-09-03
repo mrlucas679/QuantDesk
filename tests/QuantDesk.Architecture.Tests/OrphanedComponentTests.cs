@@ -70,6 +70,10 @@ public sealed class OrphanedComponentTests
     /// outcome with more ceremony. Recording what is true and forbidding it from growing is what a
     /// gate on an existing codebase can actually enforce.
     ///
+    /// Section 22's replay cluster is gone from this list entirely: the recorder writes every
+    /// session and the replay service reproduces the previous one on start-up, so the runner, its
+    /// refusals and the virtual clock all have production callers now.
+    ///
     /// The portfolio ledger cluster deserves reading rather than skimming, because its first
     /// reading was wrong. PortfolioRecoveryService rebuilds ledger state from a snapshot and the
     /// execution journal, and nothing calls it -- which looked like recovery having been left
@@ -99,17 +103,6 @@ public sealed class OrphanedComponentTests
         ["ExpertCatalog"] = "Describes the experts the typed committee would assemble.",
         ["ExpertDefinition"] = "One catalog entry.",
         ["ExpertRuntimePlane"] = "Which plane an expert runs on.",
-
-        // -- Deterministic replay. The recorder is wired now; the runner still has no live caller.
-        ["ReplayRunner"] =
-            "Replays a recorded session and proves it deterministic. Sessions are recorded now, so "
-            + "the input exists -- what is missing is something in the running system that replays "
-            + "one, rather than a test doing it.",
-        ["ReplayRefusal"] = "Its refusal reasons.",
-        ["ReplayRefusedException"] = "Its refusal.",
-        ["VirtualRuntimeClock"] =
-            "Drives replay time. Reachable from tests and from the replay runner, which still has "
-            + "no production caller.",
 
         // -- Model inference paths with no caller. HAR and GARCH are connected; these are not.
         ["GaussianHmmFilter"] = "Regime posteriors. The deterministic MarketRegimeExpert runs instead.",

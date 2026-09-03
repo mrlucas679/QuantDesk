@@ -29,7 +29,7 @@ public sealed class ReplayRunnerTests
         IReadOnlyList<ReplayEnvelope> log = Log(events: 40);
 
         ReplayRunResult result = new ReplayRunner()
-            .RunAndProveDeterministic(Manifest(), log, HoldForFiveMinutes);
+            .RunAndProveDeterministic(Manifest(), log, () => HoldForFiveMinutes);
 
         Assert.Equal(40, result.EventCount);
         Assert.NotEmpty(result.DeterministicTraceHash);
@@ -93,7 +93,8 @@ public sealed class ReplayRunnerTests
 
         ReplayRefusedException refused = Assert.Throws<ReplayRefusedException>(() =>
             new ReplayRunner().RunAndProveDeterministic(
-                Manifest(), log, (_, _) => ("HOLD", Random.Shared.Next().ToString())));
+                Manifest(), log,
+                () => (_, _) => ("HOLD", Random.Shared.Next().ToString())));
 
         Assert.Contains("Something outside the log decided part of the outcome", refused.Message,
             StringComparison.Ordinal);
@@ -111,7 +112,7 @@ public sealed class ReplayRunnerTests
             new ReplayRunner().RunAndProveDeterministic(
                 Manifest(),
                 log,
-                (_, _) => ("HOLD", DateTimeOffset.UtcNow.Ticks.ToString())));
+                () => (_, _) => ("HOLD", DateTimeOffset.UtcNow.Ticks.ToString())));
     }
 
     [Fact]
@@ -125,7 +126,7 @@ public sealed class ReplayRunnerTests
             new ReplayRunner().RunAndProveDeterministic(
                 Manifest(),
                 log,
-                (_, envelope) =>
+                () => (_, envelope) =>
                 {
                     calls++;
                     // Diverges only on the fourth event of the second pass.
