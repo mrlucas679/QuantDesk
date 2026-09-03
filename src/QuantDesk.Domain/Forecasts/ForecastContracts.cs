@@ -39,6 +39,21 @@ public readonly record struct ForecastMetadata(
 public interface ITypedForecast
 {
     ForecastMetadata Metadata { get; }
+
+    /// <summary>
+    /// How well this family's forecasts have matched outcomes, in [0, 1].
+    ///
+    /// On the interface rather than on each record, because every family already carries one and
+    /// the committee needs to gate on it uniformly. It used to be readable only on the concrete
+    /// directional type, so direction was the one family whose calibration was checked -- and
+    /// nothing said why. An uncalibrated volatility forecast sizes a position wrongly and an
+    /// uncalibrated regime forecast ends one early; different harms from a wrong direction, not
+    /// smaller ones.
+    ///
+    /// A fitted model is not a calibrated one. The fit says the coefficients came from data; this
+    /// says the resulting forecasts were checked against what happened.
+    /// </summary>
+    double CalibrationScore { get; }
 }
 
 public readonly record struct DirectionalForecast(
@@ -96,7 +111,19 @@ public readonly record struct RelativeValueForecast(
     double ExpectedResidualChangeBps,
     double ResidualVariance,
     double HedgeRatio,
-    double RelationshipStability) : ITypedForecast;
+
+    /// <summary>How stable the fitted relationship between the two instruments has been.</summary>
+    double RelationshipStability,
+
+    /// <summary>
+    /// How well this family's forecasts have matched outcomes.
+    ///
+    /// The only family that lacked one. Adding it rather than reading RelationshipStability as a
+    /// calibration would have been the quiet kind of wrong: a stable relationship whose forecasts
+    /// are consistently off scores high on one and low on the other, and the committee would have
+    /// gated on the wrong number without anything looking amiss.
+    /// </summary>
+    double CalibrationScore) : ITypedForecast;
 
 /// <summary>Event-conditioned probability and magnitude of a discontinuous move.</summary>
 public readonly record struct JumpRiskForecast(

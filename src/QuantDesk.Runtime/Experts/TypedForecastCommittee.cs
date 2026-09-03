@@ -54,6 +54,8 @@ public sealed class TypedForecastCommittee(
             sourceStateVersion, expectedExperts);
         if (!selection.CanAggregate)
             return Refused<VolatilityForecast>(ForecastType.RealizedVolatility, selection);
+        if (!IsCalibrated(selection))
+            return Refused<VolatilityForecast>(ForecastType.RealizedVolatility, selection, "calibration_below_threshold");
 
         VolatilityForecast forecast = new(
             selection.AggregateMetadata(),
@@ -75,6 +77,8 @@ public sealed class TypedForecastCommittee(
             ForecastType.Regime, instrumentSlot, votes, nowMonotonicTicks,
             sourceStateVersion, expectedExperts);
         if (!selection.CanAggregate) return Refused<RegimeForecast>(ForecastType.Regime, selection);
+        if (!IsCalibrated(selection))
+            return Refused<RegimeForecast>(ForecastType.Regime, selection, "calibration_below_threshold");
 
         double low = selection.Weighted(value => value.LowVolTrend.Value);
         double high = selection.Weighted(value => value.HighVolTrend.Value);
@@ -100,6 +104,8 @@ public sealed class TypedForecastCommittee(
             ForecastType.RelativeValue, instrumentSlot, votes, nowMonotonicTicks,
             sourceStateVersion, expectedExperts);
         if (!selection.CanAggregate) return Refused<RelativeValueForecast>(ForecastType.RelativeValue, selection);
+        if (!IsCalibrated(selection))
+            return Refused<RelativeValueForecast>(ForecastType.RelativeValue, selection, "calibration_below_threshold");
 
         int secondSlot = selection.Valid[0].Forecast.SecondInstrumentSlot;
         if (selection.Valid.Any(vote => vote.Forecast.SecondInstrumentSlot != secondSlot))
@@ -110,7 +116,8 @@ public sealed class TypedForecastCommittee(
             selection.Weighted(value => value.ExpectedResidualChangeBps),
             Math.Max(0, selection.Weighted(value => value.ResidualVariance)),
             selection.Weighted(value => value.HedgeRatio),
-            Math.Clamp(selection.Weighted(value => value.RelationshipStability), 0, 1));
+            Math.Clamp(selection.Weighted(value => value.RelationshipStability), 0, 1),
+            selection.Weighted(value => value.CalibrationScore));
         return Accepted(ForecastType.RelativeValue, forecast, selection);
     }
 
@@ -125,6 +132,8 @@ public sealed class TypedForecastCommittee(
             ForecastType.JumpRisk, instrumentSlot, votes, nowMonotonicTicks,
             sourceStateVersion, expectedExperts);
         if (!selection.CanAggregate) return Refused<JumpRiskForecast>(ForecastType.JumpRisk, selection);
+        if (!IsCalibrated(selection))
+            return Refused<JumpRiskForecast>(ForecastType.JumpRisk, selection, "calibration_below_threshold");
 
         JumpRiskForecast forecast = new(
             selection.AggregateMetadata(),
@@ -146,6 +155,8 @@ public sealed class TypedForecastCommittee(
             ForecastType.LiquidityCost, instrumentSlot, votes, nowMonotonicTicks,
             sourceStateVersion, expectedExperts);
         if (!selection.CanAggregate) return Refused<LiquidityCostForecast>(ForecastType.LiquidityCost, selection);
+        if (!IsCalibrated(selection))
+            return Refused<LiquidityCostForecast>(ForecastType.LiquidityCost, selection, "calibration_below_threshold");
 
         LiquidityCostForecast forecast = new(
             selection.AggregateMetadata(),
@@ -168,6 +179,8 @@ public sealed class TypedForecastCommittee(
             ForecastType.OptionSurface, instrumentSlot, votes, nowMonotonicTicks,
             sourceStateVersion, expectedExperts);
         if (!selection.CanAggregate) return Refused<OptionSurfaceForecast>(ForecastType.OptionSurface, selection);
+        if (!IsCalibrated(selection))
+            return Refused<OptionSurfaceForecast>(ForecastType.OptionSurface, selection, "calibration_below_threshold");
 
         OptionSurfaceForecast forecast = new(
             selection.AggregateMetadata(),
@@ -191,6 +204,8 @@ public sealed class TypedForecastCommittee(
             ForecastType.Microstructure, instrumentSlot, votes, nowMonotonicTicks,
             sourceStateVersion, expectedExperts);
         if (!selection.CanAggregate) return Refused<MicrostructureForecast>(ForecastType.Microstructure, selection);
+        if (!IsCalibrated(selection))
+            return Refused<MicrostructureForecast>(ForecastType.Microstructure, selection, "calibration_below_threshold");
 
         MicrostructureForecast forecast = new(
             selection.AggregateMetadata(),
@@ -251,6 +266,24 @@ public sealed class TypedForecastCommittee(
             : "consensus";
         return new Selection<TForecast>(valid, availability, reason, sourceStateVersion);
     }
+
+    /// <summary>
+    /// Whether the aggregate is calibrated enough to inform a decision.
+    ///
+    /// Applied to every family. It used to guard direction alone, and nothing said why -- every
+    /// typed forecast carries a calibration score, and the asymmetry read as an omission rather
+    /// than a decision. A volatility forecast nobody has checked against outcomes sizes a position
+    /// wrongly and a regime forecast ends one early, which are different harms from a wrong
+    /// direction but not smaller ones.
+    ///
+    /// Inert today, deliberately so: the experts report a constant 0.5 against a floor of 0.5, so
+    /// this refuses nothing until a measured score replaces the constant. Putting the gate in now
+    /// means the refusal path is in place and exercised before the number that will trip it
+    /// arrives, rather than being added afterwards in a hurry.
+    /// </summary>
+    private bool IsCalibrated<TForecast>(Selection<TForecast> selection)
+        where TForecast : struct, ITypedForecast =>
+        selection.Weighted(forecast => forecast.CalibrationScore) >= minimumCalibrationScore;
 
     private static ForecastFamilyDecision<TForecast> Accepted<TForecast>(
         ForecastType family,

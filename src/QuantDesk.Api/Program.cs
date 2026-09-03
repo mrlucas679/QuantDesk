@@ -104,6 +104,10 @@ builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
 builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
 // The regime classifier, and the shared place its answer is written and read. Bounded by the
 // traded universe, which is fixed at startup.
+// The gate every typed forecast passes through. Section 10.1 keeps the families apart here, so a
+// volatility reading cannot become a direction, and the staleness and calibration checks a single
+// expert's output does not carry are applied in one place rather than at each call site.
+builder.Services.AddSingleton<TypedForecastCommittee>();
 builder.Services.AddSingleton<MarketRegimeExpert>();
 // The models the research plane fits, and the service that loads them. Registered before the
 // experts that read them so the store exists when they are resolved -- the expert reads it on every

@@ -5,6 +5,7 @@ using QuantDesk.Runtime.Experts;
 using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Scoring;
 using QuantDesk.Runtime.Time;
+using QuantDesk.Domain.Experts;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -23,6 +24,7 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class IndicatorRegimeSource(
     MarketRegimeExpert expert,
     RealizedVolatilityExpert volatility,
+    TypedForecastCommittee committee,
     IRuntimeClock clock,
     ForecastOutcomeLog? outcomes = null) : IRegimeSource
 {
@@ -41,9 +43,27 @@ public sealed class IndicatorRegimeSource(
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentNullException.ThrowIfNull(indicators);
 
-        RegimeForecast? forecast = expert.Forecast(
+        RegimeForecast? produced = expert.Forecast(
             indicators, instrumentSlot, ExpertId, Horizon,
             eventNs, nowMonotonicTicks, nowMonotonicTicks + HorizonTicks, sourceStateVersion);
+
+        // Through the committee, not straight to the caller.
+        //
+        // Section 10.1 keeps forecast families apart so a volatility reading can never become a
+        // direction, and the typed committee is where that separation is enforced -- along with the
+        // staleness, availability and state-version checks a single expert's output does not carry.
+        // This path used to publish whatever the expert returned, so a forecast whose validity had
+        // expired was as good as a fresh one and nothing said otherwise.
+        //
+        // One expert per family today, so aggregation is a pass-through. The gates are not.
+        ForecastFamilyDecision<RegimeForecast> decision = produced is { } vote
+            ? committee.EvaluateRegime(
+                instrumentSlot, [new ForecastVote<RegimeForecast>(ExpertId, vote, 1d)],
+                nowMonotonicTicks, sourceStateVersion, expectedExperts: 1)
+            : committee.EvaluateRegime(
+                instrumentSlot, [], nowMonotonicTicks, sourceStateVersion, expectedExperts: 1);
+
+        RegimeForecast? forecast = decision.HasForecast ? decision.Forecast : null;
 
         // A refusal leaves the previous classification standing rather than clearing it. The
         // alternative -- forgetting the regime whenever a bar is missing -- would make the exit
@@ -78,9 +98,20 @@ public sealed class IndicatorRegimeSource(
     {
         if (outcomes is null) return;
 
-        VolatilityForecast? forecast = volatility.Forecast(
+        VolatilityForecast? produced = volatility.Forecast(
             indicators, instrumentSlot, VolatilityExpertId, Horizon,
             eventNs, nowMonotonicTicks, nowMonotonicTicks + HorizonTicks, sourceStateVersion);
+
+        // Same gate, same reason. A variance recorded as an outcome that was already stale when it
+        // was published would score the expert on a forecast it had withdrawn.
+        ForecastFamilyDecision<VolatilityForecast> decision = produced is { } vote
+            ? committee.EvaluateVolatility(
+                instrumentSlot, [new ForecastVote<VolatilityForecast>(VolatilityExpertId, vote, 1d)],
+                nowMonotonicTicks, sourceStateVersion, expectedExperts: 1)
+            : committee.EvaluateVolatility(
+                instrumentSlot, [], nowMonotonicTicks, sourceStateVersion, expectedExperts: 1);
+
+        VolatilityForecast? forecast = decision.HasForecast ? decision.Forecast : null;
         if (forecast is not { } published) return;
 
         int last = indicators.Length - 1;

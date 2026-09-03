@@ -70,11 +70,14 @@ public sealed class OrphanedComponentTests
     /// outcome with more ceremony. Recording what is true and forbidding it from growing is what a
     /// gate on an existing codebase can actually enforce.
     ///
-    /// Two entries deserve to be read rather than skimmed. PortfolioRecoveryService rebuilds ledger
-    /// state from a snapshot and the execution journal after a restart, and nothing calls it -- the
-    /// execution recovery services in the API are wired and this is not, so the two are easy to
-    /// confuse. TypedForecastCommittee is section 10.1's separation of forecast families, and the
-    /// untyped ExpertCommittee is what actually runs.
+    /// The portfolio ledger cluster deserves reading rather than skimming, because its first
+    /// reading was wrong. PortfolioRecoveryService rebuilds ledger state from a snapshot and the
+    /// execution journal, and nothing calls it -- which looked like recovery having been left
+    /// disconnected. It is not: PortfolioLedger is never constructed either, and the autonomous
+    /// lane keeps its durable position state in SpotExecutionStore, whose recovery runs every
+    /// second through a wired hosted service. This cluster is the founding architecture that store
+    /// replaced. Wiring it would create a second position ledger that can disagree with the first,
+    /// so the decision it needs is deletion, not connection.
     /// </summary>
     private static readonly Dictionary<string, string> Known = new(StringComparer.Ordinal)
     {
@@ -88,11 +91,10 @@ public sealed class OrphanedComponentTests
         ["ExecutionJournalEvent"] = "Its record type.",
         ["ExecutionJournalReplay"] = "Replays the journal. Reachable only through the journal.",
 
-        // -- Typed forecasts. The untyped committee is what runs.
-        ["TypedForecastCommittee"] =
-            "Section 10.1's typed committee, which keeps forecast families apart. ExpertCommittee "
-            + "runs instead and does not.",
-        ["CommitteeAllocator"] = "Allocates across the typed committee's members.",
+        // -- Typed forecasts. The committee itself is connected now; these hang off it.
+        ["CommitteeAllocator"] =
+            "Allocates weight across a family's members. The committee is wired but every family "
+            + "currently has one expert, so nothing allocates yet.",
         ["BoundedWeightProjector"] = "Bounds those allocations.",
         ["ExpertCatalog"] = "Describes the experts the typed committee would assemble.",
         ["ExpertDefinition"] = "One catalog entry.",
