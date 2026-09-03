@@ -72,7 +72,12 @@ services:
       # The commit a fitted model artifact was produced by. The exporter refuses to write one
       # without it: an artifact that cannot name the code behind it cannot be traced back from a
       # live decision, which is most of what its manifest is for.
-      QUANTDESK_GIT_COMMIT: ${QUANTDESK_GIT_COMMIT:-14cb624}
+      # No default. A hardcoded fallback here did two kinds of damage at once: every artifact
+      # claimed a commit that had not produced it for weeks, and -- because the republish key is
+      # (dataset_hash, git_commit) -- a change to the fitting code never republished, so a stale
+      # artifact the runtime had begun refusing could not be replaced. The Python side already
+      # refuses to invent this value; the fallback was inventing it on the way in.
+      QUANTDESK_GIT_COMMIT: ${QUANTDESK_GIT_COMMIT:?set it to the deploying commit, e.g. $(git rev-parse --short HEAD)}
     volumes:
       - quantdesk-research-data:/app/data
       - quantdesk-research-artifacts:/app/artifacts
