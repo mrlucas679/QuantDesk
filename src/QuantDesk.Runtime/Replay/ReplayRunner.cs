@@ -21,8 +21,11 @@ public enum ReplayRefusal
     /// <summary>Ingress sequence does not strictly increase.</summary>
     OutOfOrderSequence,
 
-    /// <summary>Event time moves backwards between consecutive envelopes.</summary>
+    /// <summary>One source's own event time moves backwards.</summary>
     NonMonotonicEventTime,
+
+    /// <summary>Receive time moves backwards, so the replay clock cannot advance.</summary>
+    NonMonotonicReceiveTime,
 
     /// <summary>A log with no events proves nothing about determinism.</summary>
     EmptyLog,
@@ -105,10 +108,18 @@ public sealed class ReplayRunner
 
         Validate(manifest, log);
 
-        // Seeded from the log's first event rather than from now, so a run started at any moment
-        // sees the times the recording saw.
-        var clock = new VirtualRuntimeClock(UnixNanosecondsToUtc(log[0].EventUnixNanoseconds));
-        long previousEventNanoseconds = log[0].EventUnixNanoseconds;
+        // Seeded from when the runtime saw the log's first event rather than from now, so a run
+        // started at any moment sees the times the recording saw.
+        //
+        // Receive time, not venue event time. Venue time is per-instrument: a feed carrying several
+        // symbols carries several venue clocks, and their stamps interleave -- a live recording of
+        // six crypto order books opens with jumps of -4s and -12s between consecutive events purely
+        // because each book was last touched at a different moment. Advancing the clock along that
+        // would run the replay backwards. Receive time is one process's own clock read in ingress
+        // order, so it is monotonic by construction, and it is also the moment a live decision was
+        // actually made -- which is the thing a replay has to reproduce.
+        var clock = new VirtualRuntimeClock(UnixNanosecondsToUtc(log[0].ReceiveUnixNanoseconds));
+        long previousReceiveNanoseconds = log[0].ReceiveUnixNanoseconds;
 
         var decisions = new List<ReplayDecision>(log.Count);
         var trace = new StringBuilder();
@@ -121,8 +132,8 @@ public sealed class ReplayRunner
             // does and what a replay has to imitate for a deadline to fall the same way.
             clock.Advance(
                 TimeSpan.FromTicks(
-                    (envelope.EventUnixNanoseconds - previousEventNanoseconds) / NanosecondsPerTick));
-            previousEventNanoseconds = envelope.EventUnixNanoseconds;
+                    (envelope.ReceiveUnixNanoseconds - previousReceiveNanoseconds) / NanosecondsPerTick));
+            previousReceiveNanoseconds = envelope.ReceiveUnixNanoseconds;
 
             (string Code, string Payload)? outcome = decide(clock, envelope);
             if (outcome is not { } decided)
@@ -233,7 +244,8 @@ public sealed class ReplayRunner
         }
 
         long previousSequence = 0;
-        long previousEventNanoseconds = long.MinValue;
+        long previousReceiveNanoseconds = long.MinValue;
+        var previousEventPerSource = new Dictionary<string, long>(StringComparer.Ordinal);
 
         foreach (ReplayEnvelope envelope in log)
         {
@@ -254,19 +266,35 @@ public sealed class ReplayRunner
                     + "Determinism given a set of events means nothing if their order is negotiable.");
             }
 
-            // Wall-clock non-monotonicity leaking into a recording. A TTL replayed across it would
+            // The timeline the replay clock advances along. Non-monotonicity here is the runtime's
+            // own clock stepping backwards, which is a real defect: a TTL replayed across it would
             // expire before it started, and this system has already seen uptime come back negative
             // from exactly this.
-            if (envelope.EventUnixNanoseconds < previousEventNanoseconds)
+            if (envelope.ReceiveUnixNanoseconds < previousReceiveNanoseconds)
+            {
+                throw new ReplayRefusedException(
+                    ReplayRefusal.NonMonotonicReceiveTime,
+                    $"Receive time moves backwards at sequence {envelope.IngressSequence}. The "
+                    + "runtime's own clock went backwards, so the replay cannot be advanced forwards.");
+            }
+
+            // Venue time is checked per source, not globally. Across a multi-instrument feed each
+            // symbol carries its own venue clock and their stamps interleave, so a global check
+            // refuses ordinary recordings -- it refused this system's first real one. Within a
+            // single source it still has to advance: one order book whose stamps go backwards is a
+            // feed defect, and a staleness test computed against it would read the wrong sign.
+            if (previousEventPerSource.TryGetValue(envelope.Source, out long previousForSource)
+                && envelope.EventUnixNanoseconds < previousForSource)
             {
                 throw new ReplayRefusedException(
                     ReplayRefusal.NonMonotonicEventTime,
-                    $"Event time moves backwards at sequence {envelope.IngressSequence}. A recording "
-                    + "whose clock went backwards cannot be replayed forwards.");
+                    $"Event time for source {envelope.Source} moves backwards at sequence "
+                    + $"{envelope.IngressSequence}. One source's own stamps cannot run backwards.");
             }
 
             previousSequence = envelope.IngressSequence;
-            previousEventNanoseconds = envelope.EventUnixNanoseconds;
+            previousReceiveNanoseconds = envelope.ReceiveUnixNanoseconds;
+            previousEventPerSource[envelope.Source] = envelope.EventUnixNanoseconds;
         }
     }
     /// <summary>

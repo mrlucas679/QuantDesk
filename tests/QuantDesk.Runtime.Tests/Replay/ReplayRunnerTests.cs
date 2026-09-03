@@ -78,7 +78,11 @@ public sealed class ReplayRunnerTests
 
         ReplayRunResult result = new ReplayRunner().Run(Manifest(), log, AlwaysHold);
 
-        Assert.Equal(SessionStart.AddMinutes(9), result.FinalVirtualTime);
+        // The receive timeline, not the venue's: events are stamped 1.5ms before this runtime saw
+        // them, and the moment a decision was made is the moment the event arrived.
+        Assert.Equal(
+            SessionStart.AddMinutes(9).AddTicks(TimeSpan.FromMilliseconds(1.5).Ticks),
+            result.FinalVirtualTime);
         Assert.Equal(TimeSpan.FromMinutes(9).Ticks, result.FinalMonotonicTimestamp);
     }
 
@@ -155,18 +159,55 @@ public sealed class ReplayRunnerTests
     }
 
     [Fact]
-    public void ALogWhoseClockWentBackwardsIsRefused()
+    public void ALogWhoseReceiveClockWentBackwardsIsRefused()
     {
-        // Wall-clock non-monotonicity leaking into a recording. This system has already had uptime
-        // come back negative from exactly this, and a TTL replayed across it would expire before it
-        // started.
+        // The runtime's own clock stepping backwards. This system has already had uptime come back
+        // negative from exactly this, and a TTL replayed across it would expire before it started.
         List<ReplayEnvelope> log = [.. Log(events: 5)];
         log[3] = log[3] with { EventUnixNanoseconds = log[2].EventUnixNanoseconds - 1_000_000L };
 
         ReplayRefusedException refused = Assert.Throws<ReplayRefusedException>(() =>
             new ReplayRunner().Run(Manifest(), log, AlwaysHold));
 
+        Assert.Equal(ReplayRefusal.NonMonotonicReceiveTime, refused.Refusal);
+    }
+
+    [Fact]
+    public void VenueTimestampsFromDifferentInstrumentsMayInterleave()
+    {
+        // What broke the first real recording. Six crypto order books arrived stamped -4s and -12s
+        // apart from each other, because each book was last touched at a different moment on its own
+        // venue clock. A global event-time check called that a corrupt log and refused the session,
+        // so the release gate reported a defect that was ordinary market data.
+        List<ReplayEnvelope> log = [.. Log(events: 4)];
+        long first = log[0].EventUnixNanoseconds;
+
+        log[0] = log[0] with { Source = "venue:btc" };
+        log[1] = StampedAt(log[1], "venue:eth", first - 4_000_000_000L);
+        log[2] = StampedAt(log[2], "venue:link", first - 12_000_000_000L);
+        log[3] = log[3] with { Source = "venue:btc" };
+
+        ReplayRunResult result = new ReplayRunner().Run(Manifest(), log, AlwaysHold);
+
+        Assert.Equal(4, result.EventCount);
+    }
+
+    [Fact]
+    public void OneSourceWhoseOwnTimestampsGoBackwardsIsStillRefused()
+    {
+        // Interleaving across sources is ordinary; a single order book running backwards is a feed
+        // defect, and a staleness test computed against it would read the wrong sign.
+        List<ReplayEnvelope> log = [.. Log(events: 4)];
+        log[0] = log[0] with { Source = "venue:btc" };
+        log[1] = log[1] with { Source = "venue:eth" };
+        log[2] = StampedAt(log[2], "venue:btc", log[0].EventUnixNanoseconds - 1_000_000L);
+        log[3] = log[3] with { Source = "venue:eth" };
+
+        ReplayRefusedException refused = Assert.Throws<ReplayRefusedException>(() =>
+            new ReplayRunner().Run(Manifest(), log, AlwaysHold));
+
         Assert.Equal(ReplayRefusal.NonMonotonicEventTime, refused.Refusal);
+        Assert.Contains("venue:btc", refused.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -274,6 +315,21 @@ public sealed class ReplayRunnerTests
         PolicyVersion: "policy-v1",
         RandomSeed: 20260903,
         EvidenceClass: ReplayEvidenceClass.PassiveHistoricalReplay);
+
+    /// <summary>
+    /// Restamps an envelope's venue time while holding the moment this runtime saw it fixed.
+    ///
+    /// The two timelines move independently: a venue stamp twelve seconds old does not mean the
+    /// event arrived twelve seconds ago, it means the book had not changed for twelve seconds. Tests
+    /// that moved venue time alone would drag receive time with it and trip the wrong check.
+    /// </summary>
+    private static ReplayEnvelope StampedAt(ReplayEnvelope envelope, string source, long eventNanoseconds) =>
+        envelope with
+        {
+            Source = source,
+            EventUnixNanoseconds = eventNanoseconds,
+            ReceiveOffsetNanoseconds = envelope.ReceiveUnixNanoseconds - eventNanoseconds,
+        };
 
     /// <summary>A log of evenly spaced events, one minute apart.</summary>
     private static IReadOnlyList<ReplayEnvelope> Log(int events)

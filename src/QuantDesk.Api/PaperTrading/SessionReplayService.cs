@@ -96,6 +96,21 @@ public sealed class SessionReplayService(
         string? session = MostRecentCompletedSession();
         if (session is null)
         {
+            // A recorder that could not open its log and a deployment that has simply not finished
+            // a session yet both leave no file behind, and they mean opposite things: the second is
+            // the correct reading on a fresh volume, the first is the gate quietly not running.
+            // Reporting one reason for both is how a release gate stays broken -- it was, for the
+            // whole of this deployment, because the log volume arrived owned by root and recording
+            // degraded to disabled exactly as designed.
+            if (!recorder.IsRecording)
+            {
+                logger.LogError(
+                    "Replay recording is disabled, so no session will be produced to replay. "
+                    + "Section 22's gate cannot run until the log directory is writable.");
+                state.Update(Unavailable("RECORDING_DISABLED"));
+                return;
+            }
+
             state.Update(Unavailable("NO_COMPLETED_SESSION"));
             return;
         }

@@ -61,11 +61,11 @@ public sealed class ReplayEventRecorder(IRuntimeClock clock, int schemaVersion =
 
         long receivedNanoseconds = ToUnixNanoseconds(clock.UtcNow);
 
-        // An event stamped in the future by its source, or a receive clock that stepped backwards,
-        // would give a negative offset. Recording zero rather than the negative keeps the envelope
-        // valid and keeps the lie out of the arithmetic -- and the event time itself is untouched,
-        // so the replay still refuses a log whose event times go backwards.
-        long offset = Math.Max(0L, receivedNanoseconds - eventUnixNanoseconds);
+        // Recorded as measured, negative included. A venue clock running ahead of ours makes this
+        // genuinely negative, and the replay clock is reconstructed as event + offset -- so clamping
+        // here would not hide an anomaly, it would move the receive time by however far the venue
+        // was ahead and desynchronise the timeline the whole replay advances along.
+        long offset = receivedNanoseconds - eventUnixNanoseconds;
 
         lock (_gate)
         {

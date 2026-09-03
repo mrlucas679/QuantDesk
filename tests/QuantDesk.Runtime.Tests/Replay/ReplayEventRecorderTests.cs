@@ -49,17 +49,19 @@ public sealed class ReplayEventRecorderTests
     }
 
     [Fact]
-    public void AnEventStampedInTheFutureRecordsNoLatencyRatherThanNegativeLatency()
+    public void AnEventStampedAheadOfOurClockKeepsItsNegativeOffset()
     {
-        // A source clock ahead of ours, or a receive clock that stepped back. Recording the negative
-        // would put a lie into the arithmetic and make the envelope invalid; the event time itself
-        // is untouched, so the runner still refuses a log whose event times go backwards.
+        // A venue clock running ahead of ours. The offset is how the receive time is reconstructed
+        // -- event plus offset -- and the replay clock advances along that, so clamping the negative
+        // away would not hide an anomaly: it would move the recorded receive time five seconds later
+        // than the moment the runtime actually saw the event, and desynchronise the whole timeline.
         var recorder = new ReplayEventRecorder(new VirtualRuntimeClock(SessionStart));
 
         ReplayEnvelope envelope = recorder.Record(
             "feed", "quote", Nanoseconds(SessionStart.AddSeconds(5)), [1]);
 
-        Assert.Equal(0L, envelope.ReceiveOffsetNanoseconds);
+        Assert.Equal(-5_000_000_000L, envelope.ReceiveOffsetNanoseconds);
+        Assert.Equal(Nanoseconds(SessionStart), envelope.ReceiveUnixNanoseconds);
         Assert.True(envelope.IsValid());
     }
 

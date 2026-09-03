@@ -126,6 +126,29 @@ public sealed class SessionReplayServiceTests : IDisposable
     }
 
     [Fact]
+    public void ARecorderThatCouldNotOpenItsLogIsReportedApartFromHavingRecordedNothingYet()
+    {
+        // These leave the same empty directory behind and mean opposite things. "No completed
+        // session" is the correct reading on a fresh volume; a recorder that could not open its log
+        // is the gate silently not running, and it read as the former for a whole deployment --
+        // the log volume arrived owned by root, and recording degraded to disabled by design.
+        string occupied = Path.Combine(_root, "not-a-directory");
+        File.WriteAllText(occupied, "occupied");
+
+        using var broken = new MarketDataSessionRecorder(
+            new VirtualRuntimeClock(SessionStart), NullLogger.Instance, occupied);
+        Assert.False(broken.IsRecording);
+
+        var state = new SessionReplayState();
+        new SessionReplayService(
+            broken, state, new LiveRuntimeClock(),
+            NullLogger<SessionReplayService>.Instance).Replay();
+
+        Assert.Equal("unavailable", state.Snapshot().State);
+        Assert.Equal("RECORDING_DISABLED", state.Snapshot().Reason);
+    }
+
+    [Fact]
     public void ACorruptedSessionIsReportedRatherThanCrashingTheHost()
     {
         File.WriteAllText(Path.Combine(_root, "session-20260101-000000.jsonl"), "{ not json");
