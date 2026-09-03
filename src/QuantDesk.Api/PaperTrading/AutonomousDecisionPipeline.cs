@@ -410,6 +410,24 @@ public sealed class AutonomousDecisionPipeline(
             // understate every edge by a full round trip.
             expectedMoveBps = selection.Strategy.ResearchMeanGrossBps;
 
+            // Refused until execution can express it, and this is the dangerous half of the change
+            // that added direction to the rules.
+            //
+            // The rules can now say Short. Execution cannot: SubmitEntryAsync sends OrderSide.Buy
+            // and the only Sell is the close of a long. So a bearish signal reaching the compiler
+            // would open a long position on it -- acting on a rule's opinion with the sign reversed,
+            // which is worse than the long-only book that at least abstained when it disagreed.
+            //
+            // Spot crypto cannot be shorted at the venue at all -- there is no borrow and Alpaca
+            // offers no paper crypto derivative -- so that refusal is permanent rather than
+            // temporary, and a bearish crypto view has to be expressed through options.
+            if (selection.Direction is SignalDirection.Short)
+            {
+                return Reject(route.AssetClass is TradedAssetClass.SpotCrypto
+                    ? "ShortNotSupportedOnSpotCrypto"
+                    : "ShortNotYetExecutable");
+            }
+
             // The instrument still has to be able to move enough to pay for the round trip. That is
             // a necessary condition and stays exactly where it was; it is simply no longer mistaken
             // for a forecast.

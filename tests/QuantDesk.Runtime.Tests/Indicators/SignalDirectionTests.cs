@@ -167,6 +167,27 @@ public sealed class SignalDirectionTests
             item => item.Id == first.Id);
     }
 
+    // ------------------------------------------------- a short must not be executed as a long
+
+    [Fact]
+    public void ShortAndLongAreDistinctValuesSoExecutionCannotConflateThem()
+    {
+        // The hazard the pipeline refusal guards. Rules can now say Short while execution still
+        // sends OrderSide.Buy, so a bearish signal reaching the compiler would open a long on it --
+        // acting on the rule's opinion with the sign reversed, which is worse than the long-only
+        // book that at least abstained when it disagreed.
+        //
+        // None is also its own value: a rule that looked and found nothing is not a rule that could
+        // not look, and section 26.2 treats a refusal to commit as information.
+        Assert.NotEqual(SignalDirection.Long, SignalDirection.Short);
+        Assert.NotEqual(SignalDirection.None, SignalDirection.Long);
+        Assert.NotEqual(SignalDirection.None, SignalDirection.Short);
+
+        // Default(SignalDirection) must be None rather than a tradable direction, or a record
+        // deserialised without the field would read as an instruction to take exposure.
+        Assert.Equal(SignalDirection.None, default(SignalDirection));
+    }
+
     // ------------------------------------------------------------------------------- fixtures
 
     private static readonly DateTimeOffset Fired = DateTimeOffset.Parse("2026-09-03T12:00:00Z");
