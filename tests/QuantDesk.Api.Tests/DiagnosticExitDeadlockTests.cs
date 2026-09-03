@@ -1,4 +1,5 @@
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.Tests;
 
@@ -15,7 +16,7 @@ public sealed class DiagnosticExitDeadlockTests
     [Fact]
     public void AnOpenPositionBlocksEntryButNeverBlocksTheExit()
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: true, paperEndpointVerified: true);
 
@@ -28,7 +29,7 @@ public sealed class DiagnosticExitDeadlockTests
     [Fact]
     public void AFlatAccountIsReadyForBothDirections()
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: true, portfolioKnown: true, paperEndpointVerified: true);
 
@@ -43,7 +44,7 @@ public sealed class DiagnosticExitDeadlockTests
     {
         // The exit gate drops only the flatness requirement. Losing broker truth entirely still stops
         // it, because an exit sized against unknown state is worse than no exit at all.
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: false, paperEndpointVerified: false);
 

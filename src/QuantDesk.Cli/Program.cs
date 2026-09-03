@@ -141,6 +141,13 @@ internal static class QuantDeskCli
         }
 
         string clientOrderId = $"qd-smoke-{Guid.NewGuid():N}";
+
+        // Stopwatch directly, and deliberately. This is a one-shot smoke tool that is never
+        // replayed, it references only the Alpaca project, and both readings below come from the
+        // same source so the arithmetic is self-consistent. Pulling in QuantDesk.Runtime for a
+        // clock would widen the dependency graph of a tool for cosmetic uniformity -- so the rule
+        // it looks like it is breaking does not apply here, and this comment is why nobody should
+        // "fix" it.
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
         var command = new ExecutionCommand(
             CommandId: now,
@@ -156,7 +163,7 @@ internal static class QuantDeskCli
             Quantity: 1,
             LimitPrice: 1m,
             CreatedMonotonicTicks: now,
-            ExpiresMonotonicTicks: now + System.Diagnostics.Stopwatch.Frequency * 60,
+            ExpiresMonotonicTicks: now + (System.Diagnostics.Stopwatch.Frequency * 60),
             StrategyId: "paper-order-smoke");
         BrokerSubmitResult submission = await gateway.SubmitAsync(command, cancellationToken);
         if (submission.State != BrokerSubmitState.Acknowledged || string.IsNullOrWhiteSpace(submission.BrokerOrderId))

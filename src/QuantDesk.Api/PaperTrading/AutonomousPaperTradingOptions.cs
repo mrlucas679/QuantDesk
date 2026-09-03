@@ -201,7 +201,7 @@ public sealed record AutonomousPaperTradingOptions(
         // experiment was never registered to trade.
         foreach (string symbol in symbols)
         {
-            if (!authorization.IsValidFor(symbol))
+            if (!authorization.IsValidFor(symbol, DateTimeOffset.UtcNow))
                 throw new InvalidOperationException(
                     $"Experimental paper authorization does not cover '{symbol}', or failed its sanity checks.");
         }

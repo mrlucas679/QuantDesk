@@ -31,7 +31,7 @@ public sealed class MultiLegExecutionRecoveryServiceTests
             var lifecycle = new MultiLegExecutionLifecycle(
                 broker, broker, store, new VirtualRuntimeClock(now), TimeSpan.FromSeconds(1));
             var service = new MultiLegExecutionRecoveryService(lifecycle,
-                NullLogger<MultiLegExecutionRecoveryService>.Instance);
+                NullLogger<MultiLegExecutionRecoveryService>.Instance, new LiveRuntimeClock());
 
             await service.StartAsync(CancellationToken.None);
             for (int attempt = 0; attempt < 20 && service.LastCycleAt is null; attempt++)

@@ -1,6 +1,7 @@
 using QuantDesk.Domain.Trading;
 using System.Text.Json;
 using QuantDesk.Alpaca.MarketData;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -20,7 +21,8 @@ public sealed class CryptoQuoteCaptureService(
     AlpacaLatestCryptoQuoteClient quoteClient,
     AutonomousPaperTradingOptions trading,
     OpportunityRouter router,
-    ILogger<CryptoQuoteCaptureService> logger) : BackgroundService
+    ILogger<CryptoQuoteCaptureService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     private static readonly TimeSpan MinimumCaptureInterval = TimeSpan.FromSeconds(5);
     private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
@@ -42,7 +44,7 @@ public sealed class CryptoQuoteCaptureService(
             try
             {
                 CryptoQuoteSnapshot quote = await quoteClient.GetLatestQuoteAsync(symbol, cancellationToken);
-                await AppendSnapshotAsync(symbol, quote, cancellationToken);
+                await AppendSnapshotAsync(symbol, quote, clock.UtcNow, cancellationToken);
             }
             catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
             {
@@ -82,9 +84,9 @@ public sealed class CryptoQuoteCaptureService(
     private static async Task AppendSnapshotAsync(
         string symbol,
         CryptoQuoteSnapshot quote,
+        DateTimeOffset capturedAt,
         CancellationToken cancellationToken)
     {
-        DateTimeOffset capturedAt = DateTimeOffset.UtcNow;
         decimal midpoint = (quote.Bid + quote.Ask) / 2m;
         var snapshot = new CryptoQuoteSnapshotRecord(
             capturedAt,

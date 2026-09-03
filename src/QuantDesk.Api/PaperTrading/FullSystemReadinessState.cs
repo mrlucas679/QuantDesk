@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Execution;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -78,10 +79,10 @@ public sealed record FullSystemReadinessSnapshot(
 }
 
 /// <summary>Records independently verified readiness gates for autonomous paper execution.</summary>
-public sealed class FullSystemReadinessState
+public sealed class FullSystemReadinessState(IRuntimeClock clock)
 {
     private readonly object _gate = new();
-    private FullSystemReadinessSnapshot _snapshot = EmptySnapshot();
+    private FullSystemReadinessSnapshot _snapshot = EmptySnapshot(clock.UtcNow);
 
     public FullSystemReadinessSnapshot Snapshot()
     {
@@ -97,7 +98,7 @@ public sealed class FullSystemReadinessState
                 BrokerReconciled = reconciled,
                 PortfolioKnown = portfolioKnown,
                 PaperEndpointVerified = paperEndpointVerified,
-                UpdatedAt = DateTimeOffset.UtcNow
+                UpdatedAt = clock.UtcNow
             };
         }
     }
@@ -118,7 +119,7 @@ public sealed class FullSystemReadinessState
                 ReservationReady = reservationReady,
                 ExecutionReady = executionReady,
                 ExitEngineReady = exitEngineReady,
-                UpdatedAt = DateTimeOffset.UtcNow
+                UpdatedAt = clock.UtcNow
             };
         }
     }
@@ -131,7 +132,7 @@ public sealed class FullSystemReadinessState
             {
                 FeaturesReady = featuresReady,
                 ExpertsReady = expertsReady,
-                UpdatedAt = DateTimeOffset.UtcNow
+                UpdatedAt = clock.UtcNow
             };
         }
     }
@@ -144,12 +145,12 @@ public sealed class FullSystemReadinessState
             {
                 MarketDataHealthy = marketDataHealthy,
                 TradeUpdatesHealthy = tradeUpdatesHealthy,
-                UpdatedAt = DateTimeOffset.UtcNow
+                UpdatedAt = clock.UtcNow
             };
         }
     }
 
-    private static FullSystemReadinessSnapshot EmptySnapshot() => new(
+    private static FullSystemReadinessSnapshot EmptySnapshot(DateTimeOffset asOf) => new(
         false, false, false, false, false, false, false, false, false, false, false, false,
-        DateTimeOffset.UtcNow);
+        asOf);
 }

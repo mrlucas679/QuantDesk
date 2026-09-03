@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Runtime.Persistence;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -16,7 +17,8 @@ namespace QuantDesk.Api.PaperTrading;
 /// </summary>
 public sealed class HistoricalEquityDatasetService(
     AlpacaHistoricalStockBarClient client,
-    ILogger<HistoricalEquityDatasetService> logger) : BackgroundService
+    ILogger<HistoricalEquityDatasetService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     private static readonly string[] DefaultSymbols = ["SPY", "QQQ", "IWM", "DIA"];
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
@@ -58,7 +60,7 @@ public sealed class HistoricalEquityDatasetService(
         string feed = Environment.GetEnvironmentVariable("QUANTDESK_EQUITY_RESEARCH_FEED")?.Trim()
             .ToLowerInvariant() is "sip" ? "sip" : "iex";
 
-        DateTimeOffset intradayEnd = DateTimeOffset.UtcNow.AddMinutes(-20);
+        DateTimeOffset intradayEnd = clock.UtcNow.AddMinutes(-20);
         DateTimeOffset intradayStart = intradayEnd.AddDays(-lookbackDays);
         foreach (string symbol in universe)
         {
@@ -101,7 +103,7 @@ public sealed class HistoricalEquityDatasetService(
         await AtomicFile.WriteAllBytesAsync(Path.Combine(root, dataFile), data, cancellationToken);
         var manifest = new HistoricalDatasetManifest(
             datasetId, symbol, timeframe, bars[0].Timestamp, bars[^1].Timestamp,
-            bars.Count, $"sha256:{hash}", DateTimeOffset.UtcNow, dataFile, feed, "all");
+            bars.Count, $"sha256:{hash}", clock.UtcNow, dataFile, feed, "all");
         await AtomicFile.WriteAllBytesAsync(
             Path.Combine(root, LatestManifestName(slug, timeframe, feed)),
             JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions), cancellationToken);

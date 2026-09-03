@@ -1,5 +1,6 @@
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Domain.Execution;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.Tests;
 
@@ -65,7 +66,7 @@ public sealed class ExecutionAdmissionPolicyTests
         // brokerReconciled means "the account is flat", so it is false precisely while a position that
         // needs closing exists. Requiring it to close was a deadlock; requiring research or strategy
         // readiness to close would be a stranger one, since neither is a reason to keep a position.
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: true, paperEndpointVerified: true);
 
@@ -80,7 +81,7 @@ public sealed class ExecutionAdmissionPolicyTests
     [InlineData(OrderClassification.QualifiedStrategy)]
     public void LosingBrokerTruthStillRefusesAClose(OrderClassification classification)
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: false, paperEndpointVerified: false);
 

@@ -3,6 +3,7 @@ using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Domain.Market;
 using QuantDesk.Runtime.Ingestion;
 using QuantDesk.Runtime.State;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -15,7 +16,8 @@ public sealed class MarketDataRuntimeService(
     MarketStateOwner stateOwner,
     FullSystemReadinessState readiness,
     PaperTradingOptions options,
-    ILogger<MarketDataRuntimeService> logger) : BackgroundService
+    ILogger<MarketDataRuntimeService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     private static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(15);
     private long _lastEventTicks;
@@ -39,17 +41,17 @@ public sealed class MarketDataRuntimeService(
         {
             await foreach (NormalizedMarketEvent marketEvent in stream.ReadAsync(cryptoSymbols, stoppingToken))
             {
-                if (!channel.TryPublish(marketEvent, Stopwatch.GetTimestamp()))
+                if (!channel.TryPublish(marketEvent, clock.MonotonicTimestamp))
                 {
                     readiness.RecordStreams(false, readiness.Snapshot().TradeUpdatesHealthy);
                     logger.LogError("Market-data channel reached capacity; readiness failed closed.");
                     continue;
                 }
-                if (!microstructureEvidence.TryPublish(marketEvent, Stopwatch.GetTimestamp()))
+                if (!microstructureEvidence.TryPublish(marketEvent, clock.MonotonicTimestamp))
                 {
                     logger.LogWarning("Microstructure evidence buffer reached capacity; affected windows are marked unusable.");
                 }
-                Interlocked.Exchange(ref _lastEventTicks, Stopwatch.GetTimestamp());
+                Interlocked.Exchange(ref _lastEventTicks, clock.MonotonicTimestamp);
                 readiness.RecordStreams(true, readiness.Snapshot().TradeUpdatesHealthy);
             }
         }
@@ -66,7 +68,7 @@ public sealed class MarketDataRuntimeService(
         if (!connected)
         {
             readiness.RecordStreams(false, readiness.Snapshot().TradeUpdatesHealthy);
-            microstructureEvidence.MarkGap("stream_disconnected", Stopwatch.GetTimestamp());
+            microstructureEvidence.MarkGap("stream_disconnected", clock.MonotonicTimestamp);
         }
         logger.LogInformation("Alpaca crypto market-data subscription {State}.", connected ? "connected" : "disconnected");
     }
@@ -90,8 +92,8 @@ public sealed class MarketDataRuntimeService(
         try
         {
             CryptoQuoteSnapshot quote = await quoteClient.GetLatestQuoteAsync(symbol, cancellationToken);
-            long nowTicks = Stopwatch.GetTimestamp();
-            long nowNanoseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000;
+            long nowTicks = clock.MonotonicTimestamp;
+            long nowNanoseconds = clock.UtcNow.ToUnixTimeMilliseconds() * 1_000_000;
             var marketEvent = NormalizedMarketEvent.FromQuote(new QuoteEvent(
                 nowNanoseconds, instrumentSlot, (double)quote.Bid, (double)quote.Ask,
                 0, 0, nowNanoseconds, nowTicks, nowNanoseconds));

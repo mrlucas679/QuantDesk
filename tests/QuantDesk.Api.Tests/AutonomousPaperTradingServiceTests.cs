@@ -224,7 +224,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         var clock = new VirtualRuntimeClock(Now);
         var mode = new RuntimeModeState();
         mode.Transition(SystemMode.Ready, "test");
-        var state = new AutonomousTradingState();
+        var state = new AutonomousTradingState(new LiveRuntimeClock());
         var resolver = new DictionaryInstrumentSymbolResolver(
             new Dictionary<int, string> { [0] = "BTC/USD", [1] = "SPY" });
         var options = new AutonomousPaperTradingOptions(

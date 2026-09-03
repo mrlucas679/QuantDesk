@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.Tests;
 
@@ -63,7 +64,7 @@ public sealed class ResearchReadinessMonitorServiceTests
     [Fact]
     public async Task AnUnreachablePlaneFailsClosedRatherThanThrowing()
     {
-        FullSystemReadinessState readiness = new();
+        FullSystemReadinessState readiness = new(new LiveRuntimeClock());
         var service = new ResearchReadinessMonitorService(
             new HttpClient(new ThrowingHandler()) { BaseAddress = new Uri("http://research/") },
             readiness,
@@ -92,7 +93,7 @@ public sealed class ResearchReadinessMonitorServiceTests
         out ResearchReadinessMonitorService service,
         ResearchArtifactState? artifacts = null)
     {
-        FullSystemReadinessState readiness = new();
+        FullSystemReadinessState readiness = new(new LiveRuntimeClock());
         service = new ResearchReadinessMonitorService(
             new HttpClient(new CannedHandler(status, body)) { BaseAddress = new Uri("http://research/") },
             readiness,

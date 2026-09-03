@@ -1,5 +1,6 @@
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Domain.Execution;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.Tests;
 
@@ -15,7 +16,7 @@ public sealed class RuntimeModeSeparationTests
 {
     private static FullSystemReadinessSnapshot InfrastructureOnly()
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: true, portfolioKnown: true, paperEndpointVerified: true);
         return readiness.Snapshot();   // research plane never recorded: features/experts stay false

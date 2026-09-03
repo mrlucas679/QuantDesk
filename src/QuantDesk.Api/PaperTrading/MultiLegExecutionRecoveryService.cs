@@ -1,11 +1,13 @@
 using QuantDesk.Runtime.Execution;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
 /// <summary>Continuously resumes every durable, nonterminal MLeg lifecycle after startup.</summary>
 public sealed class MultiLegExecutionRecoveryService(
     MultiLegExecutionLifecycle lifecycle,
-    ILogger<MultiLegExecutionRecoveryService> logger) : BackgroundService
+    ILogger<MultiLegExecutionRecoveryService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     private static readonly TimeSpan RecoveryInterval = TimeSpan.FromSeconds(1);
 
@@ -15,7 +17,7 @@ public sealed class MultiLegExecutionRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        StartedAt = DateTimeOffset.UtcNow;
+        StartedAt = clock.UtcNow;
         await ResumeAllAsync(stoppingToken);
         using var timer = new PeriodicTimer(RecoveryInterval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
@@ -27,7 +29,7 @@ public sealed class MultiLegExecutionRecoveryService(
         try
         {
             await lifecycle.RecoverAllAsync(cancellationToken);
-            LastCycleAt = DateTimeOffset.UtcNow;
+            LastCycleAt = clock.UtcNow;
             LastError = null;
         }
         catch (Exception exception)

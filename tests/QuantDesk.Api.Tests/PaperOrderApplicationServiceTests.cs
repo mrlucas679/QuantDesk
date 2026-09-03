@@ -131,7 +131,7 @@ public sealed class PaperOrderApplicationServiceTests
     /// </summary>
     private static FullSystemReadinessState InfrastructureReady()
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: true, portfolioKnown: true, paperEndpointVerified: true);
         return readiness;
@@ -200,7 +200,7 @@ public sealed class PaperOrderApplicationServiceTests
     {
         // Infrastructure readiness is a real gate, not a formality: without broker truth an order is
         // sized against state nobody knows.
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         readiness.RecordDeterministicRuntime(true, true, true, true, true);
         readiness.RecordBrokerPreflight(reconciled: false, portfolioKnown: false, paperEndpointVerified: false);
         var mode = new RuntimeModeState();

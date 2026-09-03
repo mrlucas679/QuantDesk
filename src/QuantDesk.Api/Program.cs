@@ -174,7 +174,8 @@ builder.Services.AddSingleton(services =>
         new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration,
         services.GetRequiredService<IRuntimeClock>());
 });
-builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
+builder.Services.AddSingleton(services =>
+    CryptoFeeSchedule.AlpacaTier1(services.GetRequiredService<IRuntimeClock>().UtcNow));
 builder.Services.AddSingleton<IRealisedCostSource>(services =>
     new DiagnosticStoreRealisedCostSource(
         services.GetRequiredService<DiagnosticExecutionStore>(),
@@ -297,7 +298,8 @@ builder.Services.AddHostedService(services => new HistoricalCryptoDatasetService
         services.GetRequiredService<AlpacaOptions>()),
     services.GetRequiredService<AutonomousPaperTradingOptions>(),
     services.GetRequiredService<OpportunityRouter>(),
-    services.GetRequiredService<ILogger<HistoricalCryptoDatasetService>>()));
+    services.GetRequiredService<ILogger<HistoricalCryptoDatasetService>>(),
+    services.GetRequiredService<IRuntimeClock>()));
 builder.Services.AddHostedService<HistoricalEquityDatasetService>();
 builder.Services.AddHttpClient<ResearchReadinessMonitorService>(client =>
 {

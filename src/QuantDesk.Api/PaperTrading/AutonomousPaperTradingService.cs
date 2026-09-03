@@ -303,7 +303,7 @@ public sealed class AutonomousPaperTradingService(
         // Timed separately from the decision that follows it. A cycle slow because the venue is
         // slow and one slow because this system is slow need different responses, and a single
         // end-to-end number cannot tell them apart.
-        long fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        long fetchStarted = clock.MonotonicTimestamp;
         DirectionalMarketEvidence evidence = await evidenceProvider.GetEvidenceAsync(route, cancellationToken);
         latency?.Record(LatencyStage.MarketDataFetch, fetchStarted);
 
@@ -318,7 +318,7 @@ public sealed class AutonomousPaperTradingService(
         // backwards for a signal whose whole purpose is to say something about entering. One extra
         // call per instrument per cycle, on the same cadence as the quote it accompanies.
         long bookEventNs = clock.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
-        long bookStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        long bookStarted = clock.MonotonicTimestamp;
         await RefreshOrderBookAsync(route, slot, bookEventNs, cancellationToken);
         latency?.Record(LatencyStage.OrderBookFetch, bookStarted);
 
@@ -349,7 +349,7 @@ public sealed class AutonomousPaperTradingService(
 
         // The gap the entry fence guards. Whether a 30 bps adverse-move bound protects anything
         // depends on how long this actually takes, and until now nothing measured it.
-        long decisionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        long decisionStarted = clock.MonotonicTimestamp;
         AutonomousPipelineDecision decision = pipeline.Evaluate(
             slot, route, evidence, initial, true, true, capabilities,
             // What each mechanism already holds, so one cannot monopolise the universe and leave
@@ -415,7 +415,7 @@ public sealed class AutonomousPaperTradingService(
             return;
         }
 
-        long executionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        long executionStarted = clock.MonotonicTimestamp;
         await ExecuteSpotOpportunityAsync(
             symbol, candidate, decision, evidence, slot, ownership, cancellationToken);
         latency?.Record(LatencyStage.BrokerSubmit, executionStarted);
@@ -621,13 +621,13 @@ public sealed class AutonomousPaperTradingService(
 
     private static void ApplyFill(
         ExecutionIntent intent, ExecutionWorker execution, TradeUpdateProcessor updates,
-        BrokerOrderSnapshot fill, int slot, OrderSide side)
+        BrokerOrderSnapshot fill, int slot, OrderSide side, long eventNanoseconds)
     {
         if (fill.AverageFillPrice is not decimal price || price <= 0)
             throw new InvalidOperationException("Filled broker order is missing its average fill price.");
         var update = new BrokerTradeUpdate(BrokerTradeUpdateKind.Fill, fill.ClientOrderId,
             fill.BrokerOrderId, fill.FilledQuantity, price, null,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L);
+            eventNanoseconds);
         execution.ApplyTradeUpdate(intent, update);
         if (!updates.ApplyFill(update, slot, side))
             throw new InvalidOperationException("Broker fill could not be applied to the Portfolio Ledger.");

@@ -32,11 +32,13 @@ namespace QuantDesk.Architecture.Tests;
 /// uptime would be a fiction. They are named individually rather than covered by a directory rule,
 /// so adding a third exemption is a decision someone has to write down here.
 ///
-/// The API service layer is not yet covered. Roughly forty reads remain in hosted services and
-/// recovery paths, and bringing them onto the clock is a larger sweep than the decision logic. The
-/// files named below are the ones that actually decide what to trade; the rest is scheduling and
-/// reporting around them, and claiming otherwise by widening the scan before the work is done
-/// would make this test a comment rather than a gate.
+/// The Alpaca project is outside the scan. Its two wall-clock reads build query windows for a
+/// historical HTTP request -- "give me the last thirty-six hours" -- which is an I/O boundary
+/// rather than a decision, and a replay reads its events from the recorded log rather than from
+/// the venue. The CLI is outside it too: a one-shot smoke tool that references only Alpaca, where
+/// both readings come from the same Stopwatch and are therefore self-consistent. Pulling in the
+/// runtime project for a clock there would widen a dependency graph for uniformity, which is a
+/// worse trade than the inconsistency it removes.
 /// </summary>
 public sealed class DeterministicTimeTests
 {
@@ -48,11 +50,14 @@ public sealed class DeterministicTimeTests
     /// </summary>
     private static readonly string[] CoveredProjects = ["QuantDesk.Runtime"];
 
-    private static readonly string[] CoveredApiFiles =
-    [
-        "AutonomousDecisionPipeline.cs",
-        "IndicatorRegimeSource.cs",
-    ];
+    /// <summary>
+    /// The API directories that decide and execute, now that they read through the clock.
+    ///
+    /// Whole directories rather than a file list, for the same reason the runtime is a whole
+    /// project: a list silently excludes the next file added beside the ones on it, which is
+    /// exactly when a gate stops working.
+    /// </summary>
+    private static readonly string[] CoveredApiDirectories = ["PaperTrading", "Agents"];
 
     /// <summary>
     /// Files that may read real time, each for a stated reason.
@@ -69,6 +74,9 @@ public sealed class DeterministicTimeTests
             "Reports process uptime. Virtual uptime would be a fiction dressed as a health signal.",
         ["FaultCampaign.cs"] =
             "Records when a fault injection ran, which is wall-clock evidence about a real session.",
+        ["AutonomousPaperTradingOptions.cs"] =
+            "Parses configuration at startup, before any clock is constructed, and decides nothing "
+            + "at decision time.",
     };
 
     /// <summary>
@@ -173,11 +181,13 @@ public sealed class DeterministicTimeTests
             }
         }
 
-        string api = Path.Combine(root, "src", "QuantDesk.Api", "PaperTrading");
-        foreach (string name in CoveredApiFiles)
+        foreach (string directory in CoveredApiDirectories)
         {
-            string file = Path.Combine(api, name);
-            if (File.Exists(file)) yield return file;
+            string path = Path.Combine(root, "src", "QuantDesk.Api", directory);
+            if (!Directory.Exists(path)) continue;
+
+            foreach (string file in Directory.GetFiles(path, "*.cs", SearchOption.AllDirectories))
+                yield return file;
         }
     }
 

@@ -1,3 +1,4 @@
+using QuantDesk.Runtime.Time;
 namespace QuantDesk.Api.PaperTrading;
 
 public sealed record AutonomousTradingSnapshot(
@@ -21,13 +22,13 @@ public sealed record AutonomousTradingSnapshot(
 /// view the moment another was assessed, and could not tell "flat" from "not the most recent".
 /// Keeping a snapshot per symbol makes the lane's actual state observable.
 /// </summary>
-public sealed class AutonomousTradingState
+public sealed class AutonomousTradingState(IRuntimeClock clock)
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, AutonomousTradingSnapshot> _bySymbol =
         new(StringComparer.OrdinalIgnoreCase);
     private AutonomousTradingSnapshot _lane =
-        new("disabled", null, null, null, 0, null, null, null, null, DateTimeOffset.UtcNow);
+        new("disabled", null, null, null, 0, null, null, null, null, clock.UtcNow);
 
     /// <summary>
     /// The lane-wide view, kept for callers that predate multi-symbol and for lifecycle states that
@@ -84,11 +85,11 @@ public sealed class AutonomousTradingState
         }
     }
 
-    private static AutonomousTradingSnapshot Build(
+    private AutonomousTradingSnapshot Build(
         string state, string? symbol, string? entryOrderId, string? exitOrderId,
         decimal filledQuantity, string? reason, decimal? grossEdgeBps, decimal? estimatedCostBps) =>
         new(state, symbol, entryOrderId, exitOrderId, filledQuantity, reason,
-            grossEdgeBps, estimatedCostBps, grossEdgeBps - estimatedCostBps, DateTimeOffset.UtcNow);
+            grossEdgeBps, estimatedCostBps, grossEdgeBps - estimatedCostBps, clock.UtcNow);
 
     private static bool IsWorking(AutonomousTradingSnapshot snapshot) =>
         snapshot.State is "holding" or "submitting_entry" or "submitting_exit";

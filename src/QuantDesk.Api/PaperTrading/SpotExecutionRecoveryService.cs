@@ -1,4 +1,5 @@
 using QuantDesk.Runtime.Execution;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -11,7 +12,8 @@ namespace QuantDesk.Api.PaperTrading;
 /// </summary>
 public sealed class SpotExecutionRecoveryService(
     SpotExecutionLifecycle lifecycle,
-    ILogger<SpotExecutionRecoveryService> logger) : BackgroundService
+    ILogger<SpotExecutionRecoveryService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     private static readonly TimeSpan RecoveryInterval = TimeSpan.FromSeconds(1);
 
@@ -21,7 +23,7 @@ public sealed class SpotExecutionRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        StartedAt = DateTimeOffset.UtcNow;
+        StartedAt = clock.UtcNow;
         await ResumeAllAsync(stoppingToken);
         using var timer = new PeriodicTimer(RecoveryInterval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
@@ -33,7 +35,7 @@ public sealed class SpotExecutionRecoveryService(
         try
         {
             await lifecycle.RecoverAllAsync(cancellationToken);
-            LastCycleAt = DateTimeOffset.UtcNow;
+            LastCycleAt = clock.UtcNow;
             LastError = null;
         }
         catch (Exception exception)

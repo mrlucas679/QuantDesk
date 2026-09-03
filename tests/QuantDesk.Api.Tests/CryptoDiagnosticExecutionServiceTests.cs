@@ -919,7 +919,7 @@ public sealed class CryptoDiagnosticExecutionServiceTests
 
         private static FullSystemReadinessState CreateInfrastructureReadyState()
         {
-            var state = new FullSystemReadinessState();
+            var state = new FullSystemReadinessState(new LiveRuntimeClock());
             state.RecordBrokerPreflight(reconciled: true, portfolioKnown: true, paperEndpointVerified: true);
             state.RecordDeterministicRuntime(
                 committeesReady: false,

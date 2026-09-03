@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using QuantDesk.Alpaca.MarketData;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -36,7 +37,8 @@ public sealed class HistoricalCryptoDatasetService(
     AlpacaLatestCryptoQuoteClient client,
     AutonomousPaperTradingOptions trading,
     OpportunityRouter router,
-    ILogger<HistoricalCryptoDatasetService> logger) : BackgroundService
+    ILogger<HistoricalCryptoDatasetService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     /// <summary>
     /// The crypto instrument studied when the lane is not itself trading crypto.
@@ -88,7 +90,7 @@ public sealed class HistoricalCryptoDatasetService(
         string outputRoot = Environment.GetEnvironmentVariable("QUANTDESK_RESEARCH_DATA_ROOT")
             ?? "/app/research-data";
         int lookbackDays = ReadPositiveInt("QUANTDESK_RESEARCH_LOOKBACK_DAYS", 180);
-        DateTimeOffset end = DateTimeOffset.UtcNow.AddMinutes(-1);
+        DateTimeOffset end = clock.UtcNow.AddMinutes(-1);
         try
         {
             string symbol = ResearchSymbol();
@@ -206,7 +208,7 @@ public sealed class HistoricalCryptoDatasetService(
         await AtomicFile.WriteAllBytesAsync(Path.Combine(outputRoot, dataFile), data, cancellationToken);
         var manifest = new HistoricalDatasetManifest(
             datasetId, symbol, timeframe, bars[0].Timestamp, bars[^1].Timestamp,
-            bars.Count, $"sha256:{hash}", DateTimeOffset.UtcNow, dataFile);
+            bars.Count, $"sha256:{hash}", clock.UtcNow, dataFile);
         byte[] manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
         await AtomicFile.WriteAllBytesAsync(Path.Combine(outputRoot, latestManifestName), manifestBytes, cancellationToken);
         logger.LogInformation(

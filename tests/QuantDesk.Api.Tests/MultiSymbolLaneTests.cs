@@ -1,4 +1,5 @@
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.Tests;
 
@@ -15,7 +16,7 @@ public sealed class MultiSymbolLaneStateTests
     [Fact]
     public void EachInstrumentKeepsItsOwnState()
     {
-        var state = new AutonomousTradingState();
+        var state = new AutonomousTradingState(new LiveRuntimeClock());
 
         state.UpdateSymbol("BTC/USD", "holding", filledQuantity: 0.01m);
         state.UpdateSymbol("ETH/USD", "abstained", reason: "EXPECTED_EDGE_BELOW_COSTS");
@@ -31,7 +32,7 @@ public sealed class MultiSymbolLaneStateTests
     {
         // The failure a single slot produced: evaluating ETH after BTC opened a position would have
         // reported the lane as flat while it was holding.
-        var state = new AutonomousTradingState();
+        var state = new AutonomousTradingState(new LiveRuntimeClock());
 
         state.UpdateSymbol("BTC/USD", "holding", filledQuantity: 0.01m);
         state.UpdateSymbol("ETH/USD", "abstained", reason: "MomentumNotAligned");
@@ -45,7 +46,7 @@ public sealed class MultiSymbolLaneStateTests
     {
         // And never the lane record, which carries only states no instrument owns -- reporting
         // "disabled" over a running lane that had simply abstained everywhere.
-        var state = new AutonomousTradingState();
+        var state = new AutonomousTradingState(new LiveRuntimeClock());
 
         state.UpdateSymbol("BTC/USD", "abstained", reason: "MomentumNotAligned");
 
@@ -55,7 +56,7 @@ public sealed class MultiSymbolLaneStateTests
     [Fact]
     public void AnEmptyLaneStillReportsSomething()
     {
-        Assert.Single(new AutonomousTradingState().SnapshotAll());
+        Assert.Single(new AutonomousTradingState(new LiveRuntimeClock()).SnapshotAll());
     }
 }
 

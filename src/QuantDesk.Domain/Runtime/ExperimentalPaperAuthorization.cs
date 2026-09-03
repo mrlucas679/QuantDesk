@@ -18,12 +18,20 @@ public sealed record ExperimentalPaperAuthorization(
     bool LeakageSanityPassed,
     bool ReplaySanityPassed)
 {
-    public bool IsValidFor(string symbol) =>
+    /// <summary>
+    /// Whether this authorization covers <paramref name="symbol"/> as of <paramref name="asOf"/>.
+    ///
+    /// The moment is a parameter rather than a reading taken inside. The domain project references
+    /// nothing and so cannot hold a clock, but the shape is right regardless: whether an
+    /// authorization has taken effect is a question about a point in time, and a method that picks
+    /// the point itself cannot be replayed and cannot be tested at a boundary.
+    /// </summary>
+    public bool IsValidFor(string symbol, DateTimeOffset asOf) =>
         !string.IsNullOrWhiteSpace(ExperimentId) &&
         !string.IsNullOrWhiteSpace(HypothesisId) &&
         !string.IsNullOrWhiteSpace(StrategyVersion) &&
         Symbols.Contains(symbol, StringComparer.OrdinalIgnoreCase) &&
-        RegisteredAt <= DateTimeOffset.UtcNow &&
+        RegisteredAt <= asOf &&
         !string.IsNullOrWhiteSpace(EvidenceReference) &&
         LeakageSanityPassed && ReplaySanityPassed;
 }
