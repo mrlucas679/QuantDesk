@@ -310,10 +310,10 @@ public sealed class StrategyRotationTests
     }
 
     private static SignalStrategy Always(string id, string mechanism) =>
-        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
+        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => SignalDirection.Long);
 
     private static SignalStrategy Never(string id) =>
-        new(id, "trend", StrategyQualification.Unqualified, -10, -20, (_, _) => false);
+        new(id, "trend", StrategyQualification.Unqualified, -10, -20, (_, _) => SignalDirection.None);
 
     private static IndicatorSet Set() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
@@ -480,7 +480,7 @@ public sealed class StrategyRotationRestoreTests
     }
 
     private static SignalStrategy Strategy(string id, string mechanism) =>
-        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
+        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => SignalDirection.Long);
 
     private static IndicatorSet Bars() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
@@ -512,7 +512,7 @@ public sealed class RotationCountsOnlyRealTradesTests
     }
 
     private static SignalStrategy Strategy(string id, string mechanism) =>
-        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
+        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => SignalDirection.Long);
 
     private static IndicatorSet Bars() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
@@ -578,7 +578,7 @@ public sealed class MechanismCapacityTests
     }
 
     private static SignalStrategy Strategy(string id, string mechanism) =>
-        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => true);
+        new(id, mechanism, StrategyQualification.Unqualified, -10, -20, (_, _) => SignalDirection.Long);
 
     private static IndicatorSet Bars() =>
         IndicatorSet.Unwarmed([.. Enumerable.Range(0, 40).Select(i => 100m + i)]);
@@ -671,5 +671,5 @@ public sealed class KnownLoserTests
     }
 
     private static SignalStrategy Strategy(double mean, double lower) =>
-        new("x.v1", "trend", StrategyQualification.Unqualified, mean, lower, (_, _) => true);
+        new("x.v1", "trend", StrategyQualification.Unqualified, mean, lower, (_, _) => SignalDirection.Long);
 }

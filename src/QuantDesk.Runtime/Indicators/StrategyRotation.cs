@@ -1,9 +1,16 @@
+using QuantDesk.Domain.Trading;
 namespace QuantDesk.Runtime.Indicators;
 
 /// <summary>Which strategy fired, and what is known about it.</summary>
 /// <param name="Strategy">The rule that admitted this opportunity.</param>
 /// <param name="AlsoFired">Every other strategy that agreed, kept because agreement is evidence too.</param>
-public sealed record StrategySelection(SignalStrategy Strategy, IReadOnlyList<string> AlsoFired);
+/// <param name="Direction">
+/// Which way the rule wants exposure. Carried on the selection because the rule decided it and
+/// everything downstream needs it -- a selection that dropped the direction would leave the
+/// execution path inferring one, which is how every entry became a buy.
+/// </param>
+public sealed record StrategySelection(
+    SignalStrategy Strategy, IReadOnlyList<string> AlsoFired, SignalDirection Direction);
 
 /// <summary>A rule that threw instead of answering, and what it said on the way out.</summary>
 /// <param name="StrategyId">The rule that failed.</param>
@@ -83,6 +90,7 @@ public sealed class StrategyRotation
 
         int last = indicators.Length - 1;
         List<SignalStrategy> fired = [];
+        Dictionary<string, SignalDirection> directions = new(StringComparer.Ordinal);
         List<StrategyFault> faults = [];
         foreach (SignalStrategy strategy in strategies)
         {
@@ -93,7 +101,12 @@ public sealed class StrategyRotation
             // system already keeps.
             try
             {
-                if (strategy.Fires(indicators, last)) fired.Add(strategy);
+                SignalDirection direction = strategy.Fires(indicators, last);
+                if (direction is not SignalDirection.None)
+                {
+                    fired.Add(strategy);
+                    directions[strategy.Id] = direction;
+                }
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
@@ -145,7 +158,8 @@ public sealed class StrategyRotation
                 new StrategySelection(
                     chosen,
                     [.. fired.Where(item => item.Id != chosen.Id).Select(item => item.Id)
-                        .Order(StringComparer.Ordinal)]),
+                        .Order(StringComparer.Ordinal)],
+                    directions[chosen.Id]),
                 faults);
         }
     }

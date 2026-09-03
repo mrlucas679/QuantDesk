@@ -90,7 +90,7 @@ public sealed record SignalStrategy(
     StrategyQualification Qualification,
     double ResearchMeanNetBps,
     double ResearchLowerBoundBps,
-    Func<IndicatorSet, int, bool> Fires)
+    Func<IndicatorSet, int, SignalDirection> Fires)
 {
     /// <summary>
     /// Indicator series this rule cannot decide without.
@@ -331,12 +331,69 @@ public static class SignalStrategies
     /// different rule, so there is no sense in which they are "closest to viable".
     /// </summary>
     public static IReadOnlyList<SignalStrategy> Explorable(TradedAssetClass assetClass) =>
-    [
-        .. For(assetClass)
-            .Where(strategy => strategy.Qualification is not StrategyQualification.Stale)
-            .OrderByDescending(strategy => strategy.ResearchMeanGrossBps)
-            .ThenBy(strategy => strategy.Id, StringComparer.Ordinal),
-    ];
+        Explorable(assetClass, shadow: null);
+
+    /// <summary>
+    /// How decisively negative a rule's live shadow record must be before exploring it live is
+    /// simply paying for an answer already in hand.
+    ///
+    /// Expressed in standard errors so a rule with a wide interval is given more room than one
+    /// measured tightly. Two of them is the same evidential bar the rest of this file uses.
+    /// </summary>
+    private const double CondemnedStandardErrors = 2.0;
+
+    /// <inheritdoc cref="Explorable(TradedAssetClass)"/>
+    /// <param name="assetClass">The lane's instrument class.</param>
+    /// <param name="shadow">What each rule has earned in shadow for this book, or null when unknown.</param>
+    /// <remarks>
+    /// Exploration exists to buy evidence, and evidence has a price: roughly sixty basis points a
+    /// round trip in crypto. Shadow records the same rule on the same bars for nothing.
+    ///
+    /// So the budget should only ever be spent on what shadow cannot see. Shadow never crosses the
+    /// book, so it cannot observe a fill, a spread paid, or slippage taken -- that is worth paying
+    /// for. What it observes perfectly well is whether the rule's reference-price edge is negative,
+    /// and a rule whose shadow record is negative by two standard errors has already answered the
+    /// question. Paying sixty basis points to be told again is not exploration, it is a
+    /// subscription.
+    ///
+    /// This was live: with the budget gated on nothing but "fewer than two positions are open", the
+    /// lane re-entered LINK/USD thirteen seconds after closing it at a loss, then again a minute
+    /// after the next one. Three round trips, -$4.30, every cent of it cost, all on a rule whose
+    /// shadow record was already decisively negative.
+    /// </remarks>
+    public static IReadOnlyList<SignalStrategy> Explorable(
+        TradedAssetClass assetClass,
+        IReadOnlyDictionary<string, ShadowSummary>? shadow)
+    {
+        return
+        [
+            .. For(assetClass)
+                .Where(strategy => strategy.Qualification is not StrategyQualification.Stale)
+                .Where(strategy => !ShadowHasCondemned(strategy, shadow))
+                .OrderByDescending(strategy => strategy.ResearchMeanGrossBps)
+                .ThenBy(strategy => strategy.Id, StringComparer.Ordinal),
+        ];
+    }
+
+    /// <summary>
+    /// True when free evidence already says this rule loses, so live exploration would buy nothing.
+    ///
+    /// Requires a sample worth reading before it condemns anything -- the same minimum promotion
+    /// uses, because a handful of signals is not an answer in either direction.
+    /// </summary>
+    private static bool ShadowHasCondemned(
+        SignalStrategy strategy, IReadOnlyDictionary<string, ShadowSummary>? shadow)
+    {
+        if (shadow is null) return false;
+        if (!shadow.TryGetValue(strategy.Id, out ShadowSummary live)) return false;
+        if (live.Signals < MinimumShadowSignals) return false;
+
+        // The published bound is two-sided at 95%, so the standard error is the gap over 1.96.
+        double standardError = Math.Max((live.MeanNetBps - live.LowerBoundBps) / 1.96, 0.0);
+        if (standardError <= 0d) return live.MeanNetBps < 0d;
+
+        return live.MeanNetBps < -CondemnedStandardErrors * standardError;
+    }
 
     /// <summary>
     /// What an exploration position is expected to cost, in basis points, as a positive number.
@@ -469,20 +526,30 @@ public static class SignalStrategies
     /// be the same rule while measuring a different span would sometimes fire where the gate had
     /// just refused, and sometimes refuse where the gate had just admitted.
     /// </summary>
-    private static bool MomentumDualHorizon(IndicatorSet s, int i)
+    /// <summary>
+    /// Price above both horizons is a trend up; below both is a trend down.
+    ///
+    /// The short half is the same statement with the inequality reversed, which is what makes this
+    /// a trend rule rather than a long-only one. It was never written.
+    /// </summary>
+    private static SignalDirection MomentumDualHorizon(IndicatorSet s, int i)
     {
         // An hour and a quarter of an hour, measured in time rather than in bars.
         //
         // Twelve five-minute bars equal an hour only while the feed returns an unbroken sequence.
         // Across a halt, a dropped bar, or an equity session boundary the two diverge, and the rule
         // keeps computing a number that now describes a different span than the one it was
-        // calibrated on. The bar counts remain the fallback for a series with no time axis, which
-        // is exactly the behaviour this had before.
+        // calibrated on. The bar counts remain the fallback for a series with no time axis.
         int medium = s.IndexAtOrBefore(i, MediumHorizon, fallbackBars: 12);
         int shortRun = s.IndexAtOrBefore(i, ShortHorizon, fallbackBars: 3);
-        if (medium < 0 || shortRun < 0) return false;
+        if (medium < 0 || shortRun < 0) return SignalDirection.None;
 
-        return s.Close[i] > s.Close[medium] && s.Close[i] > s.Close[shortRun];
+        if (s.Close[i] > s.Close[medium] && s.Close[i] > s.Close[shortRun])
+            return SignalDirection.Long;
+
+        return s.Close[i] < s.Close[medium] && s.Close[i] < s.Close[shortRun]
+            ? SignalDirection.Short
+            : SignalDirection.None;
     }
 
     /// <summary>The spans the dual-horizon rule and the cost gate both measure over.</summary>
@@ -491,92 +558,232 @@ public static class SignalStrategies
     /// <inheritdoc cref="MediumHorizon"/>
     private static readonly TimeSpan ShortHorizon = TimeSpan.FromMinutes(15);
 
-    private static bool EmaCross(IndicatorSet s, int i) =>
-        i > 0 && s.IsReadyAt(i, s.Ema12, s.Ema48) && s.IsReadyAt(i - 1, s.Ema12, s.Ema48)
-        && s.Ema12[i] > s.Ema48[i] && s.Ema12[i - 1] <= s.Ema48[i - 1];
-
-    private static bool MacdFlip(IndicatorSet s, int i) =>
-        i > 0 && s.IsReadyAt(i, s.MacdHistogram) && s.IsReadyAt(i - 1, s.MacdHistogram)
-        && s.MacdHistogram[i] > 0 && s.MacdHistogram[i - 1] <= 0;
-
-    private static bool AdxFilteredTrend(IndicatorSet s, int i) =>
-        s.IsReadyAt(i, s.Adx14, s.PlusDi, s.MinusDi, s.Ema48)
-        && s.Adx14[i] > Active.AdxTrendFloor && s.PlusDi[i] > s.MinusDi[i] && s.Close[i] > s.Ema48[i];
-
-    private static bool RsiOversold(IndicatorSet s, int i) =>
-        i > 0 && s.IsReadyAt(i, s.Rsi14) && s.IsReadyAt(i - 1, s.Rsi14)
-        && s.Rsi14[i] > Active.RsiOversoldLevel && s.Rsi14[i - 1] <= Active.RsiOversoldLevel;
-
-    private static bool BollingerLowerTouch(IndicatorSet s, int i) =>
-        i > 0 && s.IsReadyAt(i, s.BollingerLower) && s.IsReadyAt(i - 1, s.BollingerLower)
-        && s.Close[i] > s.BollingerLower[i] && s.Close[i - 1] <= s.BollingerLower[i - 1];
-
-    private static bool StochasticOversold(IndicatorSet s, int i) =>
-        i > 0 && s.IsReadyAt(i, s.StochasticK, s.StochasticD)
-        && s.IsReadyAt(i - 1, s.StochasticK, s.StochasticD)
-        && s.StochasticK[i] > s.StochasticD[i] && s.StochasticK[i - 1] <= s.StochasticD[i - 1]
-        && s.StochasticK[i] < Active.StochasticOversoldCeiling;
-
-    private static bool VwapReversion(IndicatorSet s, int i)
+    /// <summary>A fast/slow crossover, in whichever direction it crossed.</summary>
+    private static SignalDirection EmaCross(IndicatorSet s, int i)
     {
-        if (!s.IsReadyAt(i, s.Vwap48, s.Atr14)) return false;
+        if (i <= 0 || !s.IsReadyAt(i, s.Ema12, s.Ema48) || !s.IsReadyAt(i - 1, s.Ema12, s.Ema48))
+            return SignalDirection.None;
+
+        if (s.Ema12[i] > s.Ema48[i] && s.Ema12[i - 1] <= s.Ema48[i - 1]) return SignalDirection.Long;
+        return s.Ema12[i] < s.Ema48[i] && s.Ema12[i - 1] >= s.Ema48[i - 1]
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>A MACD histogram sign change, in whichever direction it flipped.</summary>
+    private static SignalDirection MacdFlip(IndicatorSet s, int i)
+    {
+        if (i <= 0 || !s.IsReadyAt(i, s.MacdHistogram) || !s.IsReadyAt(i - 1, s.MacdHistogram))
+            return SignalDirection.None;
+
+        if (s.MacdHistogram[i] > 0 && s.MacdHistogram[i - 1] <= 0) return SignalDirection.Long;
+        return s.MacdHistogram[i] < 0 && s.MacdHistogram[i - 1] >= 0
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>A trend strong enough to act on, taken in the direction the DI spread points.</summary>
+    private static SignalDirection AdxFilteredTrend(IndicatorSet s, int i)
+    {
+        if (!s.IsReadyAt(i, s.Adx14, s.PlusDi, s.MinusDi, s.Ema48)) return SignalDirection.None;
+        if (s.Adx14[i] <= Active.AdxTrendFloor) return SignalDirection.None;
+
+        if (s.PlusDi[i] > s.MinusDi[i] && s.Close[i] > s.Ema48[i]) return SignalDirection.Long;
+        return s.MinusDi[i] > s.PlusDi[i] && s.Close[i] < s.Ema48[i]
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>
+    /// Exhausted momentum reverting, from either extreme.
+    ///
+    /// The overbought half mirrors the oversold one and is what makes this a reversion rule rather
+    /// than a dip-buying rule. The overbought level is the oversold one reflected about the
+    /// midpoint, so one threshold still governs the rule and the two halves cannot drift apart.
+    /// </summary>
+    private static SignalDirection RsiOversold(IndicatorSet s, int i)
+    {
+        if (i <= 0 || !s.IsReadyAt(i, s.Rsi14) || !s.IsReadyAt(i - 1, s.Rsi14))
+            return SignalDirection.None;
+
+        if (s.Rsi14[i] > Active.RsiOversoldLevel && s.Rsi14[i - 1] <= Active.RsiOversoldLevel)
+            return SignalDirection.Long;
+
+        double overbought = RsiMidpoint * 2d - Active.RsiOversoldLevel;
+        return s.Rsi14[i] < overbought && s.Rsi14[i - 1] >= overbought
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>Re-entry through either band, which is the reversion this rule is named for.</summary>
+    private static SignalDirection BollingerLowerTouch(IndicatorSet s, int i)
+    {
+        if (i <= 0 || !s.IsReadyAt(i, s.BollingerLower, s.BollingerUpper)
+            || !s.IsReadyAt(i - 1, s.BollingerLower, s.BollingerUpper))
+        {
+            return SignalDirection.None;
+        }
+
+        if (s.Close[i] > s.BollingerLower[i] && s.Close[i - 1] <= s.BollingerLower[i - 1])
+            return SignalDirection.Long;
+
+        return s.Close[i] < s.BollingerUpper[i] && s.Close[i - 1] >= s.BollingerUpper[i - 1]
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>A stochastic crossover at either extreme.</summary>
+    private static SignalDirection StochasticOversold(IndicatorSet s, int i)
+    {
+        if (i <= 0 || !s.IsReadyAt(i, s.StochasticK, s.StochasticD)
+            || !s.IsReadyAt(i - 1, s.StochasticK, s.StochasticD))
+        {
+            return SignalDirection.None;
+        }
+
+        if (s.StochasticK[i] > s.StochasticD[i] && s.StochasticK[i - 1] <= s.StochasticD[i - 1]
+            && s.StochasticK[i] < Active.StochasticOversoldCeiling)
+        {
+            return SignalDirection.Long;
+        }
+
+        double overboughtFloor = StochasticMidpoint * 2d - Active.StochasticOversoldCeiling;
+        return s.StochasticK[i] < s.StochasticD[i] && s.StochasticK[i - 1] >= s.StochasticD[i - 1]
+            && s.StochasticK[i] > overboughtFloor
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>
+    /// Displacement from the volume-weighted price, on whichever side it sits.
+    ///
+    /// The gap was previously read only when negative, so the rule bought discounts and had no
+    /// opinion at all about a premium.
+    /// </summary>
+    private static SignalDirection VwapReversion(IndicatorSet s, int i)
+    {
+        if (!s.IsReadyAt(i, s.Vwap48, s.Atr14)) return SignalDirection.None;
+        if (s.Atr14[i] <= 0) return SignalDirection.None;
+
         double gap = s.Close[i] - s.Vwap48[i];
         // Measured in ATRs rather than raw price, so the same rule means the same thing on a
         // 60,000-dollar instrument and a 12-dollar one.
-        return gap < 0 && s.Atr14[i] > 0 && Math.Abs(gap) / s.Atr14[i] > Active.VwapGapAtrs;
+        if (Math.Abs(gap) / s.Atr14[i] <= Active.VwapGapAtrs) return SignalDirection.None;
+
+        return gap < 0 ? SignalDirection.Long : SignalDirection.Short;
     }
 
-    private static bool DonchianBreakout(IndicatorSet s, int i) =>
-        i > 0 && s.IsReadyAt(i, s.DonchianHigh) && s.IsReadyAt(i - 1, s.DonchianHigh)
-        && s.Close[i] > s.DonchianHigh[i] && s.Close[i - 1] <= s.DonchianHigh[i - 1];
-
-    private static bool BollingerUpperBreak(IndicatorSet s, int i) =>
-        i > 0 && s.IsReadyAt(i, s.BollingerUpper) && s.IsReadyAt(i - 1, s.BollingerUpper)
-        && s.Close[i] > s.BollingerUpper[i] && s.Close[i - 1] <= s.BollingerUpper[i - 1];
-
-    private static bool VolumeSurgeBreakout(IndicatorSet s, int i) =>
-        s.IsReadyAt(i, s.DonchianHigh, s.VolumeZ48)
-        && s.Close[i] > s.DonchianHigh[i] && s.VolumeZ48[i] > Active.VolumeSurgeDeviations;
-
-    private static bool ObvConfirmedTrend(IndicatorSet s, int i) =>
-        s.IsReadyAt(i, s.ObvSlope12, s.Ema48, s.Rsi14)
-        && s.ObvSlope12[i] > 0 && s.Close[i] > s.Ema48[i] && s.Rsi14[i] > Active.RsiTrendFloor;
-
-    private static bool AtrExpansionTrend(IndicatorSet s, int i)
+    /// <summary>A range break, up through the high or down through the low.</summary>
+    private static SignalDirection DonchianBreakout(IndicatorSet s, int i)
     {
-        if (i < 14 || !s.IsReadyAt(i, s.Atr14, s.Ema48) || !s.IsReadyAt(i - 1, s.Atr14)) return false;
-        int mediumIndex = s.IndexAtOrBefore(i, MediumHorizon, fallbackBars: 12);
-        if (mediumIndex < 0) return false;
-        double medium = ((s.Close[i] / s.Close[mediumIndex]) - 1) * 10_000;
-        return s.Atr14[i] > s.Atr14[i - 1] && s.Close[i] > s.Ema48[i] && medium > 0;
+        if (i <= 0 || !s.IsReadyAt(i, s.DonchianHigh, s.DonchianLow)
+            || !s.IsReadyAt(i - 1, s.DonchianHigh, s.DonchianLow))
+        {
+            return SignalDirection.None;
+        }
+
+        if (s.Close[i] > s.DonchianHigh[i] && s.Close[i - 1] <= s.DonchianHigh[i - 1])
+            return SignalDirection.Long;
+
+        return s.Close[i] < s.DonchianLow[i] && s.Close[i - 1] >= s.DonchianLow[i - 1]
+            ? SignalDirection.Short
+            : SignalDirection.None;
     }
+
+    /// <summary>An expansion through either band.</summary>
+    private static SignalDirection BollingerUpperBreak(IndicatorSet s, int i)
+    {
+        if (i <= 0 || !s.IsReadyAt(i, s.BollingerUpper, s.BollingerLower)
+            || !s.IsReadyAt(i - 1, s.BollingerUpper, s.BollingerLower))
+        {
+            return SignalDirection.None;
+        }
+
+        if (s.Close[i] > s.BollingerUpper[i] && s.Close[i - 1] <= s.BollingerUpper[i - 1])
+            return SignalDirection.Long;
+
+        return s.Close[i] < s.BollingerLower[i] && s.Close[i - 1] >= s.BollingerLower[i - 1]
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>A range break confirmed by unusual volume, in either direction.</summary>
+    private static SignalDirection VolumeSurgeBreakout(IndicatorSet s, int i)
+    {
+        if (!s.IsReadyAt(i, s.DonchianHigh, s.DonchianLow, s.VolumeZ48)) return SignalDirection.None;
+        if (s.VolumeZ48[i] <= Active.VolumeSurgeDeviations) return SignalDirection.None;
+
+        if (s.Close[i] > s.DonchianHigh[i]) return SignalDirection.Long;
+        return s.Close[i] < s.DonchianLow[i] ? SignalDirection.Short : SignalDirection.None;
+    }
+
+    /// <summary>Trend confirmed by on-balance volume agreeing with price, either way.</summary>
+    private static SignalDirection ObvConfirmedTrend(IndicatorSet s, int i)
+    {
+        if (!s.IsReadyAt(i, s.ObvSlope12, s.Ema48, s.Rsi14)) return SignalDirection.None;
+
+        if (s.ObvSlope12[i] > 0 && s.Close[i] > s.Ema48[i] && s.Rsi14[i] > Active.RsiTrendFloor)
+            return SignalDirection.Long;
+
+        return s.ObvSlope12[i] < 0 && s.Close[i] < s.Ema48[i]
+            && s.Rsi14[i] < RsiMidpoint * 2d - Active.RsiTrendFloor
+            ? SignalDirection.Short
+            : SignalDirection.None;
+    }
+
+    /// <summary>Volatility expanding into a move, taken in the direction of that move.</summary>
+    private static SignalDirection AtrExpansionTrend(IndicatorSet s, int i)
+    {
+        if (i < 14 || !s.IsReadyAt(i, s.Atr14, s.Ema48) || !s.IsReadyAt(i - 1, s.Atr14))
+            return SignalDirection.None;
+
+        int mediumIndex = s.IndexAtOrBefore(i, MediumHorizon, fallbackBars: 12);
+        if (mediumIndex < 0) return SignalDirection.None;
+        if (s.Atr14[i] <= s.Atr14[i - 1]) return SignalDirection.None;
+
+        double medium = ((s.Close[i] / s.Close[mediumIndex]) - 1) * 10_000;
+        if (s.Close[i] > s.Ema48[i] && medium > 0) return SignalDirection.Long;
+        return s.Close[i] < s.Ema48[i] && medium < 0 ? SignalDirection.Short : SignalDirection.None;
+    }
+
+    /// <summary>
+    /// The centre of an oscillator that runs zero to one hundred.
+    ///
+    /// Named so the short half of a rule is derived from the long half rather than written as a
+    /// second literal. An overbought level typed independently of its oversold counterpart is two
+    /// numbers that must be kept in step by hand, and they drift.
+    /// </summary>
+    private const double RsiMidpoint = 50d;
+
+    /// <inheritdoc cref="RsiMidpoint"/>
+    private const double StochasticMidpoint = 50d;
 
     private static SignalStrategy Trend(
-        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        string id, double mean, double lower, Func<IndicatorSet, int, SignalDirection> f,
         double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
         new(id, "trend", StrategyQualification.Unqualified, mean, lower, f)
         { ResearchCostAssumptionBps = costAssumptionBps };
 
     private static SignalStrategy Reversion(
-        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        string id, double mean, double lower, Func<IndicatorSet, int, SignalDirection> f,
         double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
         new(id, "reversion", StrategyQualification.Unqualified, mean, lower, f)
         { ResearchCostAssumptionBps = costAssumptionBps };
 
     private static SignalStrategy Breakout(
-        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        string id, double mean, double lower, Func<IndicatorSet, int, SignalDirection> f,
         double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
         new(id, "breakout", StrategyQualification.Unqualified, mean, lower, f)
         { ResearchCostAssumptionBps = costAssumptionBps };
 
     private static SignalStrategy Volume(
-        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        string id, double mean, double lower, Func<IndicatorSet, int, SignalDirection> f,
         double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
         new(id, "volume", StrategyQualification.Unqualified, mean, lower, f)
         { ResearchCostAssumptionBps = costAssumptionBps };
 
     private static SignalStrategy Volatility(
-        string id, double mean, double lower, Func<IndicatorSet, int, bool> f,
+        string id, double mean, double lower, Func<IndicatorSet, int, SignalDirection> f,
         double costAssumptionBps = ResearchCostAssumptions.Crypto) =>
         new(id, "volatility", StrategyQualification.Unqualified, mean, lower, f)
         { ResearchCostAssumptionBps = costAssumptionBps };

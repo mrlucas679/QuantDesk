@@ -106,7 +106,11 @@ public sealed class AutonomousDecisionPipeline(
         // its way back immediately displaces the exploration it was funded by, which is the whole
         // point of paying for the evidence.
         bool exploring = available.Count == 0 && explorationBudgetAvailable;
-        if (exploring) available = SignalStrategies.Explorable(route.AssetClass);
+        // Per book, and filtered by what shadow already knows: the budget buys fills, spread
+        // and slippage, which shadow cannot see, never a repeat of a verdict it has already
+        // reached for free.
+        if (exploring)
+            available = SignalStrategies.Explorable(route.AssetClass, shadow?.Summarise(route.AssetClass));
         if (indicators is not null)
         {
             unavailable = indicators.Unavailable;
@@ -189,7 +193,7 @@ public sealed class AutonomousDecisionPipeline(
         List<ShadowSignal> fired = [];
         foreach (SignalStrategy strategy in strategies)
         {
-            bool firedNow;
+            SignalDirection firedNow;
             try
             {
                 firedNow = strategy.Fires(indicators, last);
@@ -208,7 +212,7 @@ public sealed class AutonomousDecisionPipeline(
                 continue;
             }
 
-            if (!firedNow) continue;
+            if (firedNow is SignalDirection.None) continue;
 
             fired.Add(new ShadowSignal(
                 SignalId: $"{strategy.Id}|{route.Symbol}|{firedAt:yyyyMMddTHHmm}",
@@ -224,6 +228,7 @@ public sealed class AutonomousDecisionPipeline(
                 // define rules under the same identifiers, so a summary that cannot tell them apart
                 // decides tradability for one book using the other's evidence.
                 AssetClass = route.AssetClass,
+                Direction = firedNow,
             });
         }
 

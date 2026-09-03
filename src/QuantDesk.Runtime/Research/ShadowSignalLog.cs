@@ -54,6 +54,18 @@ public sealed record ShadowSignal(
     /// </summary>
     public TradedAssetClass AssetClass { get; init; } = InferAssetClass(Symbol);
 
+    /// <summary>
+    /// Which way the rule wanted exposure.
+    ///
+    /// Required as soon as a rule can go short, because a short's outcome is the negative of the
+    /// price move. Scoring one as a long inverts its sign, so a rule that shorted a fall correctly
+    /// would be recorded as having lost -- and would then be stood down for being right.
+    ///
+    /// Defaults to Long so the signals recorded before rules had a direction keep the meaning they
+    /// were written with.
+    /// </summary>
+    public SignalDirection Direction { get; init; } = SignalDirection.Long;
+
     public decimal? ExitReferencePrice { get; init; }
 
     public double? NetBps { get; init; }
@@ -214,10 +226,15 @@ public sealed class ShadowSignalLog(string path)
                 double moveBps =
                     (double)((exit - signal.EntryReferencePrice) / signal.EntryReferencePrice) * 10_000d;
 
+                // Signed by the direction the rule asked for. A short earns what the price gives up,
+                // so the move enters with its sign reversed; the round trip is paid either way.
+                double directedBps =
+                    signal.Direction is SignalDirection.Short ? -moveBps : moveBps;
+
                 all[id] = signal with
                 {
                     ExitReferencePrice = exit,
-                    NetBps = moveBps - signal.VenueRoundTripBps,
+                    NetBps = directedBps - signal.VenueRoundTripBps,
                 };
                 resolved++;
             }

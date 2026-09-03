@@ -47,6 +47,15 @@ public sealed class IndicatorSet
     public double[] PlusDi { get; private init; } = [];
     public double[] MinusDi { get; private init; } = [];
     public double[] DonchianHigh { get; private init; } = [];
+
+    /// <summary>
+    /// The lowest low of the prior window, which is the short side's breakout level.
+    ///
+    /// Absent until now, and its absence was structural rather than an oversight in one rule: every
+    /// breakout rule in the book tested the high alone, so a breakdown through support could not be
+    /// expressed at all. A rule set that can only see one side of a range can only ever be long.
+    /// </summary>
+    public double[] DonchianLow { get; private init; } = [];
     public double[] Vwap48 { get; private init; } = [];
     public double[] ObvSlope12 { get; private init; } = [];
     public double[] VolumeZ48 { get; private init; } = [];
@@ -173,6 +182,7 @@ public sealed class IndicatorSet
             PlusDi = plus,
             MinusDi = minus,
             DonchianHigh = DonchianHighs(h, 20),
+            DonchianLow = DonchianLows(l, 20),
             Vwap48 = volumeUnusable ? Filled(n)
                 : sessionScoped && t is not null ? SessionVwap(h, l, c, v, t)
                 : RollingVwap(h, l, c, v, 48),
@@ -224,6 +234,7 @@ public sealed class IndicatorSet
             PlusDi = Filled(c.Length),
             MinusDi = Filled(c.Length),
             DonchianHigh = Filled(c.Length),
+            DonchianLow = Filled(c.Length),
             Vwap48 = Filled(c.Length),
             ObvSlope12 = Filled(c.Length),
             VolumeZ48 = Filled(c.Length),
@@ -411,6 +422,20 @@ public sealed class IndicatorSet
             double highest = double.MinValue;
             for (int j = i - n; j < i; j++) highest = Math.Max(highest, h[j]);
             output[i] = highest;
+        }
+
+        return output;
+    }
+
+    /// <inheritdoc cref="DonchianHighs"/>
+    private static double[] DonchianLows(double[] l, int n)
+    {
+        double[] output = Filled(l.Length);
+        for (int i = n; i < l.Length; i++)
+        {
+            double lowest = double.MaxValue;
+            for (int j = i - n; j < i; j++) lowest = Math.Min(lowest, l[j]);
+            output[i] = lowest;
         }
 
         return output;
