@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Trading;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Scoring;
 using QuantDesk.Runtime.Scoring;
@@ -112,7 +113,7 @@ public sealed class ForecastCalibrationTests
 
         Assert.Equal(
             ForecastCalibration.From(Scored(loss: 2.5d)),
-            source.For(20, ForecastType.RealizedVolatility),
+            source.For(20, ForecastType.RealizedVolatility, TradedAssetClass.SpotCrypto),
             precision: 12);
     }
 
@@ -122,8 +123,8 @@ public sealed class ForecastCalibrationTests
         var source = new MeasuredCalibrationSource();
         source.Refresh([Scored(loss: 0.1d)]);
 
-        Assert.Equal(ForecastCalibration.Unmeasured, source.For(99, ForecastType.RealizedVolatility));
-        Assert.Equal(ForecastCalibration.Unmeasured, source.For(20, ForecastType.DirectionalReturn));
+        Assert.Equal(ForecastCalibration.Unmeasured, source.For(99, ForecastType.RealizedVolatility, TradedAssetClass.SpotCrypto));
+        Assert.Equal(ForecastCalibration.Unmeasured, source.For(20, ForecastType.DirectionalReturn, TradedAssetClass.SpotCrypto));
     }
 
     [Fact]
@@ -133,15 +134,16 @@ public sealed class ForecastCalibrationTests
         // being reported, not linger as the last good reading.
         var source = new MeasuredCalibrationSource();
         source.Refresh([Scored(loss: 0.05d)]);
-        Assert.True(source.For(20, ForecastType.RealizedVolatility) > 0.9d);
+        Assert.True(source.For(20, ForecastType.RealizedVolatility, TradedAssetClass.SpotCrypto) > 0.9d);
 
         source.Refresh([]);
-        Assert.Equal(ForecastCalibration.Unmeasured, source.For(20, ForecastType.RealizedVolatility));
+        Assert.Equal(ForecastCalibration.Unmeasured, source.For(20, ForecastType.RealizedVolatility, TradedAssetClass.SpotCrypto));
     }
 
     private static ExpertForecastScore Scored(double? loss) => new(
         ExpertId: 20,
         ForecastType: ForecastType.RealizedVolatility,
+        AssetClass: TradedAssetClass.SpotCrypto,
         Regime: "all",
         PrimaryMetric: ForecastScoreMetric.QLike,
         Status: ScoreEvidenceStatus.Scored,

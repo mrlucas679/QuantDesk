@@ -1,6 +1,7 @@
 using System.Text.Json;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Scoring;
+using QuantDesk.Domain.Trading;
 
 namespace QuantDesk.Runtime.Scoring;
 
@@ -137,7 +138,10 @@ public sealed class ForecastOutcomeLog(string path)
                         outcome.ObservedValue!.Value,
                         PredictedProbability: null,
                         EventOccurred: null,
-                        outcome.Regime)),
+                        outcome.Regime,
+                        // The symbol was on the record all along and dropped here, which is
+                        // exactly where it mattered.
+                        SymbolAssetClass.Of(outcome.Symbol))),
             ];
         }
     }

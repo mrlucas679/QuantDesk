@@ -277,7 +277,11 @@ static AutonomousPaperTradingService BuildLane(
             assetClass, services.GetRequiredService<ShadowSignalLog>().Summarise(assetClass)),
         services.GetRequiredService<ShadowSignalLog>(),
         options.HoldDuration,
-        services.GetRequiredService<IndicatorRegimeSource>());
+        services.GetRequiredService<IndicatorRegimeSource>(),
+        // Measured skill, per book. Without this the directional votes carried a literal weight of
+        // 0.5 and a literal calibration of 0.75, so the committee's agreement floor was being
+        // tested against a constant and the scorer's output reached no decision.
+        services.GetRequiredService<MeasuredCalibrationSource>());
 
     return new AutonomousPaperTradingService(
         services.GetRequiredService<IBrokerExecutionGateway>(),

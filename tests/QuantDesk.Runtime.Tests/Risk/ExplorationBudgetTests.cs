@@ -77,20 +77,38 @@ public sealed class ExplorationBudgetTests
     public void TheExplorableBookIsOrderedByWhichRuleIsClosestToViable()
     {
         // The budget is small, so it should be spent on the candidates with the most to prove
-        // rather than on whichever happens to fire first.
+        // rather than on whichever happens to fire first. Ordering is a property of the book
+        // whichever book survives the filters, so this asks the equity one, which still has
+        // members -- the crypto book no longer does, and for a reason the next test states.
         IReadOnlyList<SignalStrategy> explorable =
-            SignalStrategies.Explorable(TradedAssetClass.SpotCrypto);
+            SignalStrategies.Explorable(TradedAssetClass.UsEquity);
 
-        Assert.NotEmpty(explorable);
         for (int i = 1; i < explorable.Count; i++)
         {
             Assert.True(
                 explorable[i - 1].ResearchMeanGrossBps >= explorable[i].ResearchMeanGrossBps,
                 $"{explorable[i - 1].Id} should not rank below {explorable[i].Id}");
         }
+    }
 
-        // The one that came closest is the rule that traded today.
-        Assert.Equal("breakout.bollinger-upper.v1", explorable[0].Id);
+    [Fact]
+    public void NoCryptoRuleIsWorthExploringAtSixtyBasisPointsARoundTrip()
+    {
+        // The change that stopped the bleed of 2026-09-03, and the argument has to be exactly
+        // right because it overrules this budget's whole purpose.
+        //
+        // Exploration exists to buy what shadow and backtest cannot see: fills, spread, slippage.
+        // That is a real gap, and it is why a rule the research record condemns was deliberately
+        // still explorable -- the record might be pricing the wrong cost.
+        //
+        // But every one of those unseen effects is a *cost*. Execution reality can only ever make
+        // a rule look worse than its frictionless record, never better. So a rule whose gross edge
+        // already sits more than a standard error below what the venue charges cannot be redeemed
+        // by anything exploration is able to discover, and the sixty basis points buy nothing.
+        //
+        // volume.obv-confirmed-trend and volatility.atr-expansion were explored on exactly this
+        // reasoning gap and were the two positions bleeding when it was found.
+        Assert.Empty(SignalStrategies.Explorable(TradedAssetClass.SpotCrypto));
     }
 
     [Fact]
@@ -108,8 +126,13 @@ public sealed class ExplorationBudgetTests
     {
         // A budget that does not know its own price is not a budget. The best crypto rule is
         // measured at about 35 bps gross against the 60 the venue charges, so each round trip
-        // spent on it costs roughly 25 bps of evidence.
-        SignalStrategy best = SignalStrategies.Explorable(TradedAssetClass.SpotCrypto)[0];
+        // spent on it costs roughly 25 bps of evidence -- which is precisely why none of them is
+        // explorable any more. The pricing itself still has to be right, because the equity book
+        // uses it, so it is asked of the rule directly rather than through a filter that now
+        // excludes it.
+        SignalStrategy best = SignalStrategies.ForCrypto
+            .OrderByDescending(strategy => strategy.ResearchMeanGrossBps)
+            .First();
 
         double price = best.ExpectedExplorationCostBps(VenueRoundTripCosts.Crypto);
 

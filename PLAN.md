@@ -82,8 +82,17 @@ model may not silently claim Level-2/Level-3 evidence.
   modelling problem.
 
 ### Phase 4 — selection by measured skill
-- `ForecastOutcomeLog` and `MeasuredCalibrationSource` exist and already score by worst regime.
-- Weight each model by its own out-of-sample record per asset class and regime. No record, no weight.
+- Done: skill is measured **per asset class**. `ExpertForecastOutcome` and `ExpertForecastScore`
+  carry the book; the scorer groups by it; `MeasuredCalibrationSource` keys on it. The worst-regime
+  minimum is taken across regimes but never across books — a bad crypto record no longer condemns a
+  good equity one.
+- Done: the directional vote's weight and calibration were literals — 0.75 and 0.5, on every vote,
+  by every expert, for every instrument. The committee's 0.60 agreement floor was therefore tested
+  against a constant, and the scorer reached no decision at all. Weight is now
+  `MeasuredEdgeConfidence` = P(true net edge > 0) = Φ(mean / standard error), which is a real
+  probability, equals 0.5 at zero edge (deriving the unmeasured default rather than asserting it),
+  and makes the 0.60 floor readable as "about a quarter of a standard error of positive net edge".
+- Live shadow overrules the research record once it has 12 signals, matching the tradable filter.
 
 ### Phase 4.5 — agents read disagreement
 - Review and Research run today (5 runs each). Policy is gated on a validated expert and unblocks

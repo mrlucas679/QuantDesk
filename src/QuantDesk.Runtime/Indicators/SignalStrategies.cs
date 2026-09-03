@@ -365,10 +365,46 @@ public static class SignalStrategies
         TradedAssetClass assetClass,
         IReadOnlyDictionary<string, ShadowSummary>? shadow)
     {
+        // Known to lose against what the venue actually charges, and not by a little.
+        //
+        // This filter was missing, and it is what admitted the two positions bleeding on
+        // 2026-09-03: volume.obv-confirmed-trend and volatility.atr-expansion, both explored on
+        // crypto at sixty basis points a round trip, both already measured decisively below that
+        // cost. Exploration exists to resolve an uncertain edge. A rule more than a standard error
+        // below the toll is not uncertain, and paying the toll to confirm it is the subscription
+        // this method's own remarks warn about -- caught for shadow evidence and missed for the
+        // research record that says the same thing.
+        //
+        // The 2026-09-04 model comparison closes the argument rather than opening it: Ridge,
+        // LightGBM, a random forest and their average were scored across every instrument and a
+        // horizon sweep, and nothing on the crypto book came within thirty basis points of its
+        // toll at any horizon. There is no longer a plausible reading under which spending sixty
+        // basis points to learn more about a crypto rule buys information.
+        double venueCost = VenueRoundTripCosts.For(assetClass);
+
+        return Explorable(For(assetClass), venueCost, shadow);
+    }
+
+    /// <summary>
+    /// The exploration policy itself, applied to a given book at a given venue cost.
+    ///
+    /// Separated from the live book so the policy can be stated and checked on its own terms. Every
+    /// rule in both live books is currently excluded by the cost test, so a check written against
+    /// the live book can only observe that one filter and would pass for the wrong reason whatever
+    /// the others did.
+    /// </summary>
+    public static IReadOnlyList<SignalStrategy> Explorable(
+        IEnumerable<SignalStrategy> book,
+        double venueRoundTripBps,
+        IReadOnlyDictionary<string, ShadowSummary>? shadow)
+    {
+        ArgumentNullException.ThrowIfNull(book);
+
         return
         [
-            .. For(assetClass)
+            .. book
                 .Where(strategy => strategy.Qualification is not StrategyQualification.Stale)
+                .Where(strategy => !strategy.IsKnownToLose(venueRoundTripBps))
                 .Where(strategy => !ShadowHasCondemned(strategy, shadow))
                 .OrderByDescending(strategy => strategy.ResearchMeanGrossBps)
                 .ThenBy(strategy => strategy.Id, StringComparer.Ordinal),

@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Forecasts;
+using QuantDesk.Domain.Trading;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Scoring;
@@ -49,8 +50,14 @@ public sealed class MarketRegimeExpert(IForecastCalibrationSource? calibration =
     /// </summary>
     public const double StressPercentile = 0.95d;
 
+    /// <param name="symbol">
+    /// Which instrument this is about. It selects the measured calibration: a regime classifier's
+    /// record on continuously-traded crypto says nothing about an equity ETF with an opening
+    /// auction and a close.
+    /// </param>
     public RegimeForecast? Forecast(
         IndicatorSet indicators,
+        string symbol,
         int instrumentSlot,
         int expertId,
         TimeSpan horizon,
@@ -115,7 +122,8 @@ public sealed class MarketRegimeExpert(IForecastCalibrationSource? calibration =
             // Measured Brier from the scorer, or the unmeasured default until enough independent
             // episodes exist to say anything. A regime classifier that is confident and wrong ends
             // positions early, which is a cost that never shows up as a bad entry.
-            CalibrationScore: calibration?.For(expertId, ForecastType.Regime)
+            CalibrationScore: calibration?.For(
+                                  expertId, ForecastType.Regime, SymbolAssetClass.Of(symbol))
                 ?? ForecastCalibration.Unmeasured);
     }
 

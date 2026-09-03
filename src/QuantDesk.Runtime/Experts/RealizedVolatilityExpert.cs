@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Contracts;
+using QuantDesk.Domain.Trading;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Research;
@@ -216,7 +217,9 @@ public sealed class RealizedVolatilityExpert(
             // fitted model is still not a calibrated one -- the fit says the coefficients came from
             // data, this says the resulting forecasts were checked against what happened -- and
             // only the second is a claim about being right.
-            CalibrationScore: calibration?.For(expertId, ForecastType.RealizedVolatility)
+            CalibrationScore: calibration?.For(
+                                  expertId, ForecastType.RealizedVolatility,
+                                  SymbolAssetClass.Of(symbol))
                 ?? ForecastCalibration.Unmeasured);
     }
 

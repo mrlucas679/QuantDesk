@@ -45,7 +45,7 @@ public sealed class IndicatorRegimeSource(
         ArgumentNullException.ThrowIfNull(indicators);
 
         RegimeForecast? produced = expert.Forecast(
-            indicators, instrumentSlot, ExpertId, Horizon,
+            indicators, symbol, instrumentSlot, ExpertId, Horizon,
             eventNs, nowMonotonicTicks, nowMonotonicTicks + HorizonTicks, sourceStateVersion);
 
         // Through the committee, not straight to the caller.

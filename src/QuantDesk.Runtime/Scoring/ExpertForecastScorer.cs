@@ -1,5 +1,6 @@
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Scoring;
+using QuantDesk.Domain.Trading;
 
 namespace QuantDesk.Runtime.Scoring;
 
@@ -52,13 +53,19 @@ public static class ExpertForecastScorer
     {
         ArgumentNullException.ThrowIfNull(outcomes);
 
+        // Grouped by book as well as by expert, family and regime. Pooling the books produced one
+        // number that answered for both and described neither: an expert good on crypto and poor on
+        // equities scored somewhere in between, and nothing could tell which half was carrying it.
         List<ExpertForecastScore> scores = [];
-        foreach (IGrouping<(int Expert, ForecastType Type, string Regime), ExpertForecastOutcome> group
+        foreach (IGrouping<(int Expert, ForecastType Type, TradedAssetClass Book, string Regime),
+                     ExpertForecastOutcome> group
             in outcomes
                 .Where(outcome => outcome is not null && outcome.IsValid())
-                .GroupBy(outcome => (outcome.ExpertId, outcome.ForecastType, outcome.Regime)))
+                .GroupBy(outcome =>
+                    (outcome.ExpertId, outcome.ForecastType, outcome.AssetClass, outcome.Regime)))
         {
-            scores.Add(ScoreGroup(group.Key.Expert, group.Key.Type, group.Key.Regime, [.. group]));
+            scores.Add(ScoreGroup(
+                group.Key.Expert, group.Key.Type, group.Key.Book, group.Key.Regime, [.. group]));
         }
 
         return scores;
@@ -67,6 +74,7 @@ public static class ExpertForecastScorer
     private static ExpertForecastScore ScoreGroup(
         int expertId,
         ForecastType type,
+        TradedAssetClass assetClass,
         string regime,
         IReadOnlyList<ExpertForecastOutcome> outcomes)
     {
@@ -79,7 +87,7 @@ public static class ExpertForecastScorer
             // it is a statement about four moments, and publishing it invites it to be read as a
             // statement about the expert.
             return new ExpertForecastScore(
-                expertId, type, regime, metric, ScoreEvidenceStatus.InsufficientEvidence,
+                expertId, type, assetClass, regime, metric, ScoreEvidenceStatus.InsufficientEvidence,
                 outcomes.Count, episodes,
                 null, null, null, null, null, null, null);
         }
@@ -116,7 +124,7 @@ public static class ExpertForecastScorer
         };
 
         return new ExpertForecastScore(
-            expertId, type, regime, metric,
+            expertId, type, assetClass, regime, metric,
             primary is null ? ScoreEvidenceStatus.InsufficientEvidence : ScoreEvidenceStatus.Scored,
             outcomes.Count, episodes,
             primary, mae, rmse, brier, qlike, accuracy, CalibrationError(outcomes));

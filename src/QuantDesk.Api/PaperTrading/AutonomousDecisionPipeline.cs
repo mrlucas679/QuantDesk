@@ -15,6 +15,7 @@ using QuantDesk.Runtime.Experts;
 using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Research;
 using QuantDesk.Runtime.Risk;
+using QuantDesk.Runtime.Scoring;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
 using QuantDesk.Runtime.Time;
@@ -44,7 +45,8 @@ public sealed class AutonomousDecisionPipeline(
     Func<TradedAssetClass, IReadOnlyList<SignalStrategy>>? tradableStrategies = null,
     ShadowSignalLog? shadow = null,
     TimeSpan shadowHoldingPeriod = default,
-    IndicatorRegimeSource? regimes = null)
+    IndicatorRegimeSource? regimes = null,
+    IForecastCalibrationSource? calibration = null)
 {
     /// <summary>
     /// The strategies this pipeline may open a position with.
@@ -509,13 +511,13 @@ public sealed class AutonomousDecisionPipeline(
         // -- it asserts only that the move it is betting on is large enough to be worth the costs,
         // which is what this gate is for.
         ExpertVote[] votes = verifiedForecastBps is double modelBps
-            ? [CreateVote(1001, instrumentSlot, modelBps, market.StateVersion, eventNs, nowTicks, validUntil)]
+            ? [CreateVote(1001, instrumentSlot, route.AssetClass, modelBps, market.StateVersion, eventNs, nowTicks, validUntil)]
             : selection is not null
-            ? [CreateVote(StrategyExpertId, instrumentSlot, expectedMoveBps, market.StateVersion, eventNs, nowTicks, validUntil)]
+            ? [CreateVote(StrategyExpertId, instrumentSlot, route.AssetClass, expectedMoveBps, market.StateVersion, eventNs, nowTicks, validUntil, selection.Strategy)]
             :
             [
-                CreateVote(MediumTrendExpertId, instrumentSlot, ReturnBps(evidence.Closes[^13], evidence.Closes[^1]), market.StateVersion, eventNs, nowTicks, validUntil),
-                CreateVote(ShortMomentumExpertId, instrumentSlot, ReturnBps(evidence.Closes[^4], evidence.Closes[^1]), market.StateVersion, eventNs + 1, nowTicks, validUntil)
+                CreateVote(MediumTrendExpertId, instrumentSlot, route.AssetClass, ReturnBps(evidence.Closes[^13], evidence.Closes[^1]), market.StateVersion, eventNs, nowTicks, validUntil),
+                CreateVote(ShortMomentumExpertId, instrumentSlot, route.AssetClass, ReturnBps(evidence.Closes[^4], evidence.Closes[^1]), market.StateVersion, eventNs + 1, nowTicks, validUntil)
             ];
         CommitteeDecision committeeDecision = committee.Evaluate(
             instrumentSlot, votes, nowTicks, market.StateVersion);
@@ -581,11 +583,88 @@ public sealed class AutonomousDecisionPipeline(
             : new(false, risk.Reason.ToString(), candidate, estimate, risk, committeeDecision, market);
     }
 
-    private static ExpertVote CreateVote(
-        int expertId, int slot, double expectedReturnBps, long stateVersion,
-        long eventNs, long nowTicks, long validUntil) =>
-        new(expertId, CreateForecast(expertId, slot, expectedReturnBps, 0.75, stateVersion,
-            eventNs, nowTicks, validUntil), 0.5);
+    /// <summary>
+    /// A vote weighted by what this expert has actually been measured to do on this book.
+    ///
+    /// Both numbers here were literals: a calibration of 0.75 and a weight of 0.5, handed to the
+    /// committee on every vote by every expert for every instrument. The committee then averaged
+    /// those weights and compared the result against an agreement floor -- so the floor was being
+    /// tested against a constant, and the whole apparatus of measured skill, which had been
+    /// scoring forecasts against realised outcomes the entire time, reached no decision at all.
+    /// The volatility and regime experts read their own measured calibration; the directional votes
+    /// that actually decide trades did not.
+    ///
+    /// Weight is the calibration rather than a separate quantity. Inventing a second dial would
+    /// mean two numbers to justify where the evidence supports one, and the committee already reads
+    /// calibration for its agreement score -- so a vote that is trusted less now counts less in
+    /// both places, which is what trusting it less means.
+    ///
+    /// An expert with no record on this book falls to <see cref="ForecastCalibration.Unmeasured"/>,
+    /// which sits exactly at the committee's floor: neither trusted nor refused while nothing is
+    /// known, and refused the moment a measurement says it should be. Crucially it is per book --
+    /// a record earned on crypto no longer speaks for equities, which is the same rule that stopped
+    /// a BTC-fitted variance model forecasting four equity ETFs.
+    /// </summary>
+    private ExpertVote CreateVote(
+        int expertId, int slot, TradedAssetClass assetClass, double expectedReturnBps,
+        long stateVersion, long eventNs, long nowTicks, long validUntil,
+        SignalStrategy? strategy = null)
+    {
+        double measured = MeasuredWeight(expertId, assetClass, strategy);
+
+        return new ExpertVote(
+            expertId,
+            CreateForecast(expertId, slot, expectedReturnBps, measured, stateVersion,
+                eventNs, nowTicks, validUntil),
+            measured);
+    }
+
+    /// <summary>
+    /// What this voter's own record says its opinion is worth on this book.
+    ///
+    /// Two kinds of voter, two kinds of record, and neither is a constant. A rule's evidence is its
+    /// measured net edge against the venue's real toll, which the strategy registry has carried all
+    /// along; a model's is the forecast scorer's, which needs twelve independent episodes before it
+    /// says anything. Where neither exists the vote falls to the unmeasured default -- which the
+    /// edge-confidence function returns anyway for a zero edge, so the two agree by construction
+    /// rather than by coincidence.
+    ///
+    /// Per book in both cases. A record earned on continuously-traded crypto says nothing about an
+    /// equity ETF with an opening auction and a close, and the venue tolls differ by a factor of
+    /// seven.
+    /// </summary>
+    private double MeasuredWeight(
+        int expertId, TradedAssetClass assetClass, SignalStrategy? strategy)
+    {
+        if (strategy is not null)
+        {
+            // Net of what this venue actually charges, not of what the research scan assumed. The
+            // two differ by about 26 bps on crypto, and weighting on the assumption would trust a
+            // rule exactly where it loses money.
+            double venueCost = VenueRoundTripCosts.For(assetClass);
+            double meanNet = strategy.ResearchMeanGrossBps - venueCost;
+            double lowerNet = strategy.ResearchLowerBoundBps
+                + strategy.ResearchCostAssumptionBps - venueCost;
+
+            // Live shadow overrules the backtest in both directions, once it has enough signals to
+            // mean anything -- the same precedence the tradable filter applies.
+            if (shadow?.Summarise(assetClass) is { } summaries &&
+                summaries.TryGetValue(strategy.Id, out ShadowSummary live) &&
+                live.Signals >= MinimumShadowSignalsForWeight)
+            {
+                meanNet = live.MeanNetBps;
+                lowerNet = live.LowerBoundBps;
+            }
+
+            return MeasuredEdgeConfidence.From(meanNet, lowerNet);
+        }
+
+        return calibration?.For(expertId, ForecastType.DirectionalReturn, assetClass)
+            ?? ForecastCalibration.Unmeasured;
+    }
+
+    /// <summary>Signals before live shadow evidence outranks the research record, matching the rule book.</summary>
+    private const int MinimumShadowSignalsForWeight = 12;
 
     private static DirectionalForecast CreateForecast(
         int expertId, int slot, double expectedReturnBps, double calibration,

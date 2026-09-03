@@ -123,14 +123,14 @@ public sealed class SignalDirectionTests
         // Exploration buys fills, spread and slippage, which shadow cannot see. What shadow sees
         // perfectly well is a negative reference-price edge, and paying sixty basis points to be
         // told that again is a subscription, not an experiment.
-        SignalStrategy first = SignalStrategies.ForCrypto[0];
+        SignalStrategy first = ExplorableRule();
         var condemned = new Dictionary<string, ShadowSummary>(StringComparer.Ordinal)
         {
             [first.Id] = new(Signals: 200, MeanNetBps: -40d, LowerBoundBps: -50d),
         };
 
         IReadOnlyList<SignalStrategy> explorable =
-            SignalStrategies.Explorable(TradedAssetClass.SpotCrypto, condemned);
+            SignalStrategies.Explorable([first], VenueCost, condemned);
 
         Assert.DoesNotContain(explorable, item => item.Id == first.Id);
     }
@@ -140,14 +140,14 @@ public sealed class SignalDirectionTests
     {
         // Too few signals to say anything. Refusing to explore on that basis would close the only
         // route a stood-down rule has back.
-        SignalStrategy first = SignalStrategies.ForCrypto[0];
+        SignalStrategy first = ExplorableRule();
         var thin = new Dictionary<string, ShadowSummary>(StringComparer.Ordinal)
         {
             [first.Id] = new(Signals: 3, MeanNetBps: -40d, LowerBoundBps: -50d),
         };
 
         Assert.Contains(
-            SignalStrategies.Explorable(TradedAssetClass.SpotCrypto, thin),
+            SignalStrategies.Explorable([first], VenueCost, thin),
             item => item.Id == first.Id);
     }
 
@@ -156,14 +156,14 @@ public sealed class SignalDirectionTests
     {
         // Negative but well inside its own error bar. That is exactly the case exploration exists
         // to resolve, and condemning it would make the filter a blanket ban on trading at all.
-        SignalStrategy first = SignalStrategies.ForCrypto[0];
+        SignalStrategy first = ExplorableRule();
         var noisy = new Dictionary<string, ShadowSummary>(StringComparer.Ordinal)
         {
             [first.Id] = new(Signals: 200, MeanNetBps: -5d, LowerBoundBps: -60d),
         };
 
         Assert.Contains(
-            SignalStrategies.Explorable(TradedAssetClass.SpotCrypto, noisy),
+            SignalStrategies.Explorable([first], VenueCost, noisy),
             item => item.Id == first.Id);
     }
 
@@ -216,6 +216,24 @@ public sealed class SignalDirectionTests
         Assert.NotNull(set);
         return set;
     }
+
+    private const double VenueCost = 60d;
+
+    /// <summary>
+    /// A rule the cost filter leaves alone, so a shadow test measures shadow.
+    ///
+    /// Exploration now also excludes anything known to lose against the venue's real round trip,
+    /// and every rule in both live books currently is. Asking a live book here would pass for the
+    /// wrong reason -- the rule absent because of cost rather than because of shadow -- so the
+    /// policy is applied to a book of one rule whose edge clears the toll comfortably.
+    /// </summary>
+    private static SignalStrategy ExplorableRule() => SignalStrategies.ForCrypto[0] with
+    {
+        ResearchMeanNetBps = 200d,
+        ResearchLowerBoundBps = 180d,
+        ResearchCostAssumptionBps = 0d,
+        Qualification = StrategyQualification.Qualified,
+    };
 
     private static ShadowSignal Signal(string path, SignalDirection direction) =>
         new(

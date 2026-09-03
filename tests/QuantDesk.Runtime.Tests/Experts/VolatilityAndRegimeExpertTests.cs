@@ -126,7 +126,7 @@ public sealed class VolatilityAndRegimeExpertTests
         new RealizedVolatilityExpert().Forecast(set, "BTC/USD", 0, 20, TimeSpan.FromMinutes(5), 1, 1, 1_000, 1);
 
     private static RegimeForecast? Regime(IndicatorSet set) =>
-        new MarketRegimeExpert().Forecast(set, 0, 21, TimeSpan.FromMinutes(5), 1, 1, 1_000, 1);
+        new MarketRegimeExpert().Forecast(set, "BTC/USD", 0, 21, TimeSpan.FromMinutes(5), 1, 1, 1_000, 1);
 
     /// <summary>An oscillating series whose amplitude sets how volatile it is.</summary>
     private static IndicatorSet Series(decimal amplitude, int bars = 400)

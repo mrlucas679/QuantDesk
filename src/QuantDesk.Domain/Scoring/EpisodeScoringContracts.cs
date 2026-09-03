@@ -1,5 +1,6 @@
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Numerics;
+using QuantDesk.Domain.Trading;
 
 namespace QuantDesk.Domain.Scoring;
 
@@ -25,7 +26,8 @@ public sealed record ExpertForecastOutcome(
     double ObservedValue,
     double? PredictedProbability,
     bool? EventOccurred,
-    string Regime)
+    string Regime,
+    TradedAssetClass AssetClass = TradedAssetClass.SpotCrypto)
 {
     public bool IsValid() => EpisodeId > 0
         && ForecastId > 0
@@ -38,9 +40,16 @@ public sealed record ExpertForecastOutcome(
         && !string.IsNullOrWhiteSpace(Regime);
 }
 
+/// <param name="AssetClass">
+/// The book this score was measured on. Skill does not transfer across venues any more than a
+/// fitted model does: an expert scored on continuously-traded crypto has said nothing about an
+/// equity ETF with an opening auction and a close, and a single number covering both is dragged to
+/// whichever is worse while hiding which one that was.
+/// </param>
 public sealed record ExpertForecastScore(
     int ExpertId,
     ForecastType ForecastType,
+    TradedAssetClass AssetClass,
     string Regime,
     ForecastScoreMetric PrimaryMetric,
     ScoreEvidenceStatus Status,
