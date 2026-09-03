@@ -1,6 +1,29 @@
 using System.Text.Json;
 
+using QuantDesk.Domain.Trading;
+
 namespace QuantDesk.Runtime.Research;
+
+/// <summary>
+/// Signals that the shadow evidence ledger could not be read or committed.
+///
+/// Evidence is not broker state, but silently discarding it corrupts promotion decisions: an
+/// unwritable ledger makes a rule look as though it never fired. Callers may turn this into an
+/// explicit degraded/abstained state, but they must not mistake it for an empty healthy ledger.
+/// </summary>
+public sealed class ShadowSignalPersistenceException : IOException
+{
+    public ShadowSignalPersistenceException(string operation, string path, Exception innerException)
+        : base($"Shadow signal persistence failed during {operation} for '{path}'.", innerException)
+    {
+        Operation = operation;
+        EvidencePath = path;
+    }
+
+    public string Operation { get; }
+
+    public string EvidencePath { get; }
+}
 
 /// <summary>One firing of a rule, recorded without trading it, and what it went on to earn.</summary>
 /// <param name="SignalId">Deterministic identity, so the same firing is never recorded twice.</param>
@@ -21,11 +44,33 @@ public sealed record ShadowSignal(
     DateTimeOffset ResolveAt,
     double VenueRoundTripBps)
 {
+    /// <summary>
+    /// Which book this firing belongs to.
+    ///
+    /// Recorded because the two books share rule identifiers -- <c>reversion.vwap.v1</c> exists in
+    /// both, as do the bollinger and rsi reversion rules -- while being different rules held to
+    /// costs that differ by more than an order of magnitude. Summarising by identifier alone pools
+    /// them, and the pooled figure then decides tradability for both.
+    /// </summary>
+    public TradedAssetClass AssetClass { get; init; } = InferAssetClass(Symbol);
+
     public decimal? ExitReferencePrice { get; init; }
 
     public double? NetBps { get; init; }
 
     public bool IsResolved => NetBps is not null;
+
+    /// <summary>
+    /// The book a symbol belongs to, for signals recorded before the field existed.
+    ///
+    /// A pair separated by a slash is a crypto pair; everything else in this system's universe is a
+    /// US equity. This interprets history only -- a new signal carries the route's own answer, and
+    /// this is never consulted for one of those.
+    /// </summary>
+    internal static TradedAssetClass InferAssetClass(string symbol) =>
+        symbol?.Contains('/', StringComparison.Ordinal) == true
+            ? TradedAssetClass.SpotCrypto
+            : TradedAssetClass.UsEquity;
 }
 
 /// <summary>
@@ -193,12 +238,37 @@ public sealed class ShadowSignalLog(string path)
     /// The bar is deliberately the same one the research scan uses, so a shadow result and a
     /// backtest result are comparable rather than two different kinds of number.
     /// </summary>
-    public IReadOnlyDictionary<string, ShadowSummary> Summarise(int minimumSignals = 12)
+    public IReadOnlyDictionary<string, ShadowSummary> Summarise(int minimumSignals = 12) =>
+        Summarise(assetClass: null, minimumSignals);
+
+    /// <summary>
+    /// What each rule has earned in shadow within one book, or across all of them when
+    /// <paramref name="assetClass"/> is null.
+    ///
+    /// The filter is the point, and it is not a refinement. The two books share rule identifiers --
+    /// <c>reversion.vwap.v1</c>, <c>reversion.bollinger-lower.v1</c> and
+    /// <c>reversion.rsi-oversold.v1</c> are each defined in both -- and they are different rules
+    /// held to costs that differ by more than an order of magnitude: roughly sixty basis points a
+    /// round trip in crypto against a couple in equities.
+    ///
+    /// Pooled by identifier alone, one summary decided tradability for both books, and the pool is
+    /// dominated by crypto: it trades every hour of the day across seven symbols while the equity
+    /// book trades six and a half hours across four. So an equity rule would have been promoted at
+    /// the opening bell on evidence gathered almost entirely from crypto, and a crypto rule
+    /// promoted on a pool diluted by equity signals that never paid a crypto fee. Both directions
+    /// are wrong, and this is exactly where it matters, because promotion is the mechanism that
+    /// lets a stood-down rule start trading again.
+    /// </summary>
+    /// <param name="assetClass">The book to summarise, or null for every signal regardless.</param>
+    /// <param name="minimumSignals">Resolved signals required before a rule is described at all.</param>
+    public IReadOnlyDictionary<string, ShadowSummary> Summarise(
+        TradedAssetClass? assetClass, int minimumSignals = 12)
     {
         Dictionary<string, List<double>> byStrategy = new(StringComparer.Ordinal);
         foreach (ShadowSignal signal in ListAll())
         {
             if (signal.NetBps is not { } net) continue;
+            if (assetClass is { } book && signal.AssetClass != book) continue;
             if (!byStrategy.TryGetValue(signal.StrategyId, out List<double>? nets))
             {
                 nets = [];
@@ -245,17 +315,12 @@ public sealed class ShadowSignalLog(string path)
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
-            // A shadow log is evidence, not money. A corrupt or unreadable file must not stop the
-            // lane, so it starts again rather than throwing into the trading path.
-            _cache = new Dictionary<string, ShadowSignal>(StringComparer.Ordinal);
-            return _cache;
+            throw new ShadowSignalPersistenceException("load", path, exception);
         }
     }
 
     private void Save(Dictionary<string, ShadowSignal> all)
     {
-        _cache = all;
-
         if (all.Count > MaximumSignals)
         {
             foreach (string id in all.Values
@@ -279,10 +344,11 @@ public sealed class ShadowSignalLog(string path)
             string temporary = path + ".tmp";
             File.WriteAllText(temporary, JsonSerializer.Serialize(all, Json));
             File.Move(temporary, path, overwrite: true);
+            _cache = all;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Same reasoning as Load: losing evidence is bad, stopping the lane is worse.
+            throw new ShadowSignalPersistenceException("save", path, exception);
         }
     }
 }

@@ -268,8 +268,13 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<ILogger<AutonomousDecisionPipeline>>(),
         // Live shadow evidence overrules the backtest in both directions, which is what gives a
         // stood-down rule a way back and a favoured one a way out.
+        //
+        // Summarised per book. Both books define rules under the same identifiers, and pooling them
+        // promoted an equity rule on evidence gathered almost entirely from crypto -- which trades
+        // every hour across seven symbols against the equity book's six and a half across four --
+        // while holding it to costs an order of magnitude apart.
         assetClass => SignalStrategies.Tradable(
-            assetClass, services.GetRequiredService<ShadowSignalLog>().Summarise()),
+            assetClass, services.GetRequiredService<ShadowSignalLog>().Summarise(assetClass)),
         services.GetRequiredService<ShadowSignalLog>(),
         options.HoldDuration,
         services.GetRequiredService<IndicatorRegimeSource>());
@@ -400,8 +405,13 @@ builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInter
     new ThesisInvalidationHoldInterrupt(symbol =>
         services.GetRequiredService<OpportunityRouter>()
                 .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
+            // Per book, for the reason the entry fence is per book: the identifiers are shared, so
+            // a pooled summary decides whether an equity thesis is still live using crypto
+            // evidence. Here that would exit a sound position, or hold an invalidated one.
             ? [.. SignalStrategies
-                .Tradable(route.AssetClass, services.GetRequiredService<ShadowSignalLog>().Summarise())
+                .Tradable(
+                    route.AssetClass,
+                    services.GetRequiredService<ShadowSignalLog>().Summarise(route.AssetClass))
                 .Select(strategy => strategy.Id)]
             : []),
     // The rule that had no input. ExitOnRegimeChange has been set on every candidate since the

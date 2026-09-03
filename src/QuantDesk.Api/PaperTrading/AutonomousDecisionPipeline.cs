@@ -218,7 +218,13 @@ public sealed class AutonomousDecisionPipeline(
                 EntryReferencePrice: reference,
                 ResolveAt: firedAt.Add(
                     shadowHoldingPeriod > TimeSpan.Zero ? shadowHoldingPeriod : DefaultShadowHold),
-                VenueRoundTripBps: venueCost));
+                VenueRoundTripBps: venueCost)
+            {
+                // The route's own answer rather than one inferred from the symbol later. Both books
+                // define rules under the same identifiers, so a summary that cannot tell them apart
+                // decides tradability for one book using the other's evidence.
+                AssetClass = route.AssetClass,
+            });
         }
 
         shadow.TryRecordMany(fired);

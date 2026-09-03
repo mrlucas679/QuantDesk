@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Research;
 
 namespace QuantDesk.Runtime.Tests.Research;
@@ -121,13 +122,18 @@ public sealed class ShadowSignalLogTests : IDisposable
     }
 
     [Fact]
-    public void AnUnreadableLogStartsAgainRatherThanThrowingIntoTheTradingPath()
+    public void ACorruptLogRaisesAnExplicitPersistenceFailure()
     {
-        // A shadow log is evidence, not money. Losing it is bad; stopping the lane is worse.
+        // Treating this as an empty ledger makes evidence loss look like a rule that never fired.
+        // The caller may degrade/abstain, but it must be told that the evidence is unavailable.
         File.WriteAllText(_path, "{ this is not json");
 
-        Assert.Empty(Log().ListAll());
-        Assert.True(Log().TryRecord(Signal("a.trend.v1", "BTC/USD", 100m)));
+        ShadowSignalPersistenceException failure =
+            Assert.Throws<ShadowSignalPersistenceException>(() => Log().ListAll());
+
+        Assert.Equal("load", failure.Operation);
+        Assert.Equal(_path, failure.EvidencePath);
+        Assert.IsType<System.Text.Json.JsonException>(failure.InnerException);
     }
 
     [Fact]
@@ -178,6 +184,70 @@ public sealed class ShadowSignalLogTests : IDisposable
     {
         log.TryRecord(Signal(strategyId, "BTC/USD", 100m, minute));
         log.Resolve(Fired.AddMinutes(minute).AddHours(5), _ => exit);
+    }
+
+    // ------------------------------------------------------- the two books share rule identifiers
+
+    [Fact]
+    public void OneBookIsNotSummarisedFromTheOtherBooksEvidence()
+    {
+        // reversion.vwap.v1 is defined in both books, as are the bollinger and rsi reversion rules.
+        // They are different rules held to costs an order of magnitude apart, and this summary is
+        // what decides whether a stood-down rule may trade again.
+        //
+        // Crypto here is strongly positive and equities strongly negative. Pooled, the equity rule
+        // reads as a promotion candidate on evidence it did not produce.
+        ShadowSignalLog log = Log();
+        RecordResolved(log, "reversion.vwap.v1", "BTC/USD", net: 40d, count: 40);
+        RecordResolved(log, "reversion.vwap.v1", "SPY", net: -30d, count: 40);
+
+        ShadowSummary crypto = log.Summarise(TradedAssetClass.SpotCrypto)["reversion.vwap.v1"];
+        ShadowSummary equity = log.Summarise(TradedAssetClass.UsEquity)["reversion.vwap.v1"];
+
+        Assert.Equal(40, crypto.Signals);
+        Assert.Equal(40, equity.Signals);
+        Assert.True(crypto.LowerBoundBps > 0d);
+        Assert.True(equity.LowerBoundBps < 0d);
+    }
+
+    [Fact]
+    public void ASignalRecordedBeforeTheBookWasStoredIsReadFromItsSymbol()
+    {
+        // Six thousand signals predate the field. A slash is a crypto pair; everything else in this
+        // universe is an equity. Reading them as one book would keep the pooling bug alive in the
+        // history even after new signals carry the route's answer.
+        Assert.Equal(
+            TradedAssetClass.SpotCrypto,
+            Signal("a.trend.v1", "BTC/USD", 100m).AssetClass);
+        Assert.Equal(
+            TradedAssetClass.UsEquity,
+            Signal("a.trend.v1", "SPY", 100m).AssetClass);
+    }
+
+    [Fact]
+    public void SummarisingWithoutABookStillSeesEverything()
+    {
+        // The status surface reports the whole log, and that reading stays available.
+        ShadowSignalLog log = Log();
+        RecordResolved(log, "reversion.vwap.v1", "BTC/USD", net: 40d, count: 20);
+        RecordResolved(log, "reversion.vwap.v1", "SPY", net: -30d, count: 20);
+
+        Assert.Equal(40, log.Summarise()["reversion.vwap.v1"].Signals);
+    }
+
+    /// <summary>Records and resolves a run of signals for one rule on one symbol.</summary>
+    private static void RecordResolved(
+        ShadowSignalLog log, string strategyId, string symbol, double net, int count)
+    {
+        // Entry 100, so an exit of 100 * (1 + (net + venue) / 10_000) lands on the wanted net.
+        decimal exit = 100m * (1m + ((decimal)(net + 60d) / 10_000m));
+
+        for (int minute = 0; minute < count; minute++)
+        {
+            log.TryRecord(Signal(strategyId, symbol, 100m, minute));
+        }
+
+        log.Resolve(Fired.AddMinutes(count).AddHours(5), _ => exit);
     }
 
     private static ShadowSignal Signal(
