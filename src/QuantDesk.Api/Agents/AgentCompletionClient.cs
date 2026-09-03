@@ -33,6 +33,39 @@ public interface IAgentCompletionClient
 /// </summary>
 public sealed class AgentCompletionClient(HttpClient http, AgentRuntimeOptions options) : IAgentCompletionClient
 {
+    /// <summary>
+    /// The chat-completions endpoint, however the operator wrote the base URL.
+    ///
+    /// This was <c>new Uri(baseUri, "v1/chat/completions")</c>, and relative resolution makes that
+    /// quietly dependent on a trailing slash:
+    ///
+    /// <code>
+    /// https://api.featherless.ai/     -> https://api.featherless.ai/v1/chat/completions
+    /// https://api.featherless.ai/v1   -> https://api.featherless.ai/v1/chat/completions
+    /// https://api.featherless.ai/v1/  -> https://api.featherless.ai/v1/v1/chat/completions
+    /// </code>
+    ///
+    /// Two of the three forms work and the third 404s. The one that fails is the one a provider's
+    /// own quickstart hands you -- Featherless documents <c>base_url="https://api.featherless.ai/v1"</c>
+    /// -- because writing a URL ending in a path segment with a trailing slash is the natural thing
+    /// to do. And a 404 from an inference provider reads as a bad key or an unavailable model, so
+    /// the operator would go and check the credential that was never wrong.
+    ///
+    /// Built from the origin instead, with any version segment the operator supplied discarded,
+    /// because the version this client speaks is a property of this client rather than of the
+    /// configuration.
+    /// </summary>
+    internal static Uri CompletionsEndpoint(Uri baseUri)
+    {
+        ArgumentNullException.ThrowIfNull(baseUri);
+
+        string path = baseUri.AbsolutePath.Trim('/');
+        if (string.Equals(path, "v1", StringComparison.OrdinalIgnoreCase)) path = string.Empty;
+
+        string prefix = path.Length == 0 ? string.Empty : path + "/";
+        return new Uri($"{baseUri.GetLeftPart(UriPartial.Authority)}/{prefix}v1/chat/completions");
+    }
+
     public async Task<AgentCompletion> CompleteAsync(
         AgentInvocation invocation, CancellationToken cancellationToken)
     {
@@ -45,7 +78,7 @@ public sealed class AgentCompletionClient(HttpClient http, AgentRuntimeOptions o
         if (invocation.AllowedTools.Count > 0)
             throw new InvalidOperationException("AGENT_TOOLS_ARE_NEVER_OFFERED");
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(options.BaseUri, "v1/chat/completions"));
+        using var request = new HttpRequestMessage(HttpMethod.Post, CompletionsEndpoint(options.BaseUri));
         if (!string.IsNullOrWhiteSpace(options.ApiKey))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
         request.Content = JsonContent.Create(new
