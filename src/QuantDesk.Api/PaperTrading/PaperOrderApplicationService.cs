@@ -4,6 +4,7 @@ using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Runtime;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Modes;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -26,7 +27,8 @@ public sealed class PaperOrderApplicationService(
     IInstrumentSymbolResolver symbols,
     PaperTradingOptions options,
     RuntimeModeState runtimeMode,
-    FullSystemReadinessState readiness)
+    FullSystemReadinessState readiness,
+    IRuntimeClock clock)
 {
     public async Task<PaperOrderSubmission> SubmitAsync(PaperOrderRequest request, CancellationToken cancellationToken)
     {
@@ -66,7 +68,9 @@ public sealed class PaperOrderApplicationService(
         decimal notional = request.Quantity * request.LimitPrice;
         if (notional > account.BuyingPower) return Reject(clientOrderId, "BUYING_POWER_LIMIT");
 
-        long now = Stopwatch.GetTimestamp();
+        // Through the clock, so an operator order placed under a replayed or virtual clock
+        // carries a deadline in the same units its own timestamp is in.
+        long now = clock.MonotonicTimestamp;
         var command = new ExecutionCommand(
             now,
             ExecutionPriority.ExplorationEntry,
@@ -81,7 +85,7 @@ public sealed class PaperOrderApplicationService(
             request.Quantity,
             request.LimitPrice,
             now,
-            now + (Stopwatch.Frequency * 30),
+            now + clock.MonotonicTicksFor(TimeSpan.FromSeconds(30)),
             "operator-paper-order");
         BrokerSubmitResult result = await broker.SubmitAsync(command, cancellationToken);
         return new PaperOrderSubmission(

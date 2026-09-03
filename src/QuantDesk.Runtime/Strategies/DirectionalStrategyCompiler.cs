@@ -6,6 +6,7 @@ using QuantDesk.Domain.Risk;
 using QuantDesk.Domain.Strategies;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.State;
+using QuantDesk.Runtime.Time;
 using System.Diagnostics;
 
 namespace QuantDesk.Runtime.Strategies;
@@ -13,7 +14,8 @@ namespace QuantDesk.Runtime.Strategies;
 public sealed class DirectionalStrategyCompiler(
     Usd targetNotional,
     double stressLossFraction,
-    TimeSpan candidateLifetime)
+    TimeSpan candidateLifetime,
+    IRuntimeClock clock)
 {
     public int Compile(
         in ForecastBundle forecasts,
@@ -71,11 +73,6 @@ public sealed class DirectionalStrategyCompiler(
         return 1;
     }
 
-    private static long ToMonotonicTicks(TimeSpan duration)
-    {
-        if (duration <= TimeSpan.Zero)
-            return 0;
-        double ticks = duration.TotalSeconds * Stopwatch.Frequency;
-        return ticks >= long.MaxValue ? long.MaxValue : (long)Math.Ceiling(ticks);
-    }
+    /// <summary>Through the clock, because monotonic ticks have no scale of their own.</summary>
+    private long ToMonotonicTicks(TimeSpan duration) => clock.MonotonicTicksFor(duration);
 }

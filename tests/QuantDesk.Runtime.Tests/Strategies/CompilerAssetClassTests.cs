@@ -5,6 +5,7 @@ using QuantDesk.Domain.Strategies;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Strategies;
 using QuantDesk.Runtime.Tests.TestData;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Runtime.Tests.Strategies;
 
@@ -82,7 +83,7 @@ public sealed class CompilerAssetClassTests
             0, 1, new DirectionalForecast(metadata, 50, 0.01, up, neutral, down, 0.8));
 
         var compiler = new CryptoDirectionalStrategyCompiler(
-            new Usd(1_000), 0.02, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(60));
+            new Usd(1_000), 0.02, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(60), new LiveRuntimeClock());
 
         TradeCandidate[] destination = new TradeCandidate[1];
         int written = compiler.Compile(

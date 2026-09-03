@@ -217,7 +217,7 @@ public sealed class AutonomousLifecycleTraceTests(ITestOutputHelper output)
             new MarketStateStore(1),
             new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(OrderNotional, 0.05,
-                TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
+                TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15), new LiveRuntimeClock()),
             new AssetClassPricing(new NoRealisedCosts(), holdingBars: 12),
             new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),

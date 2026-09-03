@@ -7,6 +7,7 @@ using QuantDesk.Domain.Portfolio;
 using QuantDesk.Domain.Strategies;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.State;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Runtime.Strategies;
 
@@ -30,7 +31,8 @@ public sealed class CryptoDirectionalStrategyCompiler(
     Usd targetNotional,
     double stressLossFraction,
     TimeSpan candidateLifetime,
-    TimeSpan maximumHoldingPeriod)
+    TimeSpan maximumHoldingPeriod,
+    IRuntimeClock clock)
 {
     public int Compile(
         in ForecastBundle forecasts,
@@ -152,9 +154,16 @@ public sealed class CryptoDirectionalStrategyCompiler(
             ? "crypto-long-managed-v1"
             : "equity-long-managed-v1";
 
-    private static long AddDuration(long now, TimeSpan duration)
+    /// <summary>
+    /// A deadline this many units of the clock's own monotonic time from now.
+    ///
+    /// Through the clock, not through Stopwatch.Frequency. The two disagree by a factor of a
+    /// hundred on Linux, so a candidate lifetime computed the old way was meaningless whenever the
+    /// timestamps it was compared against came from a virtual clock.
+    /// </summary>
+    private long AddDuration(long now, TimeSpan duration)
     {
-        double ticks = duration.TotalSeconds * Stopwatch.Frequency;
-        return ticks >= long.MaxValue - now ? long.MaxValue : now + (long)Math.Ceiling(ticks);
+        long ticks = clock.MonotonicTicksFor(duration);
+        return ticks >= long.MaxValue - now ? long.MaxValue : now + ticks;
     }
 }

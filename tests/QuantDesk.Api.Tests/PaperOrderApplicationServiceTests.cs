@@ -4,6 +4,7 @@ using QuantDesk.Domain.Execution;
 using QuantDesk.Domain.Runtime;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Modes;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.Tests;
 
@@ -145,7 +146,8 @@ public sealed class PaperOrderApplicationServiceTests
             resolver,
             new PaperTradingOptions(1_000, new Dictionary<int, string> { [0] = "SPY" }),
             mode,
-            readiness ?? InfrastructureReady());
+            readiness ?? InfrastructureReady(),
+            new LiveRuntimeClock());
     }
 
     private static RuntimeModeState ReadyMode()

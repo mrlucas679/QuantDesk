@@ -183,6 +183,12 @@ public sealed class ExpiryHoldInterruptTests
 
         public double ElapsedMilliseconds(long fromTicks, long toTicks) =>
             TimeSpan.FromTicks(toTicks - fromTicks).TotalMilliseconds;
+
+        // This clock counts in DateTime ticks, so a duration converts as its own ticks. Stating it
+        // is the point: monotonic units have no universal scale, and the three clocks in this
+        // codebase use three different ones.
+        public long MonotonicTicksFor(TimeSpan duration) =>
+            duration <= TimeSpan.Zero ? 0L : duration.Ticks;
     }
 }
 

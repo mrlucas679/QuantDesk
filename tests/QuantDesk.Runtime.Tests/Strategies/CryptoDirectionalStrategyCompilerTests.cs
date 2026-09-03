@@ -6,6 +6,7 @@ using QuantDesk.Domain.Runtime;
 using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Strategies;
 using QuantDesk.Runtime.Tests.TestData;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Runtime.Tests.Strategies;
 
@@ -21,7 +22,7 @@ public sealed class CryptoDirectionalStrategyCompilerTests
         var bundle = new ForecastBundle(0, 1, forecast);
         var destination = new QuantDesk.Domain.Strategies.TradeCandidate[1];
         var compiler = new CryptoDirectionalStrategyCompiler(
-            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15), new LiveRuntimeClock());
 
         int count = compiler.Compile(bundle, FinancialTestData.HealthyMarket(), FinancialTestData.Portfolio(),
             new AccountCapabilities(true, false, true, false, null), 10,
@@ -42,7 +43,7 @@ public sealed class CryptoDirectionalStrategyCompilerTests
             -20, 1, new Probability(0.1), new Probability(0.1), new Probability(0.8), 0.8);
         var destination = new QuantDesk.Domain.Strategies.TradeCandidate[1];
         var compiler = new CryptoDirectionalStrategyCompiler(
-            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15), new LiveRuntimeClock());
 
         int count = compiler.Compile(new ForecastBundle(0, 1, forecast),
             FinancialTestData.HealthyMarket(), FinancialTestData.Portfolio(),
@@ -61,7 +62,7 @@ public sealed class CryptoDirectionalStrategyCompilerTests
             100, 1, new Probability(0.8), new Probability(0.1), new Probability(0.1), 0.8);
         var destination = new QuantDesk.Domain.Strategies.TradeCandidate[1];
         var compiler = new CryptoDirectionalStrategyCompiler(
-            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15), new LiveRuntimeClock());
 
         int count = compiler.Compile(new ForecastBundle(0, 1, forecast),
             FinancialTestData.HealthyMarket(), FinancialTestData.Portfolio(),
@@ -84,7 +85,7 @@ public sealed class CryptoDirectionalStrategyCompilerTests
             new ExitPolicyDefinitionContract("compression-managed-12h-v2", 720, false, true));
         var destination = new QuantDesk.Domain.Strategies.TradeCandidate[1];
         var compiler = new CryptoDirectionalStrategyCompiler(
-            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromHours(2));
+            new Usd(20), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromHours(2), new LiveRuntimeClock());
 
         int count = compiler.Compile(new ForecastBundle(0, 1, forecast),
             FinancialTestData.HealthyMarket(), FinancialTestData.Portfolio(),

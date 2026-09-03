@@ -235,7 +235,7 @@ public sealed class AutonomousPaperTradingServiceTests : IDisposable
         var pipeline = new AutonomousDecisionPipeline(
             new MarketStateStore(2), new ExpertCommittee(0.6, 1),
             new CryptoDirectionalStrategyCompiler(
-                new Usd(notional), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)),
+                new Usd(notional), 0.05, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15), new LiveRuntimeClock()),
             new AssetClassPricing(new NoRealisedCosts(), holdingBars: 12),
             new StrategyRotation(),
             new ActionabilityGate(0.01, new Usd(0.01m)),

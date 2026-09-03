@@ -5,6 +5,7 @@ using QuantDesk.Alpaca.Mapping;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Alpaca.Trading;
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Api.Agents;
 using QuantDesk.Api.Security;
 using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Execution;
@@ -26,6 +27,7 @@ using QuantDesk.Runtime.Options;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Research;
+using QuantDesk.Runtime.Reliability;
 using QuantDesk.Runtime.Scoring;
 using QuantDesk.Runtime.Telemetry;
 using QuantDesk.Runtime.Risk;
@@ -37,6 +39,16 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddProblemDetails();
 builder.Services.AddHealthChecks();
+AgentRuntimeOptions agentOptions = AgentRuntimeOptions.FromEnvironment();
+builder.Services.AddSingleton(agentOptions);
+builder.Services.AddSingleton(new AgentRunStore(agentOptions.StorePath));
+builder.Services.AddSingleton<AgentPlaneState>();
+builder.Services.AddHttpClient<IAgentCompletionClient, AgentCompletionClient>(client =>
+    client.Timeout = agentOptions.RequestTimeout);
+builder.Services.AddSingleton<ReviewAgent>();
+builder.Services.AddSingleton<ResearchAgent>();
+builder.Services.AddSingleton<PolicyAgent>();
+builder.Services.AddHostedService<AgentOrchestrationService>();
 builder.Services.AddSingleton<IRuntimeClock, LiveRuntimeClock>();
 builder.Services.AddSingleton<RuntimeModeState>();
 builder.Services.AddSingleton<FullSystemReadinessState>();
@@ -159,7 +171,8 @@ builder.Services.AddSingleton(services =>
     // No asset class here: the compiler is told per call, from the route of the instrument being
     // compiled. Holding it on the instance was correct only while one lane traded one venue.
     return new CryptoDirectionalStrategyCompiler(
-        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration);
+        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration,
+        services.GetRequiredService<IRuntimeClock>());
 });
 builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
 builder.Services.AddSingleton<IRealisedCostSource>(services =>
@@ -206,7 +219,8 @@ static AutonomousPaperTradingService BuildLane(
     // Its own compiler and pipeline: the compiler carries this lane's order size and holding
     // period, so sharing one would silently give the equity lane crypto's sizing.
     var compiler = new CryptoDirectionalStrategyCompiler(
-        new Usd(options.OrderNotional), 0.05, TimeSpan.FromMinutes(5), options.HoldDuration);
+        new Usd(options.OrderNotional), 0.05, TimeSpan.FromMinutes(5), options.HoldDuration,
+        services.GetRequiredService<IRuntimeClock>());
     var pipeline = new AutonomousDecisionPipeline(
         services.GetRequiredService<MarketStateStore>(),
         services.GetRequiredService<ExpertCommittee>(),
@@ -486,10 +500,47 @@ app.MapGet("/api/autonomous/status", (AutonomousTradingState autonomous) =>
     // Every instrument, not just the most recently evaluated one. With one snapshot for the whole
     // lane an operator could not tell a flat symbol from one that simply was not assessed last.
     Results.Ok(new { lane = autonomous.Snapshot(), symbols = autonomous.SnapshotAll() }));
+app.MapGet("/api/agents/status", (AgentPlaneState agents) => Results.Ok(agents.Snapshot()));
 app.MapGet("/api/research/status", (ResearchArtifactState artifacts) =>
     Results.Ok(artifacts.Snapshot()));
 app.MapGet("/api/research/microstructure-status", (MicrostructureEvidenceBuffer evidence) =>
     Results.Ok(evidence.Snapshot()));
+app.MapGet("/api/system/fault-campaign", () =>
+{
+    string path = Environment.GetEnvironmentVariable("QUANTDESK_FAULT_CAMPAIGN_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "fault-campaign.json");
+    FaultCampaignReport? report = FaultCampaign.Load(path);
+    return Results.Ok(new
+    {
+        campaignId = FaultCampaign.CampaignId,
+        status = report is null ? "not-run" : report.Passed == report.Total ? "passed" : "failed",
+        total = FaultCampaign.Cases.Count,
+        passed = report?.Passed ?? 0,
+        startedAt = report?.StartedAt,
+        completedAt = report?.CompletedAt,
+        cases = report is null
+            ? FaultCampaign.Cases.Select(item => new
+            {
+                item.Id,
+                item.Category,
+                expectedDisposition = item.ExpectedDisposition.ToString(),
+                observedDisposition = (string?)null,
+                item.BrokerMutationAllowed,
+                passed = false,
+                item.Recovery
+            })
+            : report.Cases.Select(item => new
+            {
+                item.Id,
+                item.Category,
+                expectedDisposition = item.ExpectedDisposition.ToString(),
+                observedDisposition = (string?)item.ObservedDisposition.ToString(),
+                item.BrokerMutationAllowed,
+                passed = item.Passed,
+                item.Recovery
+            })
+    });
+});
 app.MapGet("/api/diagnostics/recovery", (
     HttpRequest request,
     DiagnosticExecutionRecoveryService recovery,

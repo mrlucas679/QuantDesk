@@ -7,36 +7,58 @@ namespace QuantDesk.Architecture.Tests;
 ///
 /// Why this is an architecture test and not a code review note
 /// -----------------------------------------------------------
-/// Section 22 makes deterministic replay a release gate, and the replay runner can prove that a
-/// given log reproduces -- but only for code that reads the clock it was handed. A single
+/// Section 22 makes deterministic replay a release gate. The replay runner can prove a given log
+/// reproduces, but only for code that reads the clock it was handed. A single
 /// <c>DateTimeOffset.UtcNow</c> anywhere in the decision path silently opts that decision out, and
 /// the failure is quiet in the worst way: a replay run in the afternoon takes different branches
 /// than the morning run it claims to reproduce, and every report still says it reproduced.
 ///
-/// The decision path is clean today. This is what keeps it that way -- a reviewer who does not know
-/// the rule adds one call, and this fails rather than the guarantee eroding a line at a time.
+/// The first version of this test matched <c>Stopwatch.GetTimestamp</c> and missed
+/// <c>Stopwatch.Frequency</c>, which let nine live conversions through -- including the exit
+/// engine's maximum holding period and both strategy compilers' candidate lifetimes. Under a
+/// virtual clock every one of them was out by a factor of a hundred, because
+/// <c>Stopwatch.Frequency</c> is 1,000,000,000 on Linux against <c>TimeSpan</c>'s 10,000,000. On
+/// Windows the two coincide, which is worse: the mistake passes on a developer's machine and
+/// changes behaviour in the container.
+///
+/// So the pattern list is part of the guarantee, not an implementation detail of the test, and
+/// <c>MonotonicTicksFor</c> exists on the clock so there is no correct way to convert a duration
+/// without asking which clock will be compared against.
 ///
 /// What is deliberately outside the scope
 /// --------------------------------------
-/// Telemetry and the fault campaign. A latency percentile measures how long the machine took, which
-/// is a fact about this run rather than about the decision, and a health probe reporting virtual
-/// uptime would be reporting a fiction. They are named individually rather than covered by a
-/// directory rule, so adding a third exemption is a decision someone has to write down here.
+/// Telemetry and the fault campaign. A latency percentile measures how long the machine took --
+/// a fact about this run rather than about the decision -- and a health probe reporting virtual
+/// uptime would be a fiction. They are named individually rather than covered by a directory rule,
+/// so adding a third exemption is a decision someone has to write down here.
+///
+/// The API service layer is not yet covered. Roughly forty reads remain in hosted services and
+/// recovery paths, and bringing them onto the clock is a larger sweep than the decision logic. The
+/// files named below are the ones that actually decide what to trade; the rest is scheduling and
+/// reporting around them, and claiming otherwise by widening the scan before the work is done
+/// would make this test a comment rather than a gate.
 /// </summary>
 public sealed class DeterministicTimeTests
 {
-    /// <summary>Directories whose code decides what the system does.</summary>
-    private static readonly string[] DecisionPath =
+    /// <summary>
+    /// Everything in the runtime project, plus the API files that decide what to trade.
+    ///
+    /// A whole project rather than a directory list, because the runtime is clean and a list would
+    /// silently exclude the next directory added beside the ones on it.
+    /// </summary>
+    private static readonly string[] CoveredProjects = ["QuantDesk.Runtime"];
+
+    private static readonly string[] CoveredApiFiles =
     [
-        "Execution", "Experts", "Indicators", "Scoring", "Costs", "Replay", "Research",
-        "Persistence", "Audit",
+        "AutonomousDecisionPipeline.cs",
+        "IndicatorRegimeSource.cs",
     ];
 
     /// <summary>
     /// Files that may read real time, each for a stated reason.
     ///
     /// Named individually. A directory-level exemption would quietly cover the next file added
-    /// beside them, and the whole point is that the exemption is a decision rather than a location.
+    /// beside them, and the point is that the exemption is a decision rather than a location.
     /// </summary>
     private static readonly Dictionary<string, string> Exempt = new(StringComparer.Ordinal)
     {
@@ -49,42 +71,39 @@ public sealed class DeterministicTimeTests
             "Records when a fault injection ran, which is wall-clock evidence about a real session.",
     };
 
-    private static readonly Regex WallClockRead = new(
+    /// <summary>
+    /// Every way to read real time, including the one the first version of this test missed.
+    ///
+    /// <c>Stopwatch.Frequency</c> is here because converting a duration with it produces ticks in
+    /// the live clock's units regardless of which clock they will be compared against, which is the
+    /// same bug as reading the wall directly and harder to see.
+    /// </summary>
+    private static readonly Regex RealTimeRead = new(
         @"\b(DateTime\.UtcNow|DateTime\.Now|DateTimeOffset\.UtcNow|DateTimeOffset\.Now"
-        + @"|Stopwatch\.GetTimestamp|Environment\.TickCount64?)\b",
+        + @"|Stopwatch\.GetTimestamp|Stopwatch\.Frequency|Environment\.TickCount64?)\b",
         RegexOptions.Compiled);
 
     [Fact]
     public void TheDecisionPathReadsTimeThroughTheInjectedClock()
     {
-        string runtime = Path.Combine(FindRepositoryRoot(), "src", "QuantDesk.Runtime");
         var offenders = new List<string>();
 
-        foreach (string directory in DecisionPath)
+        foreach (string file in CoveredFiles())
         {
-            string path = Path.Combine(runtime, directory);
-            if (!Directory.Exists(path)) continue;
+            if (Exempt.ContainsKey(Path.GetFileName(file))) continue;
 
-            foreach (string file in Directory.GetFiles(path, "*.cs", SearchOption.AllDirectories))
+            foreach ((string line, int number) in ReadCode(file))
             {
-                if (Exempt.ContainsKey(Path.GetFileName(file))) continue;
-
-                foreach ((string line, int number) in ReadCode(file))
-                {
-                    if (WallClockRead.IsMatch(line))
-                    {
-                        offenders.Add(
-                            $"{directory}/{Path.GetFileName(file)}:{number}: {line.Trim()}");
-                    }
-                }
+                if (RealTimeRead.IsMatch(line))
+                    offenders.Add($"{Path.GetFileName(file)}:{number}: {line.Trim()}");
             }
         }
 
         Assert.True(
             offenders.Count == 0,
-            "The decision path must read time through IRuntimeClock so a recorded session replays "
-            + "to the same decisions. These read the wall directly:"
-            + Environment.NewLine
+            "The decision path must read time through IRuntimeClock -- including durations, via "
+            + "MonotonicTicksFor -- so a recorded session replays to the same decisions. These read "
+            + "real time directly:" + Environment.NewLine
             + string.Join(Environment.NewLine, offenders));
     }
 
@@ -93,21 +112,80 @@ public sealed class DeterministicTimeTests
     {
         // A stale exemption is a hole nobody remembers opening. If the file moved or went away, the
         // reason for the exemption went with it.
-        string runtime = Path.Combine(FindRepositoryRoot(), "src", "QuantDesk.Runtime");
-        string[] present = [.. Directory
-            .GetFiles(runtime, "*.cs", SearchOption.AllDirectories)
-            .Select(Path.GetFileName)
-            .OfType<string>()];
+        string[] present = [.. CoveredFiles().Select(Path.GetFileName).OfType<string>()];
 
         foreach (string exempt in Exempt.Keys)
             Assert.Contains(exempt, present);
     }
 
+    [Fact]
+    public void TheClockOffersTheDurationConversionThatMakesTheRuleFollowable()
+    {
+        // A rule with no compliant alternative is a rule people route around. Converting a duration
+        // to monotonic ticks has exactly one correct answer -- ask the clock whose timestamps it
+        // will be added to -- and this fails if that method is ever removed.
+        //
+        // Read from source rather than by reflection, because this project deliberately references
+        // nothing it polices: an architecture test that compiles against the code it inspects can
+        // be broken by that code, which is precisely when it most needs to run.
+        string contract = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), "src", "QuantDesk.Runtime", "Time", "IRuntimeClock.cs"));
+
+        Assert.Contains("long MonotonicTicksFor(TimeSpan duration);", contract, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EveryClockImplementationAnswersTheDurationConversion()
+    {
+        // Three clocks exist in this codebase and all three count in different units -- Stopwatch
+        // ticks, TimeSpan ticks, and microseconds in one test double. An implementation that
+        // inherited a default would be answering in somebody else's units.
+        string time = Path.Combine(FindRepositoryRoot(), "src", "QuantDesk.Runtime", "Time");
+
+        foreach (string file in Directory.GetFiles(time, "*RuntimeClock.cs"))
+        {
+            if (Path.GetFileName(file) == "IRuntimeClock.cs") continue;
+            Assert.Contains("MonotonicTicksFor", File.ReadAllText(file), StringComparison.Ordinal);
+        }
+    }
+
+    private static IEnumerable<string> CoveredFiles()
+    {
+        string root = FindRepositoryRoot();
+
+        foreach (string project in CoveredProjects)
+        {
+            string path = Path.Combine(root, "src", project);
+            if (!Directory.Exists(path)) continue;
+
+            foreach (string file in Directory.GetFiles(path, "*.cs", SearchOption.AllDirectories))
+            {
+                // Generated assembly info and build intermediates are not authored code.
+                if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                        StringComparison.Ordinal)
+                    || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                yield return file;
+            }
+        }
+
+        string api = Path.Combine(root, "src", "QuantDesk.Api", "PaperTrading");
+        foreach (string name in CoveredApiFiles)
+        {
+            string file = Path.Combine(api, name);
+            if (File.Exists(file)) yield return file;
+        }
+    }
+
     /// <summary>
     /// Lines of real code, with comments and documentation dropped.
     ///
-    /// The rule is about what executes. A comment explaining why wall time is wrong -- and there are
-    /// several, because the point has been learned the hard way -- must not read as a violation of
+    /// The rule is about what executes. A comment explaining why wall time is wrong -- and there
+    /// are several now, because the point has been learned twice -- must not read as a violation of
     /// the thing it is explaining.
     /// </summary>
     private static IEnumerable<(string Line, int Number)> ReadCode(string file)

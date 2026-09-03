@@ -986,6 +986,11 @@ public sealed class SpotExecutionLifecycleTests : IDisposable
         public double ElapsedMilliseconds(long fromTimestamp, long toTimestamp) =>
             (toTimestamp - fromTimestamp) / 1_000d;
 
+        // Microseconds here -- a third unit again, which is exactly why the conversion has to be
+        // asked of the clock rather than computed from a constant beside the call site.
+        public long MonotonicTicksFor(TimeSpan duration) =>
+            duration <= TimeSpan.Zero ? 0L : (long)(duration.TotalMilliseconds * 1_000d);
+
         public void Advance(TimeSpan by) => _now = _now.Add(by);
     }
 

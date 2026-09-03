@@ -4,6 +4,7 @@ using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
 using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Scoring;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -22,6 +23,7 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class IndicatorRegimeSource(
     MarketRegimeExpert expert,
     RealizedVolatilityExpert volatility,
+    IRuntimeClock clock,
     ForecastOutcomeLog? outcomes = null) : IRegimeSource
 {
     private readonly ConcurrentDictionary<string, MarketRegime> _regimes =
@@ -82,7 +84,7 @@ public sealed class IndicatorRegimeSource(
         if (forecast is not { } published) return;
 
         int last = indicators.Length - 1;
-        DateTimeOffset firedAt = indicators.HasTimeAxis ? indicators.Timestamps[last] : DateTimeOffset.UtcNow;
+        DateTimeOffset firedAt = indicators.HasTimeAxis ? indicators.Timestamps[last] : clock.UtcNow;
 
         outcomes.Record(
         [
@@ -109,7 +111,7 @@ public sealed class IndicatorRegimeSource(
     {
         if (outcomes is null) return;
 
-        outcomes.Resolve(DateTimeOffset.UtcNow, (candidate, family) =>
+        outcomes.Resolve(clock.UtcNow, (candidate, family) =>
             family is ForecastType.RealizedVolatility
             && string.Equals(candidate, symbol, StringComparison.OrdinalIgnoreCase)
                 ? RealisedVarianceOverHorizon(indicators)
@@ -151,5 +153,13 @@ public sealed class IndicatorRegimeSource(
     private const int ExpertId = 21;
     private const int VolatilityExpertId = 20;
     private static readonly TimeSpan Horizon = TimeSpan.FromMinutes(5);
-    private static readonly long HorizonTicks = (long)(Horizon.TotalSeconds * System.Diagnostics.Stopwatch.Frequency);
+
+    /// <summary>
+    /// The horizon in the clock's monotonic units.
+    ///
+    /// An instance member rather than a static one, because there is no scale to compute it on
+    /// until a clock says which. As a static it was fixed to Stopwatch.Frequency, which is right
+    /// for the live clock and out by a factor of a hundred for a virtual one on Linux.
+    /// </summary>
+    private long HorizonTicks => clock.MonotonicTicksFor(Horizon);
 }

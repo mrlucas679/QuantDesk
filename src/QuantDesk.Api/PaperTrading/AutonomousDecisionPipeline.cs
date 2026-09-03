@@ -442,7 +442,11 @@ public sealed class AutonomousDecisionPipeline(
         if (!applied.IsValid) return Reject("StaleMarketData");
         InstrumentSnapshot market = marketState.Snapshot(instrumentSlot);
 
-        long validUntil = nowTicks + (long)(TimeSpan.FromMinutes(5).TotalSeconds * System.Diagnostics.Stopwatch.Frequency);
+        // Through the clock. Computed from Stopwatch.Frequency it was out by a factor of a
+        // hundred whenever nowTicks came from a virtual clock, because the two count in different
+        // units on Linux -- so a vote that should have expired in five minutes did not expire at
+        // all, and the replay of a session would have taken a branch the session never took.
+        long validUntil = nowTicks + clock.MonotonicTicksFor(TimeSpan.FromMinutes(5));
         // What the firing strategy expects, not what price has just done.
         //
         // These votes used to be built from trailing momentum whatever had fired, and everything

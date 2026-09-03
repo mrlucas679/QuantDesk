@@ -605,9 +605,14 @@ public sealed class AutonomousPaperTradingService(
         OrderSide side, PositionIntent positionIntent, ExecutionPriority priority)
     {
         long now = clock.MonotonicTimestamp;
+
+        // Thirty seconds in the clock's own units. Stopwatch.Frequency is not those units unless
+        // the clock happens to be the live one, and a deadline in the wrong units is either
+        // immediate or never.
+        long thirtySeconds = clock.MonotonicTicksFor(TimeSpan.FromSeconds(30));
         long executionDeadline = priority is ExecutionPriority.ExploitationEntry or ExecutionPriority.ExplorationEntry
-            ? Math.Min(candidate.ValidUntilMonotonicTicks, now + Stopwatch.Frequency * 30)
-            : now + Stopwatch.Frequency * 30;
+            ? Math.Min(candidate.ValidUntilMonotonicTicks, now + thirtySeconds)
+            : now + thirtySeconds;
         return new ExecutionCommand(now, priority, reservationId, reservationId, clientOrderId,
             candidate.InstrumentSlot, side, positionIntent, ExecutionOrderType.Market,
             ExecutionTimeInForce.Gtc, quantity, null, now,
