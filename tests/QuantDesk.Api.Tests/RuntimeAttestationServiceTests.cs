@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Domain.Market;
+using QuantDesk.Runtime.Ingestion;
 using QuantDesk.Runtime.Telemetry;
 using QuantDesk.Runtime.Time;
 
@@ -30,17 +32,56 @@ public sealed class RuntimeAttestationServiceTests : IDisposable
     }
 
     [Fact]
-    public void PropertiesNothingMeasuresAreReportedFalseAndNamed()
+    public void QueueBoundsAreReadFromWhetherTheBoundWasEverReached()
     {
-        // The whole point. Bounded queues and reconnect leaks are real R12 requirements that
-        // nothing in this runtime counts yet, and an attestation claiming them would make the gate
-        // pass on the strength of an intention.
+        // Every channel here is bounded by construction, so declaring a capacity answers nothing.
+        // The property that matters is whether market data this process had already received was
+        // dropped, and that is a counter rather than a design statement.
+        var channel = new BoundedEventChannel<NormalizedMarketEvent>(capacity: 1);
+
+        Assert.True(Service(channel: channel).Compose().BoundedQueues);
+
+        channel.TryPublish(default, 1L);
+        channel.TryPublish(default, 2L);
+
+        RuntimeAttestationDocument overflowed = Service(channel: channel).Compose();
+        Assert.False(overflowed.BoundedQueues);
+        Assert.Equal(1L, overflowed.MarketDataEventsRejected);
+    }
+
+    [Fact]
+    public void AReconnectLoopIsReportedEvenThoughEveryConnectionSucceeded()
+    {
+        // The failure this catches keeps every health check green: each connection works, data
+        // flows in bursts, readiness flickers back to healthy between drops. What it destroys is
+        // the book, because this venue publishes no sequence number and every reconnect loses an
+        // unknown number of updates.
+        var clock = new LiveRuntimeClock();
+        var connections = new StreamConnectionTracker(clock);
+
+        for (int cycle = 0; cycle <= StreamConnectionTracker.MaximumReconnectsInWindow; cycle++)
+        {
+            connections.Record("crypto", connected: true, clock.UtcNow);
+            connections.Record("crypto", connected: false, clock.UtcNow);
+        }
+
+        RuntimeAttestationDocument document = Service(connections: connections).Compose();
+
+        Assert.False(document.NoReconnectLeak);
+        Assert.True(document.StreamReconnects > StreamConnectionTracker.MaximumReconnectsInWindow);
+    }
+
+    [Fact]
+    public void AQuietRuntimeIsNotReportedAsLeaking()
+    {
         RuntimeAttestationDocument document = Service().Compose();
 
-        Assert.False(document.BoundedQueues);
-        Assert.False(document.NoReconnectLeak);
-        Assert.Contains("boundedQueues", document.NotMeasured);
-        Assert.Contains("noReconnectLeak", document.NotMeasured);
+        // Nothing has connected, so nothing has flapped. This is measured rather than unmeasured --
+        // the queue and reconnect properties no longer appear in notMeasured at all.
+        Assert.True(document.NoReconnectLeak);
+        Assert.True(document.BoundedQueues);
+        Assert.DoesNotContain("boundedQueues", document.NotMeasured);
+        Assert.DoesNotContain("noReconnectLeak", document.NotMeasured);
     }
 
     [Fact]
@@ -54,16 +95,17 @@ public sealed class RuntimeAttestationServiceTests : IDisposable
     }
 
     [Fact]
-    public void APartiallyCoveredFaultCampaignDoesNotAttestBrokerBehaviour()
+    public void BrokerBehaviourIsAttestedOnlyFromAFullyCoveredCampaign()
     {
-        // Seven of twenty-one cases have drivers, and the ones demonstrating ambiguous-submit and
-        // pending-order handling are not among them. A subset cannot support a claim about the whole,
-        // and reading the pass count instead of coverage is how that mistake gets made.
+        // Read through coverage, never the pass count. A campaign where two thirds of the cases had
+        // no driver would report every case it ran as passing, and reading that number would let a
+        // subset stand in for a claim about the whole execution plane.
         RuntimeAttestationDocument document = Service().Compose();
 
+        // No report file in a test environment, so nothing may be attested.
         Assert.False(document.AmbiguousSubmitResolvesUnknown);
         Assert.False(document.PendingOrderInvalidation);
-        Assert.True(document.FaultCampaignExercised < document.FaultCampaignTotal);
+        Assert.Contains("ambiguousSubmitResolvesUnknown", document.NotMeasured);
     }
 
     [Fact]
@@ -131,7 +173,10 @@ public sealed class RuntimeAttestationServiceTests : IDisposable
     // ------------------------------------------------------------------------------- fixtures
 
     private RuntimeAttestationService Service(
-        LatencyRecorder? latency = null, SessionReplayState? replay = null)
+        LatencyRecorder? latency = null,
+        SessionReplayState? replay = null,
+        BoundedEventChannel<NormalizedMarketEvent>? channel = null,
+        StreamConnectionTracker? connections = null)
     {
         var clock = new LiveRuntimeClock();
         return new RuntimeAttestationService(
@@ -140,6 +185,8 @@ public sealed class RuntimeAttestationServiceTests : IDisposable
                 null!, NullLogger<SpotExecutionRecoveryService>.Instance, clock),
             replay ?? new SessionReplayState(),
             latency ?? new LatencyRecorder(),
+            channel ?? new BoundedEventChannel<NormalizedMarketEvent>(capacity: 64),
+            connections ?? new StreamConnectionTracker(clock),
             clock,
             NullLogger<RuntimeAttestationService>.Instance);
     }

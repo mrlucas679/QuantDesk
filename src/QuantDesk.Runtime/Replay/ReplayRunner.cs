@@ -111,7 +111,9 @@ public sealed class ReplayRunner
         // Seeded from when the runtime saw the log's first event rather than from now, so a run
         // started at any moment sees the times the recording saw.
         //
-        // Receive time, not venue event time. Venue time is per-instrument: a feed carrying several
+        // The monotonic receive timeline, not venue event time and not the wall clock.
+        //
+        // Venue time is per-instrument: a feed carrying several
         // symbols carries several venue clocks, and their stamps interleave -- a live recording of
         // six crypto order books opens with jumps of -4s and -12s between consecutive events purely
         // because each book was last touched at a different moment. Advancing the clock along that
@@ -119,7 +121,7 @@ public sealed class ReplayRunner
         // order, so it is monotonic by construction, and it is also the moment a live decision was
         // actually made -- which is the thing a replay has to reproduce.
         var clock = new VirtualRuntimeClock(UnixNanosecondsToUtc(log[0].ReceiveUnixNanoseconds));
-        long previousReceiveNanoseconds = log[0].ReceiveUnixNanoseconds;
+        long previousReceiveNanoseconds = log[0].ReceiveMonotonicNanoseconds;
 
         var decisions = new List<ReplayDecision>(log.Count);
         var trace = new StringBuilder();
@@ -132,8 +134,8 @@ public sealed class ReplayRunner
             // does and what a replay has to imitate for a deadline to fall the same way.
             clock.Advance(
                 TimeSpan.FromTicks(
-                    (envelope.ReceiveUnixNanoseconds - previousReceiveNanoseconds) / NanosecondsPerTick));
-            previousReceiveNanoseconds = envelope.ReceiveUnixNanoseconds;
+                    (envelope.ReceiveMonotonicNanoseconds - previousReceiveNanoseconds) / NanosecondsPerTick));
+            previousReceiveNanoseconds = envelope.ReceiveMonotonicNanoseconds;
 
             (string Code, string Payload)? outcome = decide(clock, envelope);
             if (outcome is not { } decided)
@@ -247,6 +249,18 @@ public sealed class ReplayRunner
         long previousReceiveNanoseconds = long.MinValue;
         var previousEventPerSource = new Dictionary<string, long>(StringComparer.Ordinal);
 
+        // A log written before the monotonic timeline existed carries zero on every envelope, which
+        // would read as a session where no time passed at all -- every deadline expiring together
+        // on the first event. Refusing it is the honest outcome: it was recorded against a wall
+        // clock that could step, which is the thing that made this field necessary.
+        if (log.Count > 1 && log.All(envelope => envelope.ReceiveMonotonicNanoseconds == 0L))
+        {
+            throw new ReplayRefusedException(
+                ReplayRefusal.MalformedEnvelope,
+                "The log carries no monotonic receive timeline, so a replay cannot advance time "
+                + "through it. It was recorded before that field existed.");
+        }
+
         foreach (ReplayEnvelope envelope in log)
         {
             if (envelope is null || !envelope.IsValid())
@@ -270,7 +284,7 @@ public sealed class ReplayRunner
             // own clock stepping backwards, which is a real defect: a TTL replayed across it would
             // expire before it started, and this system has already seen uptime come back negative
             // from exactly this.
-            if (envelope.ReceiveUnixNanoseconds < previousReceiveNanoseconds)
+            if (envelope.ReceiveMonotonicNanoseconds < previousReceiveNanoseconds)
             {
                 throw new ReplayRefusedException(
                     ReplayRefusal.NonMonotonicReceiveTime,
@@ -293,7 +307,7 @@ public sealed class ReplayRunner
             }
 
             previousSequence = envelope.IngressSequence;
-            previousReceiveNanoseconds = envelope.ReceiveUnixNanoseconds;
+            previousReceiveNanoseconds = envelope.ReceiveMonotonicNanoseconds;
             previousEventPerSource[envelope.Source] = envelope.EventUnixNanoseconds;
         }
     }

@@ -125,6 +125,7 @@ builder.Services.AddHostedService<SessionReplayService>();
 
 // Answers gates R11 and R12 for the research plane, which cannot observe the execution plane
 // at all. Registered after the replay state because the attestation carries its trace hash.
+builder.Services.AddSingleton<StreamConnectionTracker>();
 builder.Services.AddHostedService<RuntimeAttestationService>();
 builder.Services.AddSingleton<MeasuredCalibrationSource>();
 builder.Services.AddSingleton<IForecastCalibrationSource>(services =>

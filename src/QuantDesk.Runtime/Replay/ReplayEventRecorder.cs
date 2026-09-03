@@ -37,6 +37,12 @@ public sealed class ReplayEventRecorder(IRuntimeClock clock, int schemaVersion =
     private readonly List<ReplayEnvelope> _events = [];
     private long _nextSequence = 1;
 
+    /// <summary>
+    /// The monotonic reading this session started from, so every event carries an elapsed figure
+    /// rather than a raw tick whose scale depends on which clock produced it.
+    /// </summary>
+    private long? _sessionStartMonotonic;
+
     /// <summary>How many events have been recorded.</summary>
     public int Count
     {
@@ -69,6 +75,14 @@ public sealed class ReplayEventRecorder(IRuntimeClock clock, int schemaVersion =
 
         lock (_gate)
         {
+            // Monotonic, not wall. A replay advances along this, and a wall clock stepped by an NTP
+            // correction runs the replay backwards -- which is not hypothetical: a 31,695-event
+            // session was refused because wall-derived receive time went backwards at event 6,447.
+            _sessionStartMonotonic ??= clock.MonotonicTimestamp;
+            long elapsedNanoseconds = (long)Math.Round(
+                clock.ElapsedMilliseconds(_sessionStartMonotonic.Value, clock.MonotonicTimestamp)
+                * 1_000_000d);
+
             var envelope = new ReplayEnvelope(
                 schemaVersion,
                 _nextSequence++,
@@ -76,7 +90,8 @@ public sealed class ReplayEventRecorder(IRuntimeClock clock, int schemaVersion =
                 eventUnixNanoseconds,
                 offset,
                 eventType,
-                payload.ToArray());
+                payload.ToArray(),
+                Math.Max(0L, elapsedNanoseconds));
 
             _events.Add(envelope);
             return envelope;
@@ -110,7 +125,8 @@ public sealed class ReplayEventRecorder(IRuntimeClock clock, int schemaVersion =
                 envelope.EventUnixNanoseconds,
                 envelope.ReceiveOffsetNanoseconds,
                 envelope.EventType,
-                Convert.ToBase64String(envelope.Payload))));
+                Convert.ToBase64String(envelope.Payload),
+                envelope.ReceiveMonotonicNanoseconds)));
         }
     }
 
@@ -157,7 +173,8 @@ public sealed class ReplayEventRecorder(IRuntimeClock clock, int schemaVersion =
                 parsed.EventUnixNanoseconds,
                 parsed.ReceiveOffsetNanoseconds,
                 parsed.EventType ?? string.Empty,
-                Convert.FromBase64String(parsed.PayloadBase64 ?? string.Empty));
+                Convert.FromBase64String(parsed.PayloadBase64 ?? string.Empty),
+                parsed.ReceiveMonotonicNanoseconds);
 
             if (!envelope.IsValid())
             {
@@ -199,5 +216,6 @@ public sealed class ReplayEventRecorder(IRuntimeClock clock, int schemaVersion =
         long EventUnixNanoseconds,
         long ReceiveOffsetNanoseconds,
         string? EventType,
-        string? PayloadBase64);
+        string? PayloadBase64,
+        long ReceiveMonotonicNanoseconds = 0L);
 }

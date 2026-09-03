@@ -103,11 +103,15 @@ public sealed class ReplayEventRecorderTests
     public void ARestoredLogReplaysToTheSameTraceAsTheOneInMemory()
     {
         // The end-to-end claim for the recorder: what went to disk is what gets replayed.
-        var recorder = new ReplayEventRecorder(new VirtualRuntimeClock(SessionStart));
+        // The clock advances, because the recorder stamps a monotonic elapsed figure and a session
+        // in which no time passes carries no timeline for a replay to advance along.
+        var clock = new VirtualRuntimeClock(SessionStart);
+        var recorder = new ReplayEventRecorder(clock);
         for (int index = 0; index < 30; index++)
         {
             recorder.Record(
                 "crypto-quotes", "quote", Nanoseconds(SessionStart.AddMinutes(index)), [(byte)index]);
+            clock.Advance(TimeSpan.FromMinutes(1));
         }
 
         var buffer = new StringWriter();

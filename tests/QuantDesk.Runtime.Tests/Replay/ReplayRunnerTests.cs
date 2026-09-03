@@ -80,6 +80,8 @@ public sealed class ReplayRunnerTests
 
         // The receive timeline, not the venue's: events are stamped 1.5ms before this runtime saw
         // them, and the moment a decision was made is the moment the event arrived.
+        // Wall time starts at the first receive reading and then advances only by monotonic
+        // deltas, so a wall clock stepped mid-session cannot drag the replay backwards.
         Assert.Equal(
             SessionStart.AddMinutes(9).AddTicks(TimeSpan.FromMilliseconds(1.5).Ticks),
             result.FinalVirtualTime);
@@ -164,7 +166,10 @@ public sealed class ReplayRunnerTests
         // The runtime's own clock stepping backwards. This system has already had uptime come back
         // negative from exactly this, and a TTL replayed across it would expire before it started.
         List<ReplayEnvelope> log = [.. Log(events: 5)];
-        log[3] = log[3] with { EventUnixNanoseconds = log[2].EventUnixNanoseconds - 1_000_000L };
+        log[3] = log[3] with
+        {
+            ReceiveMonotonicNanoseconds = log[2].ReceiveMonotonicNanoseconds - 1_000_000L,
+        };
 
         ReplayRefusedException refused = Assert.Throws<ReplayRefusedException>(() =>
             new ReplayRunner().Run(Manifest(), log, AlwaysHold));
@@ -208,6 +213,22 @@ public sealed class ReplayRunnerTests
 
         Assert.Equal(ReplayRefusal.NonMonotonicEventTime, refused.Refusal);
         Assert.Contains("venue:btc", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ALogWithNoMonotonicTimelineIsRefusedRatherThanCollapsedToAnInstant()
+    {
+        // Written before the field existed, so every envelope carries zero. Advancing through it
+        // would put every event at the same instant and expire every deadline together on the
+        // first one -- and the log was recorded against a wall clock that could step, which is the
+        // reason the field exists.
+        List<ReplayEnvelope> log =
+            [.. Log(events: 5).Select(envelope => envelope with { ReceiveMonotonicNanoseconds = 0L })];
+
+        ReplayRefusedException refused = Assert.Throws<ReplayRefusedException>(() =>
+            new ReplayRunner().Run(Manifest(), log, AlwaysHold));
+
+        Assert.Equal(ReplayRefusal.MalformedEnvelope, refused.Refusal);
     }
 
     [Fact]
@@ -344,7 +365,8 @@ public sealed class ReplayRunnerTests
                 EventUnixNanoseconds: start + (index * 60_000_000_000L),
                 ReceiveOffsetNanoseconds: 1_500_000L,
                 EventType: "quote",
-                Payload: [(byte)(index % 256)])),
+                Payload: [(byte)(index % 256)],
+                ReceiveMonotonicNanoseconds: index * 60_000_000_000L)),
         ];
     }
 }

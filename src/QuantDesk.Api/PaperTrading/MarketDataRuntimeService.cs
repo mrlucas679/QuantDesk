@@ -14,6 +14,8 @@ public sealed class MarketDataRuntimeService(
     BoundedEventChannel<NormalizedMarketEvent> channel,
     MicrostructureEvidenceBuffer microstructureEvidence,
     MarketStateOwner stateOwner,
+    MarketStateStore marketState,
+    StreamConnectionTracker connections,
     FullSystemReadinessState readiness,
     PaperTradingOptions options,
     ILogger<MarketDataRuntimeService> logger,
@@ -72,13 +74,26 @@ public sealed class MarketDataRuntimeService(
 
     private void OnConnectivityChanged(bool connected)
     {
+        connections.Record(MarketDataStreamName, connected, clock.UtcNow);
+
         if (!connected)
         {
             readiness.RecordStreams(false, readiness.Snapshot().TradeUpdatesHealthy);
             microstructureEvidence.MarkGap("stream_disconnected", clock.MonotonicTimestamp);
+
+            // The book on hand is not the venue's book any more, and this feed publishes no
+            // sequence number that would reveal how far apart they have drifted. Marking the state
+            // gapped stops anything trading on it until a fresh event arrives per instrument.
+            // Without this the snapshots carried the pre-disconnect book across the reconnect
+            // still reporting Healthy.
+            marketState.MarkStreamInterrupted();
         }
+
         logger.LogInformation("Alpaca crypto market-data subscription {State}.", connected ? "connected" : "disconnected");
     }
+
+    /// <summary>Names this stream in the connection tracker; the trade-update stream is separate.</summary>
+    internal const string MarketDataStreamName = "alpaca-crypto-market-data";
 
     private async Task WatchdogAsync(string symbol, int instrumentSlot, CancellationToken cancellationToken)
     {

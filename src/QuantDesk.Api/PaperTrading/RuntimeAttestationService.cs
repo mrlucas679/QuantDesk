@@ -1,5 +1,7 @@
 using System.Text.Json;
+using QuantDesk.Domain.Market;
 using QuantDesk.Runtime.Execution;
+using QuantDesk.Runtime.Ingestion;
 using QuantDesk.Runtime.Reliability;
 using QuantDesk.Runtime.Telemetry;
 using QuantDesk.Runtime.Time;
@@ -35,6 +37,8 @@ public sealed class RuntimeAttestationService(
     SpotExecutionRecoveryService recovery,
     SessionReplayState replay,
     LatencyRecorder latency,
+    BoundedEventChannel<NormalizedMarketEvent> marketDataChannel,
+    StreamConnectionTracker connections,
     IRuntimeClock clock,
     ILogger<RuntimeAttestationService> logger) : BackgroundService
 {
@@ -108,10 +112,6 @@ public sealed class RuntimeAttestationService(
             notMeasured.Add("pendingOrderInvalidation");
         }
 
-        // Nothing counts channel occupancy or connection lifetimes yet. Saying so beats reporting
-        // the design's intention as an observation.
-        notMeasured.Add("boundedQueues");
-        notMeasured.Add("noReconnectLeak");
 
         return new RuntimeAttestationDocument(
             AttestedAt: clock.UtcNow,
@@ -120,12 +120,24 @@ public sealed class RuntimeAttestationService(
             ReservationBeforeSubmit: snapshot.ReservationReady,
             ReconciliationHealthy: ReconciliationIsHealthy(),
             PendingOrderInvalidation: campaignProvesBrokerBehaviour,
-            BoundedQueues: false,
-            NoReconnectLeak: false,
+            // Every channel here is bounded by construction, so the capacity is not the question --
+            // whether the bound was ever reached is. A rejection means market data this process had
+            // already received was dropped on the floor.
+            BoundedQueues: marketDataChannel.WithinBounds,
+
+            // Not "is the stream up" -- a socket that redials every few seconds keeps every health
+            // check green while destroying the book, because this venue publishes no sequence
+            // number and each reconnect loses an unknown number of updates.
+            NoReconnectLeak: connections.NoReconnectLeak(),
             PaperEndpointVerified: snapshot.PaperEndpointVerified,
             DecisionPathP99Milliseconds: PercentileOf(LatencyStage.Decision),
             DataAgeP99Milliseconds: PercentileOf(LatencyStage.MarketDataFetch),
             ReplayTraceHash: replay.Snapshot().TraceHash,
+            MarketDataEventsRejected: marketDataChannel.Rejected,
+            MarketDataChannelHighWater: marketDataChannel.HighWater,
+            MarketDataChannelCapacity: marketDataChannel.Capacity,
+            StreamReconnects: connections.Summarise()
+                .Sum(summary => summary.ReconnectsInWindow),
             FaultCampaignExercised: campaign?.Exercised ?? 0,
             FaultCampaignTotal: campaign?.Total ?? FaultCampaign.Cases.Count,
             NotMeasured: notMeasured);
@@ -205,6 +217,10 @@ public sealed record RuntimeAttestationDocument(
     double? DecisionPathP99Milliseconds,
     double? DataAgeP99Milliseconds,
     string? ReplayTraceHash,
+    long MarketDataEventsRejected,
+    int MarketDataChannelHighWater,
+    int MarketDataChannelCapacity,
+    int StreamReconnects,
     int FaultCampaignExercised,
     int FaultCampaignTotal,
     IReadOnlyList<string> NotMeasured);

@@ -198,9 +198,23 @@ public static class FaultCampaign
             ["DATA-02"] = MissingQuote,
             ["DATA-03"] = StaleQuote,
             ["DATA-04"] = OutOfOrderEvent,
+            ["DATA-05"] = FaultCampaignDrivers.SequenceGap,
             ["DATA-06"] = NonFiniteTradePrice,
             ["DATA-07"] = MissingOrderBookDepth,
+            ["MODEL-01"] = FaultCampaignDrivers.ArtifactMissing,
+            ["MODEL-02"] = FaultCampaignDrivers.FeatureSchemaMismatch,
+            ["MODEL-03"] = FaultCampaignDrivers.InvalidProbability,
+            ["MODEL-04"] = FaultCampaignDrivers.InferenceTimeout,
+            ["MODEL-05"] = FaultCampaignDrivers.ExpertException,
+            ["BROKER-01"] = FaultCampaignDrivers.RateLimited,
+            ["BROKER-02"] = FaultCampaignDrivers.ServerError,
+            ["BROKER-03"] = FaultCampaignDrivers.SubmitTimeoutAfterAcceptance,
+            ["BROKER-04"] = FaultCampaignDrivers.PartialFill,
+            ["BROKER-05"] = FaultCampaignDrivers.CancelFillRace,
+            ["BROKER-06"] = FaultCampaignDrivers.DuplicateTradeUpdate,
+            ["BROKER-07"] = FaultCampaignDrivers.UnknownOrder,
             ["RUNTIME-01"] = DurableStoreUnavailable,
+            ["POLICY-01"] = FaultCampaignDrivers.MalformedPolicyOutput,
         };
 
     private const int Slot = 0;
