@@ -122,6 +122,10 @@ builder.Services.AddSingleton<EpisodeAttributionState>();
 builder.Services.AddHostedService<EpisodeAttributionService>();
 builder.Services.AddSingleton<SessionReplayState>();
 builder.Services.AddHostedService<SessionReplayService>();
+
+// Answers gates R11 and R12 for the research plane, which cannot observe the execution plane
+// at all. Registered after the replay state because the attestation carries its trace hash.
+builder.Services.AddHostedService<RuntimeAttestationService>();
 builder.Services.AddSingleton<MeasuredCalibrationSource>();
 builder.Services.AddSingleton<IForecastCalibrationSource>(services =>
     services.GetRequiredService<MeasuredCalibrationSource>());
@@ -544,9 +548,18 @@ app.MapGet("/api/system/fault-campaign", () =>
     return Results.Ok(new
     {
         campaignId = FaultCampaign.CampaignId,
-        status = report is null ? "not-run" : report.Passed == report.Total ? "passed" : "failed",
+
+        // Three outcomes, not two. "partial" is a case nobody has written a driver for yet, and
+        // reporting that as "passed" is how this campaign spent its life claiming 21 of 21 while
+        // running no production code at all.
+        status = report is null ? "not-run"
+            : !report.NoExercisedFailure ? "failed"
+            : report.FullyCovered ? "passed"
+            : "partial",
         total = FaultCampaign.Cases.Count,
+        exercised = report?.Exercised ?? 0,
         passed = report?.Passed ?? 0,
+        fullyCovered = report?.FullyCovered ?? false,
         startedAt = report?.StartedAt,
         completedAt = report?.CompletedAt,
         cases = report is null
@@ -557,6 +570,7 @@ app.MapGet("/api/system/fault-campaign", () =>
                 expectedDisposition = item.ExpectedDisposition.ToString(),
                 observedDisposition = (string?)null,
                 item.BrokerMutationAllowed,
+                exercised = false,
                 passed = false,
                 item.Recovery
             })
@@ -565,8 +579,9 @@ app.MapGet("/api/system/fault-campaign", () =>
                 item.Id,
                 item.Category,
                 expectedDisposition = item.ExpectedDisposition.ToString(),
-                observedDisposition = (string?)item.ObservedDisposition.ToString(),
+                observedDisposition = item.ObservedDisposition?.ToString(),
                 item.BrokerMutationAllowed,
+                exercised = item.Exercised,
                 passed = item.Passed,
                 item.Recovery
             })

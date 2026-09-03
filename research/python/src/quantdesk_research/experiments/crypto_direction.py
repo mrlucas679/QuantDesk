@@ -31,6 +31,13 @@ from quantdesk_research.data.manifest_keys import (
 from quantdesk_research.evaluation.trial_ledger import TrialLedger
 from quantdesk_research.models.contract_publication import ContractPublisher
 from quantdesk_research.models.model_registry import ModelRegistry
+from quantdesk_research.validation.gate_evaluation import (
+    CandidateMeasurements,
+    RuntimeAttestation,
+    describe_failures,
+    evaluate_required_gates,
+    failing_gates,
+)
 
 FEATURE_NAMES = (
     "return_1",
@@ -56,6 +63,12 @@ def annual_periods(timeframe: str) -> int:
     if normalized == "1day":
         return 365
     raise ValueError(f"Unsupported research timeframe: {timeframe}")
+
+
+#: Disjoint, chronological, purged out-of-sample windows the rolling design requires before it
+#: will call a result validated. Gate R3 asks for a distribution rather than one run, and this
+#: is the number that answers it.
+OUTER_TEST_WINDOWS = 2
 
 
 @dataclass(frozen=True)
@@ -356,7 +369,7 @@ def run_rolling_experiment(
             "parameters": {
                 "round_trip_cost_bps": round_trip_cost_bps,
                 "horizon_bars": horizon_bars,
-                "outer_test_windows": 2,
+                "outer_test_windows": OUTER_TEST_WINDOWS,
                 "features": FEATURE_NAMES,
             },
             "dataset_hash": manifest["sha256"],
@@ -511,7 +524,7 @@ def run_rolling_low_vol_persistence_experiment(
                 "volatility_caps": [0.25, 0.5, 0.75, 1.0],
                 "regime_comparison_count": regime_comparison_count,
                 "one_sided_alpha": regime_alpha,
-                "outer_test_windows": 2,
+                "outer_test_windows": OUTER_TEST_WINDOWS,
             },
             "dataset_hash": manifest["sha256"], "sharpe_ratio": evaluation.test_sharpe,
             "status": "VALIDATION_PASS" if passed else "VALIDATION_FAIL",
@@ -637,7 +650,7 @@ def run_rolling_cross_asset_lead_experiment(
         "hypothesis_family_id": f"{experiment_name}-eth-lead-{horizon_bars}bar",
         "model_family": "cross_asset_eth_return_lead", "feature_family": "eth_return_1_only",
         "parameters": {"round_trip_cost_bps": round_trip_cost_bps, "horizon_bars": horizon_bars,
-                       "outer_test_windows": 2, "source": "ETH/USD"},
+                       "outer_test_windows": OUTER_TEST_WINDOWS, "source": "ETH/USD"},
         "dataset_hash": btc_manifest["sha256"], "sharpe_ratio": evaluation.test_sharpe,
         "status": "VALIDATION_PASS" if passed else "VALIDATION_FAIL", "git_commit": "working-tree",
         "config_hash": f"{experiment_name}-eth-lead-v1",
@@ -712,8 +725,16 @@ def publish_validated_directional_forecast(
     evaluation: DirectionEvaluation,
     evidence_profile: EvidenceProfile,
     strategy_family: str,
+    baseline_lower_confidence_net_bps: float | None = None,
+    round_trip_cost_bps: float = 0.0,
+    attestation_path: Path | None = None,
 ) -> None:
-    """Fit and publish only a rolling-validation-passed directional model contract bundle."""
+    """Fit and publish only a rolling-validation-passed directional model contract bundle.
+
+    Passing the statistical evaluation is necessary and not sufficient. The R-gates are evaluated
+    here from what was measured, and publication is refused by name when any of them does not pass
+    -- including the two only the execution plane can answer, which come from its attestation.
+    """
     if not evaluation.passed:
         raise ValueError("A failed evaluation cannot be promoted.")
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
@@ -760,6 +781,38 @@ def publish_validated_directional_forecast(
     )
     timeframe = str(manifest["timeframe"])
     horizon_minutes = horizon_bars * (5 if timeframe == "5Min" else 24 * 60)
+    # The gates, from what this experiment measured. The horizon is used as the alpha life because
+    # a forecast is by construction a claim about that window and nothing here measures decay
+    # faster than it. OUTER_TEST_WINDOWS is the rolling design's own count of disjoint, purged
+    # out-of-sample windows, which is what R1 and R3 are asking about.
+    gate_evidence = evaluate_required_gates(
+        CandidateMeasurements(
+            strategy_name=experiment_name,
+            lower_confidence_net_bps=evaluation.test_lower_confidence_net_bps,
+            baseline_lower_confidence_net_bps=baseline_lower_confidence_net_bps,
+            trade_count=evaluation.test_trade_count,
+            sharpe=evaluation.test_sharpe,
+            maximum_drawdown_bps=evaluation.test_max_drawdown_bps,
+            round_trip_cost_bps=round_trip_cost_bps,
+            alpha_life_minutes=float(horizon_minutes),
+            labels_purged_and_embargoed=True,
+            fit_ends_before_prediction=True,
+            trials_evaluated=1,
+            seeds_evaluated=1,
+            walk_forward_folds=OUTER_TEST_WINDOWS,
+            evidence_class="PassiveHistoricalReplay",
+            dataset_hash=evaluation.dataset_hash,
+        ),
+        evidence_profile,
+        RuntimeAttestation.load(attestation_path) if attestation_path else None,
+        evidence_id_prefix=artifact_id,
+    )
+    refused = failing_gates(gate_evidence)
+    if refused:
+        raise ValueError(
+            f"Promotion refused: required gates did not pass: {describe_failures(gate_evidence)}"
+        )
+
     artifact = ModelArtifact(
         artifact_id=artifact_id, model_id=f"{experiment_name}-lgbm", model_type="lightgbm_huber",
         strategy_family=strategy_family,
@@ -780,8 +833,8 @@ def publish_validated_directional_forecast(
         model_version="rolling-v1", feature_schema_hash=feature_hash, dataset_hash=manifest["sha256"],
         training_window={"end": manifest["end"]}, parameters={"horizon_bars": horizon_bars},
         random_seed=42, metrics=asdict(evaluation), evidence_grade=evidence_profile.transfer_grade,
-        evidence_profile=evidence_profile, validation_gates=["R0", "R1", "R2", "R4"],
-        validation_evidence={},
+        evidence_profile=evidence_profile, validation_gates=sorted(gate_evidence),
+        validation_evidence=gate_evidence,
         support_domain={"instrument": manifest["symbol"], "timeframe": timeframe},
         git_commit="working-tree", config_hash=f"{experiment_name}-rolling-v1",
         creation_timestamp=datetime.now(UTC), artifact_hash=artifact_hash,
