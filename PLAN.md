@@ -64,12 +64,22 @@ model may not silently claim Level-2/Level-3 evidence.
   and score SPY anyway. The typed scope plus a load-time gate is what prevents it.
 - Known cost: per-symbol models see less data, raising estimation error.
 
-### Phase 3 — parallel models: start with three, not seven
-- Ridge (the baseline that must be beaten), LightGBM, Random Forest. Simple averaging first.
-- Evidence: forecast combination beats complex standalone ML, and across 46 countries plain OLS beat
-  eight ML methods on risk-adjusted returns because estimation error dominates. Gu/Kelly/Xiu reject
-  OLS in favour of nonlinear methods, but on far larger panels than seven crypto pairs.
-- CPU, not GPU: 12 logical cores suit boosted trees; 4 GB VRAM rules out sequence models.
+### Phase 3 — parallel models: measured, and the answer is no
+- Done: Ridge, LightGBM and a random forest, plus their simple average, scored per instrument on the
+  same purged rolling out-of-sample windows, net of each venue's real round trip.
+- **0 of 24 model/instrument pairs clear their costs at 15 minutes.** Gross edge is about +1 bps
+  everywhere against a toll of 8 bps (equity) or 60 bps (crypto). The three families are not
+  distinguishable from one another; they are all measuring the same near-zero signal. An ensemble
+  of models with no edge has no edge.
+- The horizon sweep is the real finding. Equity mean net edge turns positive as the hold lengthens,
+  exactly as √t scaling predicts against a fixed cost — IWM +17.1 bps at 4 hours, +20.4 at 12;
+  SPY +15.7 at 12 hours. Crypto never approaches its 60 bps toll at any horizon tested.
+- **No lower confidence bound clears zero at any horizon.** Trade counts collapse as the hold grows
+  (81, 67, 53 in a test window), so the error bar widens faster than the mean rises. Promising, not
+  established, and the distinction is the whole discipline.
+- What follows is more evidence, not more models: longer equity history, or SHADOW-rung paper
+  trading at 4–12 hour holds to accumulate live observations. Crypto at these costs is not a
+  modelling problem.
 
 ### Phase 4 — selection by measured skill
 - `ForecastOutcomeLog` and `MeasuredCalibrationSource` exist and already score by worst regime.
