@@ -96,16 +96,37 @@ public sealed class FittedModelMonitorService(
         if (string.Equals(pointerJson, _lastPointerFingerprint, StringComparison.Ordinal)) return;
 
         using JsonDocument pointer = JsonDocument.Parse(pointerJson);
+        // An array, one entry per (family, instrument). It was an object keyed by family alone,
+        // which could only ever name one model per family -- the shape that made a single global
+        // HAR inevitable regardless of what the research plane fitted.
         if (!pointer.RootElement.TryGetProperty("models", out JsonElement models)
-            || models.ValueKind is not JsonValueKind.Object)
+            || models.ValueKind is not JsonValueKind.Array)
         {
             logger.LogWarning("Fitted model pointer names no models.");
             return;
         }
 
         var status = new List<FittedModelStatus>();
-        status.Add(LoadHar(models));
-        status.Add(LoadGarch(models));
+        foreach (JsonElement entry in models.EnumerateArray())
+        {
+            if (entry.ValueKind is not JsonValueKind.Object) continue;
+
+            string family = entry.TryGetProperty("family", out JsonElement named)
+                ? named.GetString() ?? string.Empty
+                : string.Empty;
+
+            status.Add(family switch
+            {
+                "har" => LoadHar(entry),
+                "garch" => LoadGarch(entry),
+                // A family this runtime has no inference path for. Refusing by name rather than
+                // attempting one is the point: there is no partial credit for loading coefficients
+                // nothing here can score.
+                _ => new FittedModelStatus(family, false, "UNSUPPORTED_FAMILY", null, null),
+            });
+        }
+
+        if (status.Count == 0) status.AddRange([Absent("har"), Absent("garch")]);
         store.Record(status);
 
         _lastPointerFingerprint = pointerJson;
@@ -126,51 +147,67 @@ public sealed class FittedModelMonitorService(
         }
     }
 
-    private FittedModelStatus LoadHar(JsonElement models)
+    /// <summary>
+    /// The family, qualified by the instrument it was fitted for.
+    ///
+    /// Several artifacts now share a family, so "har" alone no longer identifies a status row --
+    /// and an operator looking at four HAR rows needs to know which one failed.
+    /// </summary>
+    private static string Row(string family, JsonElement entry) =>
+        entry.TryGetProperty("symbol", out JsonElement symbol) &&
+        symbol.GetString() is { Length: > 0 } named
+            ? $"{family}:{named}"
+            : family;
+
+    private FittedModelStatus LoadHar(JsonElement entry)
     {
-        if (!TryRead(models, "har", out FittedModelContract? artifact, out string failure))
-            return new FittedModelStatus("har", false, failure, null, null);
+        if (!TryRead(entry, "har", out FittedModelContract? artifact, out string failure))
+            return new FittedModelStatus(Row("har", entry), false, failure, null, null);
 
         if (!HarVarianceModel.TryLoad(
                 artifact!, RealizedVolatilityExpert.FeatureContract,
                 out HarVarianceModel model, out FittedModelRejection rejection))
         {
             return new FittedModelStatus(
-                "har", false, rejection.ToString(), artifact!.ArtifactId, artifact.ProducerLibrary);
+                Row("har", entry), false, rejection.ToString(),
+                artifact!.ArtifactId, artifact.ProducerLibrary);
         }
 
         if (!store.Adopt(model, artifact!.SupportDomain))
         {
             return new FittedModelStatus(
-                "har", false, UndeclaredDomain, artifact.ArtifactId, artifact.ProducerLibrary);
+                Row("har", entry), false, UndeclaredDomain,
+                artifact.ArtifactId, artifact.ProducerLibrary);
         }
 
         return new FittedModelStatus(
-            "har", true, nameof(FittedModelRejection.None),
+            Row("har", entry), true, nameof(FittedModelRejection.None),
             artifact!.ArtifactId, $"{artifact.ProducerLibrary} {artifact.ProducerLibraryVersion}");
     }
 
-    private FittedModelStatus LoadGarch(JsonElement models)
+    private FittedModelStatus LoadGarch(JsonElement entry)
     {
-        if (!TryRead(models, "garch", out FittedModelContract? artifact, out string failure))
-            return new FittedModelStatus("garch", false, failure, null, null);
+        if (!TryRead(entry, "garch", out FittedModelContract? artifact, out string failure))
+            return new FittedModelStatus(Row("garch", entry), false, failure, null, null);
 
         if (!GarchVarianceModel.TryLoad(
                 artifact!, GarchFeatureContract(artifact!),
                 out GarchVarianceModel model, out FittedModelRejection rejection))
         {
             return new FittedModelStatus(
-                "garch", false, rejection.ToString(), artifact!.ArtifactId, artifact.ProducerLibrary);
+                Row("garch", entry), false, rejection.ToString(),
+                artifact!.ArtifactId, artifact.ProducerLibrary);
         }
 
         if (!store.Adopt(model, artifact!.SupportDomain))
         {
             return new FittedModelStatus(
-                "garch", false, UndeclaredDomain, artifact.ArtifactId, artifact.ProducerLibrary);
+                Row("garch", entry), false, UndeclaredDomain,
+                artifact.ArtifactId, artifact.ProducerLibrary);
         }
 
         return new FittedModelStatus(
-            "garch", true, nameof(FittedModelRejection.None),
+            Row("garch", entry), true, nameof(FittedModelRejection.None),
             artifact!.ArtifactId, $"{artifact.ProducerLibrary} {artifact.ProducerLibraryVersion}");
     }
 
@@ -196,12 +233,12 @@ public sealed class FittedModelMonitorService(
         artifact.FeatureSemantics?.BarDurationMinutes ?? 0);
 
     private bool TryRead(
-        JsonElement models, string family, out FittedModelContract? artifact, out string failure)
+        JsonElement entry, string family, out FittedModelContract? artifact, out string failure)
     {
         artifact = null;
         failure = string.Empty;
 
-        if (!models.TryGetProperty(family, out JsonElement named)
+        if (!entry.TryGetProperty("artifact", out JsonElement named)
             || named.ValueKind is not JsonValueKind.String)
         {
             failure = "NOT_PUBLISHED";

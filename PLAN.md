@@ -54,8 +54,11 @@ model may not silently claim Level-2/Level-3 evidence.
   instrument sat unread beside the artifact.
 - Effect today: the BTC-fitted HAR and GARCH stop serving SPY/QQQ/IWM/DIA. Those instruments have
   no fitted model and now say so, instead of using Bitcoin's coefficients.
-- Remaining: fit per symbol so the equities get real models. The loop still fits one dataset per
-  cycle; a per-symbol bank has somewhere to put the results but nothing yet filling it.
+- Done: the fitting loop discovers every five-minute manifest on the volume and fits one HAR and
+  one GARCH per instrument. Idempotence is per instrument, so one symbol's fresh dataset no longer
+  forces a refit of every other and one symbol's unchanged dataset no longer skips the cycle. The
+  pointer is an array of (family, symbol, artifact) rather than an object keyed by family, which
+  could only ever name one model per family.
 - Not separate containers. Newman's *Building Microservices* §Premature Decomposition recommends the
   bounded context as a module inside the monolith first; a container would happily load a BTC model
   and score SPY anyway. The typed scope plus a load-time gate is what prevents it.

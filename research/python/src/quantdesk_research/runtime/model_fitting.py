@@ -283,85 +283,159 @@ def fit_garch_model(
     )
 
 
-def publish_fitted_models(data_root: Path, artifacts_root: Path) -> FittedModelPublication:
-    """Fit what this cycle can from the latest dataset and publish it, or say why not.
+def _five_minute_manifests(data_root: Path) -> list[dict[str, Any]]:
+    """Every instrument this cycle has five-minute bars for, newest manifest per symbol.
 
-    Idempotent on the dataset. Refitting the same bars every few minutes would churn the artifact
-    hash without changing what the model knows, and the runtime would reload on every cycle for no
-    reason -- so a dataset already published is skipped.
+    The datasets were already there. SPY, QQQ, IWM and DIA have had their own manifests on the
+    volume for as long as the equity lane has existed -- 41,840 five-minute SPY bars over two years,
+    beside the BTC manifest -- and the fitting loop read exactly one of them and fitted one model
+    from it. That model was then used for all five instruments.
+
+    Filtered on the timeframe the manifest states rather than on its filename, because the filenames
+    are inconsistent (``latest-manifest.json``, ``latest-spy-5min-iex.manifest.json``,
+    ``latest-spy-daily-manifest.json``) and a naming convention is not a fact about the data.
     """
-    manifest_path = data_root / "latest-manifest.json"
-    if not manifest_path.exists():
-        raise ModelFittingSkipped(f"no dataset manifest at {manifest_path}")
-
-    manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
-    dataset_hash = str(manifest["sha256"])
-    dataset = data_root / str(manifest["dataFile"])
-    if not dataset.exists():
-        raise ModelFittingSkipped(f"manifest names {dataset.name}, which is not present")
-
-    git_commit = _git_commit()
-
-    destination = artifacts_root / MODELS_DIRECTORY
-    pointer_path = destination / POINTER_NAME
-    if pointer_path.exists():
-        published = json.loads(pointer_path.read_text(encoding="utf-8"))
-
-        # Keyed on the code as well as the data. Keyed on the dataset alone, a change to a feature
-        # schema or an exporter never republished -- the artifact on the volume stayed as it was and
-        # the runtime refused it as a schema mismatch forever, with the fitting loop reporting
-        # "already published" every cycle. That happened: a GARCH schema change left a stale
-        # artifact that could not be adopted and would not be replaced.
-        if (published.get("dataset_hash") == dataset_hash
-                and published.get("git_commit") == git_commit):
-            return FittedModelPublication([], {"all": "dataset and code already published"}, dataset_hash)
-    closes = _closes_from(dataset)
-    # The manifest hash arrives prefixed "sha256:", and a colon is not a filename on every platform
-    # this repository is cloned onto. The full hash still travels inside the artifact.
-    short_hash = dataset_hash.split(":")[-1][:16]
-    as_of = datetime.now(UTC)
-
-    written: list[str] = []
-    skipped: dict[str, str] = {}
-    pointer: dict[str, str] = {}
-
-    for family, fit in (("har", fit_har), ("garch", fit_garch_model)):
+    found: dict[str, dict[str, Any]] = {}
+    for path in sorted(data_root.glob("latest-*manifest*.json")):
         try:
-            artifact = fit(
-                closes, dataset_hash=dataset_hash, short_hash=short_hash,
-                as_of=as_of, git_commit=git_commit,
-                support_domain=support_domain_of(manifest))
-        except (ModelFittingSkipped, GarchFitRejected, ValueError) as refusal:
-            # A refused fit is a result. The gates it failed -- non-convergence, a persistence at or
-            # above one, too little history -- are the ones that keep an unusable model out of the
-            # runtime, so recording the reason is more useful than an empty directory.
-            skipped[family] = str(refusal)
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        if str(manifest.get("timeframe", "")).lower() != "5min":
+            continue
+        symbol = str(manifest.get("symbol", "")).strip()
+        if not symbol or "dataFile" not in manifest or "sha256" not in manifest:
             continue
 
-        name = f"{artifact.artifact_id}.json"
-        artifact.write(destination / name)
-        written.append(name)
-        pointer[family] = name
+        # One manifest per symbol. Several files can name the same instrument, and fitting the same
+        # bars twice would write two artifacts covering identical ground.
+        existing = found.get(symbol)
+        if existing is None or str(manifest.get("generatedAt", "")) > str(
+            existing.get("generatedAt", "")
+        ):
+            found[symbol] = manifest
 
-    if not written:
+    return list(found.values())
+
+
+def publish_fitted_models(data_root: Path, artifacts_root: Path) -> FittedModelPublication:
+    """Fit every instrument this cycle has bars for, and publish what verified.
+
+    Idempotent per instrument. Refitting the same bars every few minutes would churn artifact hashes
+    without changing what any model knows, and the runtime would reload on every cycle for no
+    reason -- so a (symbol, dataset, commit) already published is skipped. Per instrument, not
+    globally: one symbol's fresh dataset must not suppress the fitting of another's, which a single
+    key did.
+    """
+    manifests = _five_minute_manifests(data_root)
+    if not manifests:
+        raise ModelFittingSkipped(f"no five-minute dataset manifest under {data_root}")
+
+    git_commit = _git_commit()
+    destination = artifacts_root / MODELS_DIRECTORY
+    pointer_path = destination / POINTER_NAME
+
+    # Keyed on the code as well as the data. Keyed on the dataset alone, a change to a feature
+    # schema or an exporter never republished -- the artifact on the volume stayed as it was and the
+    # runtime refused it as a schema mismatch forever, with the fitting loop reporting "already
+    # published" every cycle. That happened: a GARCH schema change left a stale artifact that could
+    # not be adopted and would not be replaced.
+    previous: dict[str, Any] = {}
+    if pointer_path.exists():
+        try:
+            previous = json.loads(pointer_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+    published_before: dict[str, str] = (
+        previous.get("datasets", {}) if previous.get("git_commit") == git_commit else {}
+    )
+    carried: dict[str, list[dict[str, str]]] = {}
+    for entry in previous.get("models", []):
+        if isinstance(entry, dict) and entry.get("symbol"):
+            carried.setdefault(str(entry["symbol"]), []).append(entry)
+
+    as_of = datetime.now(UTC)
+    written: list[str] = []
+    skipped: dict[str, str] = {}
+    models: list[dict[str, str]] = []
+    datasets: dict[str, str] = {}
+    hashes: list[str] = []
+
+    for manifest in manifests:
+        symbol = str(manifest["symbol"])
+        dataset_hash = str(manifest["sha256"])
+        datasets[symbol] = dataset_hash
+        hashes.append(dataset_hash)
+
+        if published_before.get(symbol) == dataset_hash:
+            # Nothing new for this instrument. Keep the artifacts it already has in the pointer;
+            # dropping them would unpublish a perfectly good model because a different symbol's
+            # dataset happened to move.
+            models.extend(carried.get(symbol, []))
+            skipped[symbol] = "dataset and code already published"
+            continue
+
+        dataset = data_root / str(manifest["dataFile"])
+        if not dataset.exists():
+            skipped[symbol] = f"manifest names {dataset.name}, which is not present"
+            continue
+
+        try:
+            support_domain = support_domain_of(manifest)
+            closes = _closes_from(dataset)
+        except (ModelFittingSkipped, OSError, ValueError, KeyError) as refusal:
+            skipped[symbol] = str(refusal)
+            continue
+
+        # The manifest hash arrives prefixed "sha256:", and a colon is not a filename on every
+        # platform this repository is cloned onto. The full hash still travels inside the artifact.
+        #
+        # The symbol is part of the name, not decoration. Naming an artifact by its dataset hash
+        # alone made two instruments' artifacts collide whenever their hashes shared a prefix, and
+        # silently: the second write overwrote the first, and the pointer then named one file for
+        # two symbols. It also left a directory nobody could read without opening every file.
+        slug = "".join(character for character in symbol.lower() if character.isalnum())
+        short_hash = f"{slug}-{dataset_hash.split(':')[-1][:16]}"
+
+        for family, fit in (("har", fit_har), ("garch", fit_garch_model)):
+            try:
+                artifact = fit(
+                    closes, dataset_hash=dataset_hash, short_hash=short_hash,
+                    as_of=as_of, git_commit=git_commit, support_domain=support_domain)
+            except (ModelFittingSkipped, GarchFitRejected, ValueError) as refusal:
+                # A refused fit is a result. The gates it failed -- non-convergence, a persistence
+                # at or above one, too little history -- are the ones that keep an unusable model
+                # out of the runtime, so recording the reason is more useful than an empty
+                # directory.
+                skipped[f"{symbol}:{family}"] = str(refusal)
+                continue
+
+            name = f"{artifact.artifact_id}.json"
+            artifact.write(destination / name)
+            written.append(name)
+            models.append({"family": family, "symbol": symbol, "artifact": name})
+
+    if not models:
         raise ModelFittingSkipped(
-            "no family produced a usable fit: "
-            + "; ".join(f"{family}: {reason}" for family, reason in skipped.items())
+            "no instrument produced a usable fit: "
+            + "; ".join(f"{key}: {reason}" for key, reason in skipped.items())
         )
 
     # Written last, so a reader never sees a pointer to a file that is still being written.
     _write_atomic(
         pointer_path,
         {
-            "dataset_hash": dataset_hash,
             "git_commit": git_commit,
             "generated_at": as_of.isoformat(),
-            "models": pointer,
+            "datasets": datasets,
+            "models": models,
             "skipped": skipped,
         },
     )
 
-    return FittedModelPublication(written, skipped, dataset_hash)
+    return FittedModelPublication(written, skipped, ",".join(sorted(hashes)))
 
 
 def _write_atomic(path: Path, document: dict[str, Any]) -> None:

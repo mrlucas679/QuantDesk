@@ -52,7 +52,7 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
 
         Monitor(store).Probe();
 
-        FittedModelStatus har = store.Status.Single(entry => entry.Family == "har");
+        FittedModelStatus har = store.Status.Single(entry => entry.Family.StartsWith("har", StringComparison.Ordinal));
         Assert.True(har.Loaded, har.Rejection);
         Assert.Contains("quantdesk_research", har.ProducerLibrary);
         Assert.True(new RealizedVolatilityExpert(store).IsFittedFor(FixtureSymbol));
@@ -96,7 +96,7 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
 
         Monitor(store).Probe();
 
-        FittedModelStatus har = store.Status.Single(entry => entry.Family == "har");
+        FittedModelStatus har = store.Status.Single(entry => entry.Family.StartsWith("har", StringComparison.Ordinal));
         Assert.False(har.Loaded);
         Assert.False(new RealizedVolatilityExpert(store).IsFittedFor(FixtureSymbol));
     }
@@ -128,7 +128,7 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
         Monitor(store).Probe();
 
         Assert.Equal(
-            "UNSAFE_ARTIFACT_NAME", store.Status.Single(entry => entry.Family == "har").Rejection);
+            "UNSAFE_ARTIFACT_NAME", store.Status.Single(entry => entry.Family.StartsWith("har", StringComparison.Ordinal)).Rejection);
     }
 
     [Fact]
@@ -153,7 +153,7 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
         Monitor(store).Probe();
 
         Assert.Equal(
-            "UNREADABLE_ARTIFACT", store.Status.Single(entry => entry.Family == "har").Rejection);
+            "UNREADABLE_ARTIFACT", store.Status.Single(entry => entry.Family.StartsWith("har", StringComparison.Ordinal)).Rejection);
     }
 
     // ------------------------------------------------------------------------------- fixtures
@@ -167,14 +167,25 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
         WritePointer(new Dictionary<string, string> { ["har"] = har });
     }
 
+    /// <summary>
+    /// The pointer, one entry per (family, instrument).
+    ///
+    /// It used to be an object keyed by family, which could name only one model per family -- the
+    /// shape that made a single global HAR inevitable however many the research plane fitted.
+    /// </summary>
     private void WritePointer(Dictionary<string, string> models)
     {
         File.WriteAllText(
             Path.Combine(_root, "fitted-models", "current-fitted-models.json"),
             JsonSerializer.Serialize(new
             {
-                dataset_hash = Guid.NewGuid().ToString("N"),
-                models,
+                git_commit = "abc1234",
+                models = models.Select(entry => new
+                {
+                    family = entry.Key,
+                    symbol = FixtureSymbol,
+                    artifact = entry.Value,
+                }),
             }));
     }
 
