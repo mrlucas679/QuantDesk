@@ -186,6 +186,70 @@ def _score(trees: list[FlattenedTree], features: NDArray[np.float64]) -> float:
 
 
 @dataclass(frozen=True)
+class HeldOutPerformance:
+    """What the model scored on data it was not fitted on, against the null it must beat."""
+
+    observations: int
+    model_rmse: float
+    baseline_rmse: float
+    baseline: str
+
+    @property
+    def skill(self) -> float:
+        """Fraction of the baseline's error the model removes. Zero means it learned nothing."""
+        if self.baseline_rmse <= 0.0:
+            return 0.0
+        return 1.0 - (self.model_rmse / self.baseline_rmse)
+
+
+def held_out_performance(
+    booster: lgb.Booster,
+    export: TreeEnsembleExport,
+    features: NDArray[np.float64],
+    target: NDArray[np.float64],
+    training_mean: float,
+) -> HeldOutPerformance:
+    """Score the fitted ensemble on data it never saw, against predicting the training mean.
+
+    The baseline is the training mean rather than zero, because a model that cannot beat "always
+    say what the average was" has not learned anything about the data -- it has learned where the
+    data sits, which the intercept already knew. Zero would be a weaker null and would let a model
+    that merely reproduces the sample mean look skilful.
+
+    A caution that belongs next to the number rather than in a report nobody reads: **this is not
+    evidence of alpha.** It is a floor. A model can remove a third of the variance of a return
+    series and still lose money on every round trip once the venue's costs are charged, which is
+    exactly what this system's own measurements say happens. Held-out skill says the fit is not
+    noise; the promotion ladder and the cost-charged evaluation decide whether it can trade.
+
+    The set passed here must not be the one early stopping selected on. That set chose the
+    iteration count, so scoring on it reports the best of many peeks rather than an out-of-sample
+    result, and it will read high. Nothing here can detect that, so ``best_iteration`` is recorded
+    alongside and a non-zero value is a signal to check which split was used.
+    """
+    if features.ndim != 2 or features.shape[1] != export.feature_count:
+        raise TreeExportRejected("held-out features do not match the booster's feature count")
+    if features.shape[0] != target.shape[0]:
+        raise TreeExportRejected("held-out features and target differ in length")
+    if features.shape[0] < 1:
+        raise TreeExportRejected("a held-out set with no rows measures nothing")
+
+    predicted = np.asarray(
+        booster.predict(features, raw_score=True, num_iteration=export.num_iteration),
+        dtype=np.float64,
+    )
+    model_rmse = float(np.sqrt(np.mean((predicted - target) ** 2.0)))
+    baseline_rmse = float(np.sqrt(np.mean((training_mean - target) ** 2.0)))
+
+    return HeldOutPerformance(
+        observations=int(features.shape[0]),
+        model_rmse=model_rmse,
+        baseline_rmse=baseline_rmse,
+        baseline="training_mean",
+    )
+
+
+@dataclass(frozen=True)
 class TreeEnsembleExport:
     """A booster reduced to what the runtime needs, with the iteration count pinned."""
 
@@ -450,6 +514,10 @@ def export_tree_artifact(
     lookback_periods: int,
     feature_units: dict[str, str],
     target_units: str,
+    held_out_features: NDArray[np.float64],
+    held_out_target: NDArray[np.float64],
+    training_mean: float,
+    minimum_skill: float = 0.0,
     evidence_grade: str = "B",
     promotion_state: str = "VALIDATED",
     require_missing_discrimination: bool = False,
@@ -460,6 +528,11 @@ def export_tree_artifact(
     conventions. Off by default, because a production model's structure may make them genuinely
     equivalent and that is not a fault. On for the committed fixtures, whose whole job is to fail
     against a traversal that routes missing values wrongly.
+
+    A held-out set is required rather than optional. Parity establishes that C# reproduces the fit;
+    it says nothing about whether the fit is worth reproducing, and an artifact that crossed the
+    boundary perfectly while having learned nothing is a model the runtime would score forever with
+    no one the wiser.
     """
     export = flatten_booster(booster)
     probe_grid = threshold_probes(export, probes)
@@ -470,6 +543,16 @@ def export_tree_artifact(
             "convention this model does not use would accept a traversal that routes missing values "
             "wrongly, which is the defect it exists to catch"
         )
+    performance = held_out_performance(
+        booster, export, held_out_features, held_out_target, training_mean
+    )
+    if performance.skill <= minimum_skill:
+        raise TreeExportRejected(
+            f"held-out skill is {performance.skill:.4f} against the {performance.baseline} "
+            f"baseline over {performance.observations} rows, at or below the {minimum_skill} "
+            "required; the fit does not beat saying nothing"
+        )
+
     cases = tree_parity_cases(export, booster, probe_grid)
 
     schema = feature_schema_of(
@@ -522,6 +605,11 @@ def export_tree_artifact(
             "best_iteration": int(booster.best_iteration),
             "parity_probe_count": len(cases),
             "missing_convention_separation": separation,
+            "held_out_observations": performance.observations,
+            "held_out_rmse": performance.model_rmse,
+            "held_out_baseline_rmse": performance.baseline_rmse,
+            "held_out_baseline": performance.baseline,
+            "held_out_skill": performance.skill,
         },
         git_commit=git_commit,
         created_at=utc_now(),

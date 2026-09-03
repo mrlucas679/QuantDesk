@@ -32,6 +32,16 @@ public enum FittedModelRejection
 
     /// <summary>The artifact was written against a contract version this runtime does not read.</summary>
     UnsupportedArtifactVersion,
+
+    /// <summary>
+    /// The runtime computes the declared features, but not in the units the model was fitted on.
+    ///
+    /// Separate from a schema mismatch because it is a separate failure. The hash proves the
+    /// feature set and its ordering agree; it says nothing about what the numbers mean, so a model
+    /// fitted on percent returns and fed decimals passes it and is wrong by four orders of
+    /// magnitude.
+    /// </summary>
+    FeatureSemanticsMismatch,
 }
 
 /// <summary>
@@ -249,6 +259,14 @@ public sealed record FittedModelContract(
     /// <summary>The hash the artifact was sealed under, covering every other field.</summary>
     public string ArtifactHash { get; init; } = string.Empty;
 
+    /// <summary>
+    /// What the fit says its features mean -- units, missing policy, warm-up, bar duration.
+    ///
+    /// Empty on a contract built in memory without them, which the loader treats as a refusal
+    /// rather than a pass: a model whose units nobody stated is a model whose units nobody knows.
+    /// </summary>
+    public FeatureSemanticsContract? FeatureSemantics { get; init; }
+
     /// <summary>Promotion states at which an artifact may inform a live decision.</summary>
     public static readonly IReadOnlySet<string> DecisionCapableStates =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -264,9 +282,10 @@ public sealed record FittedModelContract(
     /// </param>
     /// <param name="supportedModelTypes">Types this runtime has an inference path for.</param>
     public FittedModelRejection Validate(
-        string runtimeFeatureSchemaHash,
+        RuntimeFeatureContract runtime,
         IReadOnlySet<string> supportedModelTypes)
     {
+        ArgumentNullException.ThrowIfNull(runtime);
         ArgumentNullException.ThrowIfNull(supportedModelTypes);
 
         if (!string.Equals(ArtifactSchemaVersion, SupportedSchemaVersion, StringComparison.Ordinal))
@@ -289,8 +308,18 @@ public sealed record FittedModelContract(
         // The hard one. Not a warning, not a reorder, not a best effort -- a model fed features in
         // an order it was not fitted on produces confident numbers from the wrong coefficients, and
         // nothing downstream can tell.
-        if (!string.Equals(FeatureSchemaHash, runtimeFeatureSchemaHash, StringComparison.Ordinal))
+        if (!string.Equals(FeatureSchemaHash, runtime.FeatureSchemaHash, StringComparison.Ordinal))
             return FittedModelRejection.FeatureSchemaMismatch;
+
+        // Only meaningful once the caller has said what it computes. A caller that declares nothing
+        // is checked on the hash alone, which is the older and weaker guarantee -- so the loaders
+        // that matter pass a full contract, and this stays here for the refusal paths that never
+        // reach a forecast.
+        if (runtime.DeclaresSemantics)
+        {
+            if (FeatureSemantics is null || !FeatureSemantics.Accepts(runtime))
+                return FittedModelRejection.FeatureSemanticsMismatch;
+        }
 
         if (Parameters is null || Parameters.Count == 0) return FittedModelRejection.UnusableParameters;
         foreach (double value in Parameters.Values)
@@ -321,8 +350,8 @@ public sealed record FittedModelContract(
         return FittedModelRejection.None;
     }
 
-    public bool IsUsableBy(string runtimeFeatureSchemaHash, IReadOnlySet<string> supportedModelTypes) =>
-        Validate(runtimeFeatureSchemaHash, supportedModelTypes) is FittedModelRejection.None;
+    public bool IsUsableBy(RuntimeFeatureContract runtime, IReadOnlySet<string> supportedModelTypes) =>
+        Validate(runtime, supportedModelTypes) is FittedModelRejection.None;
 
     /// <summary>
     /// Whether an inference path reproduces every answer the fitting library recorded.

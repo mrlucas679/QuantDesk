@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from quantdesk_research.contracts.feature_schema import FeatureSchema
-from quantdesk_research.contracts.forecast import Forecast
+from quantdesk_research.contracts.forecast import Forecast, ForecastUncertainty
 from quantdesk_research.contracts.model_artifact import (
     EvidenceProfile,
     ExitPolicyDefinition,
@@ -92,6 +92,17 @@ def _contracts() -> tuple[FeatureSchema, ModelArtifact, Forecast]:
         forecast_family="directional_return_bps",
         horizon_minutes=5,
         point_forecast=12.0,
+        units="basis_points",
+        # A directional forecast without this is a number with no claim attached. The consuming
+        # gate already refused one; publication now refuses it too, rather than emitting something
+        # the far side will decline.
+        uncertainty=ForecastUncertainty(
+            standard_error_bps=4.0,
+            historical_net_edge_bps=3.5,
+            historical_net_edge_standard_error_bps=1.2,
+            historical_observations=180,
+            assumed_round_trip_cost_bps=33.7,
+        ),
         confidence=0.8,
         calibration_status="validated",
         support_domain_status="in_domain",

@@ -15,11 +15,20 @@ public sealed class HarVarianceModelTests
 {
     private const string RuntimeHash = "feature-schema-v1";
 
+    /// <summary>
+    /// These artifacts are built in memory and declare no feature semantics, so the runtime
+    /// declares none either and the loader falls back to the schema hash alone. Every test here
+    /// is about a refusal that happens before units could matter; the artifacts Python actually
+    /// writes carry semantics and are checked against a full contract in ModelBridgeTests.
+    /// </summary>
+    private static readonly RuntimeFeatureContract Runtime =
+        RuntimeFeatureContract.SchemaOnly(RuntimeHash);
+
     [Fact]
     public void AValidatedArtifactDrivesTheForecast()
     {
         Assert.True(HarVarianceModel.TryLoad(
-            Artifact(), RuntimeHash, out HarVarianceModel model, out FittedModelRejection rejection));
+            Artifact(), Runtime, out HarVarianceModel model, out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
         Assert.True(model.IsFitted);
@@ -37,7 +46,7 @@ public sealed class HarVarianceModelTests
         // from coefficients matched to the wrong inputs, and nothing downstream can tell.
         Assert.False(HarVarianceModel.TryLoad(
             Artifact() with { FeatureSchemaHash = "something-else" },
-            RuntimeHash, out HarVarianceModel model, out FittedModelRejection rejection));
+            Runtime, out HarVarianceModel model, out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.FeatureSchemaMismatch, rejection);
         Assert.False(model.IsFitted);
@@ -50,7 +59,7 @@ public sealed class HarVarianceModelTests
         // Better to refuse an HMM than to pretend a dot product is one.
         Assert.False(HarVarianceModel.TryLoad(
             Artifact() with { ModelType = "hmm" },
-            RuntimeHash, out _, out FittedModelRejection rejection));
+            Runtime, out _, out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.UnsupportedModelType, rejection);
     }
@@ -63,7 +72,7 @@ public sealed class HarVarianceModelTests
         // them turned out to be wrong there was no way to tell which conclusions depended on it.
         Assert.False(HarVarianceModel.TryLoad(
             Artifact() with { GitCommit = "" },
-            RuntimeHash, out _, out FittedModelRejection rejection));
+            Runtime, out _, out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.IncompleteManifest, rejection);
     }
@@ -74,7 +83,7 @@ public sealed class HarVarianceModelTests
         // An experimental artifact is a record of work, not a licence to decide with it.
         Assert.False(HarVarianceModel.TryLoad(
             Artifact() with { PromotionState = "EXPERIMENTAL" },
-            RuntimeHash, out _, out FittedModelRejection rejection));
+            Runtime, out _, out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.InsufficientPromotion, rejection);
     }
@@ -97,7 +106,7 @@ public sealed class HarVarianceModelTests
         };
 
         Assert.False(HarVarianceModel.TryLoad(
-            renamed, RuntimeHash, out _, out FittedModelRejection rejection));
+            renamed, Runtime, out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnusableParameters, rejection);
     }
 
@@ -116,7 +125,7 @@ public sealed class HarVarianceModelTests
         };
 
         Assert.False(HarVarianceModel.TryLoad(
-            broken, RuntimeHash, out _, out FittedModelRejection rejection));
+            broken, Runtime, out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnusableParameters, rejection);
     }
 
@@ -139,7 +148,7 @@ public sealed class HarVarianceModelTests
 
         negative = negative with { ParityChecks = [new ModelParityCheck([[1d, 1d, 1d]], [0d])] };
 
-        Assert.True(HarVarianceModel.TryLoad(negative, RuntimeHash, out HarVarianceModel model, out _));
+        Assert.True(HarVarianceModel.TryLoad(negative, Runtime, out HarVarianceModel model, out _));
         Assert.Equal(0d, model.Predict(1d, 1d, 1d)!.Value, precision: 9);
     }
 
@@ -159,7 +168,7 @@ public sealed class HarVarianceModelTests
         // conventional weights it has always used and reports itself unfitted.
         Assert.False(new RealizedVolatilityExpert().IsFitted);
 
-        HarVarianceModel.TryLoad(Artifact(), RuntimeHash, out HarVarianceModel model, out _);
+        HarVarianceModel.TryLoad(Artifact(), Runtime, out HarVarianceModel model, out _);
         Assert.True(new RealizedVolatilityExpert(model).IsFitted);
     }
 

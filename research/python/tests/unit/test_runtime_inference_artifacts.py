@@ -41,6 +41,7 @@ from quantdesk_research.models.tree_export import (
     _score,
     export_tree_artifact,
     flatten_booster,
+    held_out_performance,
     route,
     threshold_probes,
 )
@@ -415,10 +416,12 @@ def test_probes_include_the_thresholds_themselves() -> None:
 
 def test_the_trees_are_inside_the_artifact_and_inside_its_hash() -> None:
     """An ensemble whose scoring data arrives out of band hashes everything but the answer."""
-    booster = _booster({}, _dense())
+    data = _dense()
+    booster = _booster({}, data[:500])
+    held_out = data[500:]
     artifact = export_tree_artifact(
         booster,
-        probes=np.nan_to_num(_dense()[:1]),
+        probes=np.nan_to_num(data[:1]),
         artifact_id="lgb-test",
         model_id="crypto-direction",
         model_version="1.0.0",
@@ -430,6 +433,9 @@ def test_the_trees_are_inside_the_artifact_and_inside_its_hash() -> None:
         lookback_periods=48,
         feature_units=dict.fromkeys(booster.feature_name(), "zscore"),
         target_units="basis_points",
+        held_out_features=held_out,
+        held_out_target=np.nan_to_num(held_out[:, 0]) * 2.0 - np.nan_to_num(held_out[:, 1]),
+        training_mean=0.0,
     )
 
     assert artifact.hash_matches()
@@ -475,6 +481,78 @@ def test_random_forest_mode_is_refused_because_it_averages() -> None:
     )
     with pytest.raises(TreeExportRejected):
         flatten_booster(booster)
+
+
+
+def test_a_fit_that_does_not_clear_the_required_skill_is_refused() -> None:
+    """Parity proves C# reproduces the fit. It says nothing about whether the fit is worth it.
+
+    An artifact that crossed the boundary perfectly while having learned nothing would be scored by
+    the runtime forever with no one the wiser, so a held-out set is required rather than optional.
+
+    The bar is raised above what this booster achieves rather than fitting a deliberately useless
+    model, because a model fitted on noise lands either side of zero skill by luck and a test that
+    depends on which side it landed is a test that fails on somebody else's machine.
+    """
+    data = _dense()
+    booster = _booster({}, data[:500])
+    held_out = data[500:]
+
+    with pytest.raises(TreeExportRejected, match="does not beat saying nothing"):
+        export_tree_artifact(
+            booster,
+            probes=np.nan_to_num(data[:1]),
+            artifact_id="lgb-test",
+            model_id="crypto-direction",
+            model_version="1.0.0",
+            dataset_hash="dataset-abc",
+            git_commit="abc1234",
+            random_seed=3,
+            as_of=AS_OF,
+            bar_duration_minutes=5,
+            lookback_periods=48,
+            feature_units=dict.fromkeys(booster.feature_name(), "zscore"),
+            target_units="basis_points",
+            held_out_features=held_out,
+            held_out_target=np.nan_to_num(held_out[:, 0]) * 2.0 - np.nan_to_num(held_out[:, 1]),
+            training_mean=0.0,
+            minimum_skill=0.999,
+        )
+
+
+def test_skill_is_measured_against_the_training_mean_not_against_zero() -> None:
+    """A model that only reproduces the sample mean has learned where the data sits, not what
+    moves it -- and against a zero baseline that reads as skill."""
+    export = flatten_booster(_booster({}, _dense()[:500]))
+    booster = _booster({}, _dense()[:500])
+    held_out = _dense()[500:]
+    # Offset from zero, with noise, so the mean baseline is a real bar rather than a perfect one.
+    # A constant target would make the mean baseline exactly right and its error zero, which is a
+    # degenerate case rather than the point.
+    target = 5.0 + np.random.default_rng(41).normal(scale=0.5, size=len(held_out))
+
+    against_mean = held_out_performance(booster, export, held_out, target, training_mean=5.0)
+    against_zero = held_out_performance(booster, export, held_out, target, training_mean=0.0)
+
+    assert against_mean.baseline == "training_mean"
+    assert against_mean.baseline_rmse < against_zero.baseline_rmse
+    assert against_mean.skill < against_zero.skill
+
+
+def test_the_committed_tree_fixture_reports_its_held_out_skill() -> None:
+    """The number sits in the artifact, not in a report nobody reads.
+
+    It is a floor, not evidence of alpha: a model can remove a third of a return series' variance
+    and still lose on every round trip once the venue charges for one, which is what this system's
+    own measurements say happens.
+    """
+    committed = RuntimeInferenceArtifact.model_validate_json(
+        (_fixture_root() / FIXTURE_NAMES["lightgbm"]).read_text(encoding="utf-8")
+    )
+    assert committed.diagnostics["held_out_observations"] > 0
+    assert committed.diagnostics["held_out_skill"] > 0.5
+    assert committed.diagnostics["held_out_baseline"] == "training_mean"
+    assert committed.diagnostics["held_out_rmse"] < committed.diagnostics["held_out_baseline_rmse"]
 
 
 # ---------------------------------------------------------------------------- the contract
@@ -549,6 +627,35 @@ def test_every_committed_fixture_is_sealed_over_its_own_contents(family: str) ->
     assert committed.hash_matches()
     assert committed.parity.cases
     assert committed.producer.library_version
+
+
+def test_an_artifact_survives_the_round_trip_through_disk_unchanged(tmp_path: Path) -> None:
+    """The other half of the restart proof, on this side of the boundary.
+
+    C# demonstrates that reloading a file reproduces the forecast. That is only worth anything if
+    the file itself is a faithful record of the fit, so this writes one, reads it back as a fresh
+    object with no memory of the fitting process, and requires every field and the seal to survive.
+
+    JSON is where a double quietly loses its last bits, and a parity tolerance of 1e-12 would not
+    notice. The hash does: it is computed over the serialised form, so a value that did not
+    round-trip exactly changes it.
+    """
+    for family, name in FIXTURE_NAMES.items():
+        original = build_all()[family]
+        written = original.write(tmp_path / name)
+        restored = RuntimeInferenceArtifact.model_validate_json(
+            written.read_text(encoding="utf-8")
+        )
+
+        assert restored.hash_matches()
+        assert restored.artifact_hash == original.artifact_hash
+        assert restored.parameters == original.parameters
+        assert restored.payload == original.payload
+        for restored_case, original_case in zip(
+            restored.parity.cases, original.parity.cases, strict=True
+        ):
+            assert restored_case.inputs == original_case.inputs
+            assert restored_case.expected == original_case.expected
 
 
 def test_the_lightgbm_fixture_exercises_a_missing_convention_the_runtime_got_wrong() -> None:

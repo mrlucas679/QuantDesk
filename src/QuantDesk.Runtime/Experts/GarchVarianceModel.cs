@@ -80,14 +80,14 @@ public sealed class GarchVarianceModel
 
     public static bool TryLoad(
         FittedModelContract artifact,
-        string runtimeFeatureSchemaHash,
+        RuntimeFeatureContract runtime,
         out GarchVarianceModel model,
         out FittedModelRejection rejection)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         model = Unfitted();
 
-        rejection = artifact.Validate(runtimeFeatureSchemaHash, SupportedModelTypes);
+        rejection = artifact.Validate(runtime, SupportedModelTypes);
         if (rejection is not FittedModelRejection.None) return false;
 
         foreach (string required in new[] { Omega, Alpha, Beta })

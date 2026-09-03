@@ -53,12 +53,38 @@ public static class FittedModelArtifactReader
                 RequireDouble(parity, "relative_tolerance")),
             ParityChecks = ReadParityChecks(parity),
             ArtifactHash = RequirePropertyString(root, "artifact_hash"),
+            FeatureSemantics = ReadFeatureSemantics(
+                RequireObject(RequireProperty(root, "feature_semantics"), "feature_semantics")),
         };
     }
 
     /// <summary>Reads an artifact from disk, so a caller need not decide the encoding.</summary>
     public static FittedModelContract ReadFile(string path) =>
         Read(File.ReadAllText(path ?? throw new ArgumentNullException(nameof(path))));
+
+    /// <summary>
+    /// What the fit says its features mean, which the schema hash does not cover.
+    ///
+    /// Required rather than optional. An artifact that does not state its units is one whose units
+    /// cannot be checked, and the check exists precisely because the failure it catches -- a model
+    /// fitted on percent returns fed decimals -- produces confident numbers nothing else questions.
+    /// </summary>
+    private static FeatureSemanticsContract ReadFeatureSemantics(JsonElement semantics)
+    {
+        var units = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (JsonProperty property in
+                 RequireObject(RequireProperty(semantics, "units"), "feature_semantics.units")
+                     .EnumerateObject())
+        {
+            units[property.Name] = RequireString(property.Value, $"units.{property.Name}");
+        }
+
+        return new FeatureSemanticsContract(
+            units,
+            RequirePropertyString(semantics, "missing_policy"),
+            RequireInt(semantics, "lookback_periods"),
+            RequireInt(semantics, "bar_duration_minutes"));
+    }
 
     private static IReadOnlyDictionary<string, double> ReadParameters(JsonElement parameters)
     {

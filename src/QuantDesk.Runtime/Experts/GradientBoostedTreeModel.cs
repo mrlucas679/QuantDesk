@@ -101,14 +101,14 @@ public sealed class GradientBoostedTreeModel
     /// </summary>
     public static bool TryLoad(
         FittedModelContract artifact,
-        string runtimeFeatureSchemaHash,
+        RuntimeFeatureContract runtime,
         out GradientBoostedTreeModel model,
         out FittedModelRejection rejection)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         model = Unfitted();
 
-        rejection = artifact.Validate(runtimeFeatureSchemaHash, SupportedModelTypes);
+        rejection = artifact.Validate(runtime, SupportedModelTypes);
         if (rejection is not FittedModelRejection.None) return false;
 
         if (!artifact.Parameters.TryGetValue(FeatureCountKey, out double rawFeatureCount)

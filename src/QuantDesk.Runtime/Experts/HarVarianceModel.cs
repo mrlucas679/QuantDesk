@@ -62,13 +62,13 @@ public sealed class HarVarianceModel
     /// </summary>
     public static bool TryLoad(
         FittedModelContract artifact,
-        string runtimeFeatureSchemaHash,
+        RuntimeFeatureContract runtime,
         out HarVarianceModel model,
         out FittedModelRejection rejection)
     {
         ArgumentNullException.ThrowIfNull(artifact);
 
-        rejection = artifact.Validate(runtimeFeatureSchemaHash, SupportedModelTypes);
+        rejection = artifact.Validate(runtime, SupportedModelTypes);
         if (rejection is not FittedModelRejection.None)
         {
             model = Unfitted();

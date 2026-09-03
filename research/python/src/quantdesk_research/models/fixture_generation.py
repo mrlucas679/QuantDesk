@@ -151,12 +151,19 @@ def build_lightgbm() -> RuntimeInferenceArtifact:
     happily against the broken traversal.
     """
     rng = np.random.default_rng(19)
-    features = np.where(rng.random((800, 4)) < 0.3, np.nan, rng.normal(size=(800, 4)))
+    features = np.where(rng.random((1000, 4)) < 0.3, np.nan, rng.normal(size=(1000, 4)))
     target = (
         np.nan_to_num(features[:, 0]) * 2.0
         - np.nan_to_num(features[:, 1])
-        + rng.normal(scale=0.1, size=800)
+        + rng.normal(scale=0.1, size=1000)
     )
+
+    # Split by position rather than at random. These are stand-ins for a time series, and a random
+    # split would let the fit see rows either side of every held-out one -- which is how a held-out
+    # score comes back flattering and means nothing.
+    train_features, train_target = features[:800], target[:800]
+    test_features, test_target = features[800:], target[800:]
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         booster = lgb.train(
@@ -170,14 +177,14 @@ def build_lightgbm() -> RuntimeInferenceArtifact:
                 "use_missing": True,
                 "num_threads": 1,
             },
-            lgb.Dataset(features, label=target),
+            lgb.Dataset(train_features, label=train_target),
             num_boost_round=5,
         )
 
     return _pinned(
         export_tree_artifact(
             booster,
-            probes=np.nan_to_num(features[:1]),
+            probes=np.nan_to_num(train_features[:1]),
             artifact_id="lightgbm-direction-fixture",
             model_id="crypto-direction",
             model_version="1.0.0",
@@ -189,6 +196,10 @@ def build_lightgbm() -> RuntimeInferenceArtifact:
             lookback_periods=48,
             feature_units=dict.fromkeys(booster.feature_name(), "zscore"),
             target_units="basis_points",
+            held_out_features=test_features,
+            held_out_target=test_target,
+            training_mean=float(train_target.mean()),
+            minimum_skill=0.5,
             require_missing_discrimination=True,
         )
     )

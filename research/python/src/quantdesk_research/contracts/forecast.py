@@ -31,6 +31,18 @@ class ForecastUncertainty(BaseModel):
 
 
 class Forecast(BaseModel):
+    """One expert's answer, in whichever family it belongs to.
+
+    ``point_forecast`` carries a return in basis points for a directional forecast and a variance
+    for a conditional-variance one. ``distribution`` carries the posterior for a regime forecast,
+    where a single number cannot say what the model believes -- and where the state *names* matter
+    as much as the probabilities, because a retrain that merely renumbers the latent states would
+    otherwise make every regime-change interrupt fire on a change that did not happen.
+
+    ``units`` says what the number is in. A variance of 0.0004 is ordinary in percent returns and
+    enormous in decimals, and nothing about the figure distinguishes them.
+    """
+
     expert_id: str
     model_id: str
     model_version: str
@@ -39,6 +51,8 @@ class Forecast(BaseModel):
     forecast_family: str
     horizon_minutes: int
     point_forecast: float
+    distribution: dict[str, float] | None = None
+    units: str | None = None
     prediction_interval: dict[str, Any] | None = None
     uncertainty: ForecastUncertainty | None = None
     confidence: float

@@ -77,14 +77,14 @@ public sealed class GaussianHmmFilter
 
     public static bool TryLoad(
         FittedModelContract artifact,
-        string runtimeFeatureSchemaHash,
+        RuntimeFeatureContract runtime,
         out GaussianHmmFilter model,
         out FittedModelRejection rejection)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         model = Unfitted();
 
-        rejection = artifact.Validate(runtimeFeatureSchemaHash, SupportedModelTypes);
+        rejection = artifact.Validate(runtime, SupportedModelTypes);
         if (rejection is not FittedModelRejection.None) return false;
 
         // Full and tied covariance need a factorisation whose conditioning behaviour would have to

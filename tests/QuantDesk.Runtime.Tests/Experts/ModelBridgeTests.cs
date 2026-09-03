@@ -30,6 +30,19 @@ public sealed class ModelBridgeTests
 {
     private const string DifferentSchema = "a-schema-this-model-was-not-fitted-on";
 
+    /// <summary>
+    /// What the runtime claims to compute, taken from the artifact so the positive paths pass.
+    ///
+    /// Reading it back from the model under test would be circular if the point were to verify the
+    /// runtime's feature derivation. It is not: these tests verify inference. The semantics check
+    /// itself is exercised deliberately below by declaring the wrong units.
+    /// </summary>
+    private static RuntimeFeatureContract Runtime(FittedModelContract artifact) => new(
+        artifact.FeatureSchemaHash,
+        artifact.FeatureSemantics!.Units,
+        artifact.FeatureSemantics.MissingPolicy,
+        artifact.FeatureSemantics.BarDurationMinutes);
+
     // ------------------------------------------------------------------- the artifacts load
 
     [Fact]
@@ -38,7 +51,7 @@ public sealed class ModelBridgeTests
         FittedModelContract artifact = Fixture("har-realised-variance.json");
 
         Assert.True(HarVarianceModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out HarVarianceModel model,
+            artifact, Runtime(artifact), out HarVarianceModel model,
             out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
@@ -56,7 +69,7 @@ public sealed class ModelBridgeTests
         FittedModelContract artifact = Fixture("garch-conditional-variance.json");
 
         Assert.True(GarchVarianceModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out GarchVarianceModel model,
+            artifact, Runtime(artifact), out GarchVarianceModel model,
             out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
@@ -71,7 +84,7 @@ public sealed class ModelBridgeTests
         FittedModelContract artifact = Fixture("gaussian-hmm-regime.json");
 
         Assert.True(GaussianHmmFilter.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out GaussianHmmFilter model,
+            artifact, Runtime(artifact), out GaussianHmmFilter model,
             out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
@@ -85,7 +98,7 @@ public sealed class ModelBridgeTests
         FittedModelContract artifact = Fixture("lightgbm-direction.json");
 
         Assert.True(GradientBoostedTreeModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out GradientBoostedTreeModel model,
+            artifact, Runtime(artifact), out GradientBoostedTreeModel model,
             out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
@@ -167,7 +180,7 @@ public sealed class ModelBridgeTests
         };
 
         Assert.False(GradientBoostedTreeModel.TryLoad(
-            altered, altered.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            altered, Runtime(altered), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.ParityCheckFailed, rejection);
     }
 
@@ -189,7 +202,7 @@ public sealed class ModelBridgeTests
 
         Assert.False(GaussianHmmFilter.TryLoad(
             artifact with { Parameters = transposed },
-            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            Runtime(artifact), out _, out FittedModelRejection rejection));
 
         // Either the transpose is not row-stochastic, or it is and produces different posteriors.
         // Both are refusals; what matters is that the check no longer passes regardless.
@@ -223,7 +236,7 @@ public sealed class ModelBridgeTests
         // nobody chose.
         FittedModelContract artifact = Fixture("garch-conditional-variance.json");
         GarchVarianceModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out GarchVarianceModel model, out _);
+            artifact, Runtime(artifact), out GarchVarianceModel model, out _);
 
         Assert.Null(model.WarmedVariance([0.5d, 0.4d, 0.6d]));
         Assert.NotNull(model.WarmedVariance([.. Enumerable.Repeat(0.5d, model.WarmupBars)]));
@@ -237,7 +250,7 @@ public sealed class ModelBridgeTests
         // a forecast, and the recursion warms up rather than seeding at all.
         FittedModelContract artifact = Fixture("garch-conditional-variance.json");
         GarchVarianceModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out GarchVarianceModel model, out _);
+            artifact, Runtime(artifact), out GarchVarianceModel model, out _);
 
         double unconditional = model.UnconditionalVariance()!.Value;
         double beta = artifact.Parameters["beta"];
@@ -266,7 +279,9 @@ public sealed class ModelBridgeTests
         FittedModelContract artifact = Fixture("lightgbm-direction.json");
 
         Assert.False(GradientBoostedTreeModel.TryLoad(
-            artifact, DifferentSchema, out _, out FittedModelRejection rejection));
+            artifact,
+            Runtime(artifact) with { FeatureSchemaHash = DifferentSchema },
+            out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.FeatureSchemaMismatch, rejection);
     }
 
@@ -279,7 +294,7 @@ public sealed class ModelBridgeTests
         };
 
         Assert.False(HarVarianceModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            artifact, Runtime(artifact), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnsupportedArtifactVersion, rejection);
     }
 
@@ -292,7 +307,7 @@ public sealed class ModelBridgeTests
         };
 
         Assert.False(GaussianHmmFilter.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            artifact, Runtime(artifact), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.InsufficientPromotion, rejection);
     }
 
@@ -305,7 +320,7 @@ public sealed class ModelBridgeTests
         };
 
         Assert.False(HarVarianceModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            artifact, Runtime(artifact), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.ParityCheckFailed, rejection);
     }
 
@@ -317,7 +332,7 @@ public sealed class ModelBridgeTests
         FittedModelContract artifact = Fixture("lightgbm-direction.json") with { Trees = [] };
 
         Assert.False(GradientBoostedTreeModel.TryLoad(
-            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            artifact, Runtime(artifact), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnusableParameters, rejection);
     }
 
@@ -334,7 +349,7 @@ public sealed class ModelBridgeTests
 
         Assert.False(GarchVarianceModel.TryLoad(
             artifact with { Variant = variant },
-            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            Runtime(artifact), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
     }
 
@@ -353,7 +368,7 @@ public sealed class ModelBridgeTests
 
         Assert.False(GarchVarianceModel.TryLoad(
             artifact with { Variant = variant },
-            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            Runtime(artifact), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
     }
 
@@ -371,7 +386,7 @@ public sealed class ModelBridgeTests
 
         Assert.False(GaussianHmmFilter.TryLoad(
             artifact with { Variant = variant },
-            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+            Runtime(artifact), out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
     }
 
@@ -392,11 +407,7 @@ public sealed class ModelBridgeTests
     public void EveryCommittedArtifactNamesTheLibraryAndVersionThatProducedIt()
     {
         // When a port and a library disagree, the first question is which version of the library.
-        foreach (string name in new[]
-        {
-            "har-realised-variance.json", "garch-conditional-variance.json",
-            "gaussian-hmm-regime.json", "lightgbm-direction.json",
-        })
+        foreach (string name in FixtureNames)
         {
             FittedModelContract artifact = Fixture(name);
             Assert.False(string.IsNullOrWhiteSpace(artifact.ProducerLibrary));
@@ -405,7 +416,77 @@ public sealed class ModelBridgeTests
         }
     }
 
+
+    [Fact]
+    public void AModelFittedOnOtherUnitsIsRefusedEvenThoughTheSchemaHashAgrees()
+    {
+        // The hole the schema hash does not cover. It is built from the feature names, dtypes,
+        // normalization and lookback -- not from what the numbers mean. A runtime computing the same
+        // three lag features in decimals rather than percent hashes identically and is wrong by four
+        // orders of magnitude in the intercept, and the forecast looks entirely ordinary.
+        FittedModelContract artifact = Fixture("garch-conditional-variance.json");
+        RuntimeFeatureContract wrongUnits = Runtime(artifact) with
+        {
+            Units = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["squared_residual"] = "squared_decimal_return",
+            },
+        };
+
+        Assert.False(GarchVarianceModel.TryLoad(
+            artifact, wrongUnits, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.FeatureSemanticsMismatch, rejection);
+    }
+
+    [Fact]
+    public void ARuntimeComputingADifferentBarIsRefused()
+    {
+        // A model fitted on five-minute realised variance fed hourly bars is measuring a different
+        // quantity under the same name, and the coefficients do not transfer.
+        FittedModelContract artifact = Fixture("har-realised-variance.json");
+
+        Assert.False(HarVarianceModel.TryLoad(
+            artifact,
+            Runtime(artifact) with { BarDurationMinutes = 60 },
+            out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.FeatureSemanticsMismatch, rejection);
+    }
+
+    [Fact]
+    public void ARuntimeThatDeclaresNoUnitsFallsBackToTheHashAndSaysSo()
+    {
+        // Silence is not agreement. A caller declaring nothing gets the older, weaker guarantee --
+        // the hash alone -- and that is deliberate for refusal paths that never reach a forecast.
+        // What it must not do is pass the units check by omitting units.
+        FittedModelContract artifact = Fixture("har-realised-variance.json");
+        var schemaOnly = RuntimeFeatureContract.SchemaOnly(artifact.FeatureSchemaHash);
+
+        Assert.False(schemaOnly.DeclaresSemantics);
+        Assert.False(artifact.FeatureSemantics!.Accepts(schemaOnly));
+        Assert.True(HarVarianceModel.TryLoad(artifact, schemaOnly, out _, out _));
+    }
+
+    [Fact]
+    public void EveryCommittedArtifactStatesWhatItsFeaturesMean()
+    {
+        foreach (string name in FixtureNames)
+        {
+            FittedModelContract artifact = Fixture(name);
+            Assert.NotNull(artifact.FeatureSemantics);
+            Assert.NotEmpty(artifact.FeatureSemantics!.Units);
+            Assert.False(string.IsNullOrWhiteSpace(artifact.FeatureSemantics.MissingPolicy));
+            Assert.True(artifact.FeatureSemantics.BarDurationMinutes > 0);
+            Assert.True(artifact.FeatureSemantics.LookbackPeriods > 0);
+        }
+    }
+
     // ------------------------------------------------------------------------- fixtures
+
+    private static readonly string[] FixtureNames =
+    [
+        "har-realised-variance.json", "garch-conditional-variance.json",
+        "gaussian-hmm-regime.json", "lightgbm-direction.json",
+    ];
 
     private static FittedModelContract Fixture(string name) =>
         FittedModelArtifactReader.ReadFile(Path.Combine(FixtureRoot, name));
