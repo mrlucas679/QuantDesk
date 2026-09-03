@@ -117,6 +117,9 @@ builder.Services.AddSingleton(services => new MarketDataSessionRecorder(
 // Replays the previous session on start-up and reports whether it reproduced. This is what makes
 // section 22 a gate rather than a facility: until something in the running system replays what the
 // recorder writes, determinism is only ever demonstrated by tests against their own deciders.
+// Section 17.3's decomposition of completed round trips, and the residual that keeps it honest.
+builder.Services.AddSingleton<EpisodeAttributionState>();
+builder.Services.AddHostedService<EpisodeAttributionService>();
 builder.Services.AddSingleton<SessionReplayState>();
 builder.Services.AddHostedService<SessionReplayService>();
 builder.Services.AddSingleton<MeasuredCalibrationSource>();
@@ -631,6 +634,8 @@ app.MapGet("/api/diagnostics/{experimentId}", (
     return record is null ? Results.NotFound() : Results.Ok(record);
 });
 app.MapGet("/api/system/replay", (SessionReplayState replay) => Results.Ok(replay.Snapshot()));
+app.MapGet("/api/research/attribution", (EpisodeAttributionState attribution) =>
+    Results.Ok(attribution.Snapshot()));
 
 app.MapGet("/api/system/latency", (LatencyRecorder latency) =>
 {

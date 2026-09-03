@@ -74,27 +74,16 @@ public sealed class OrphanedComponentTests
     /// session and the replay service reproduces the previous one on start-up, so the runner, its
     /// refusals and the virtual clock all have production callers now.
     ///
-    /// The portfolio ledger cluster deserves reading rather than skimming, because its first
-    /// reading was wrong. PortfolioRecoveryService rebuilds ledger state from a snapshot and the
-    /// execution journal, and nothing calls it -- which looked like recovery having been left
-    /// disconnected. It is not: PortfolioLedger is never constructed either, and the autonomous
-    /// lane keeps its durable position state in SpotExecutionStore, whose recovery runs every
-    /// second through a wired hosted service. This cluster is the founding architecture that store
-    /// replaced. Wiring it would create a second position ledger that can disagree with the first,
-    /// so the decision it needs is deletion, not connection.
+    /// The portfolio ledger cluster is gone too, by deletion rather than connection. It looked like
+    /// recovery having been left disconnected and was not: the autonomous lane keeps its durable
+    /// position state in SpotExecutionStore, whose recovery runs every second through a wired
+    /// hosted service, and the snapshot-and-journal path was the founding architecture that store
+    /// replaced. Wiring it would have created a second position ledger able to disagree with the
+    /// first. Deleting code that never ran does not weaken recovery; leaving it in place made a
+    /// dead subsystem read as coverage.
     /// </summary>
     private static readonly Dictionary<string, string> Known = new(StringComparer.Ordinal)
     {
-        // -- Recovery and audit. Wired to nothing, and the most consequential entries here.
-        ["PortfolioRecoveryService"] =
-            "Rebuilds the ledger from a snapshot and the journal after a restart. Not called. The "
-            + "execution recovery services in the API are a different thing and are wired.",
-        ["PortfolioRecoveryResult"] = "Its result type.",
-        ["PortfolioSnapshotStore"] = "Reachable only through PortfolioRecoveryService.",
-        ["ExecutionJournal"] = "The append-only audit trail recovery replays. Reachable only through it.",
-        ["ExecutionJournalEvent"] = "Its record type.",
-        ["ExecutionJournalReplay"] = "Replays the journal. Reachable only through the journal.",
-
         // -- Typed forecasts. The committee itself is connected now; these hang off it.
         ["CommitteeAllocator"] =
             "Allocates weight across a family's members. The committee is wired but every family "
@@ -104,15 +93,27 @@ public sealed class OrphanedComponentTests
         ["ExpertDefinition"] = "One catalog entry.",
         ["ExpertRuntimePlane"] = "Which plane an expert runs on.",
 
-        // -- Model inference paths with no caller. HAR and GARCH are connected; these are not.
-        ["GaussianHmmFilter"] = "Regime posteriors. The deterministic MarketRegimeExpert runs instead.",
-        ["GradientBoostedTreeModel"] = "Ensemble scoring. Nothing produces a tree artifact yet.",
+        // -- Model inference paths with no caller. HAR and GARCH are connected and load live; these
+        // two need a decision rather than a wire, and each entry says which.
+        ["GaussianHmmFilter"] =
+            "Verified against hmmlearn and loadable, but connecting it means replacing "
+            + "MarketRegimeExpert, which is a closed-form map from an ATR percentile and ADX to four "
+            + "named regimes with no fitted model in it. That is a modelling decision -- which latent "
+            + "state *is* stress -- not a wiring one, and it needs a fitting pipeline for features "
+            + "nothing currently computes in Python.",
+        ["GradientBoostedTreeModel"] =
+            "Verified against a real booster across every missing-value convention, and nothing "
+            + "fits a tree for it to score. Fitting one means a directional crypto model, and the "
+            + "last out-of-sample scan produced no survivors -- so the honest state is a verified "
+            + "inference path waiting for evidence that does not exist yet.",
 
         // -- Scoring and features built ahead of the path that would feed them.
-        ["EpisodeAttributionScorer"] = "Section 17.3 attribution. No episode is fed to it.",
         ["OrderBookImbalanceExpert"] =
-            "The OBI value reaches the committee through the market snapshot; this expert wrapper "
-            + "does not.",
+            "The imbalance already reaches decisions through InstrumentSnapshot, so the value is "
+            + "connected and this wrapper is not. Wiring it would publish a MicrostructureForecast "
+            + "that nothing consumes -- a forecast with no reader is the pattern this whole list "
+            + "exists to stop, so it waits for a consumer rather than being connected for the sake "
+            + "of leaving the list.",
         ["FeatureCalculations"] = "Feature maths the live path does not call.",
         ["FeatureSnapshot"] = "A point-in-time feature record nothing builds.",
         ["FeatureSnapshotBuilder"] = "Builds them.",
