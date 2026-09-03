@@ -230,7 +230,14 @@ public sealed class GaussianHmmFilter
                 total += -0.5d * ((Math.Log(2d * Math.PI * variance)) + (difference * difference / variance));
             }
 
-            logLikelihood[i] = total + Math.Log(Math.Max(predicted[i], double.Epsilon));
+            // A zero prior is zero, not the smallest representable double. Flooring it at
+            // double.Epsilon gives an impossible state a log-weight of about -744 instead of
+            // negative infinity, and on a bar where every reachable state sits below that -- which
+            // many features and small densities make ordinary -- the unreachable one wins. The
+            // exponentiation below turns negative infinity into a clean zero, which is the answer.
+            logLikelihood[i] = predicted[i] > 0d
+                ? total + Math.Log(predicted[i])
+                : double.NegativeInfinity;
         }
 
         double maximum = double.NegativeInfinity;
@@ -252,13 +259,29 @@ public sealed class GaussianHmmFilter
     }
 
     /// <summary>
-    /// The parity surface: the posterior probability of the last state, which is a single number
-    /// that changes if any part of the filter is wrong.
+    /// The parity surface: filter the whole sequence, and report the entire posterior.
+    ///
+    /// Both halves of that are corrections. This used to filter a single observation and return one
+    /// state's probability, which meant the belief always started from the fitted prior -- so the
+    /// transition matrix was never applied, and a transposed one passed the check as readily as the
+    /// right one. Returning one number rather than the vector hid the rest of the distribution,
+    /// where a mislabelled state shows up.
+    ///
+    /// The expected vectors come from hmmlearn's own filtered posterior, which is not the same as
+    /// its smoothed one: predict_proba over a whole sequence is informed by observations that came
+    /// after each step, and the runtime has none. They agree only at the final row, so a fixture
+    /// built the obvious way passes a spot-check and is wrong everywhere else.
     /// </summary>
-    private double? ScoreForParity(IReadOnlyList<double> features)
+    private IReadOnlyList<double>? ScoreForParity(IReadOnlyList<IReadOnlyList<double>> sequence)
     {
-        double[]? posterior = Filter(features);
-        return posterior is null ? null : posterior[^1];
+        double[]? posterior = null;
+        foreach (IReadOnlyList<double> observation in sequence)
+        {
+            posterior = Filter(observation, posterior);
+            if (posterior is null) return null;
+        }
+
+        return posterior;
     }
 
     private static bool TryDimension(FittedModelContract artifact, string key, out int value)

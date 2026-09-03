@@ -293,13 +293,146 @@ def threshold_probes(export: TreeEnsembleExport, ordinary: NDArray[np.float64]) 
                 probe[feature] = float(value)
                 rows.append(probe)
 
-    for special in (float("nan"), 0.0):
+    # Two fillers, and neither is redundant. All-NaN separates the "None" convention -- under which
+    # a NaN becomes zero and meets the threshold -- from the two that route it to a default branch.
+    # It cannot separate "NaN" from "Zero", because a NaN is missing under both; those differ only
+    # on values at zero, which the all-zero rows are for.
+    for filler in (float("nan"), 0.0):
+        rows.append([filler] * export.feature_count)
         for feature in range(export.feature_count):
-            probe = list(base)
-            probe[feature] = special
-            rows.append(probe)
+            for special in (float("nan"), 0.0):
+                probe = list(base)
+                probe[feature] = special
+                rows.append(probe)
 
+        for tree in export.trees:
+            for node in tree.nodes:
+                feature = int(node["split_feature"])
+                if feature < 0:
+                    continue
+                for value in (float(node["threshold"]), 0.0, float("nan")):
+                    probe = [filler] * export.feature_count
+                    probe[feature] = value
+                    rows.append(probe)
+
+    rows.extend(_probes_reaching_each_split(export))
     return np.asarray(rows, dtype=np.float64)
+
+
+def _probes_reaching_each_split(export: TreeEnsembleExport) -> list[list[float]]:
+    """Inputs constructed to arrive at each split, carrying a value that makes its convention matter.
+
+    Filling every feature with one value only exercises the nodes that filling happens to reach, and
+    that is not enough. On a fitted booster, three of thirty-five splits routed a zero differently
+    under the "NaN" and "Zero" conventions and no probe reached any of them, so the suite looked
+    thorough and separated nothing.
+
+    Each split is therefore targeted directly. The constraints along its root-to-node path give a
+    vector that lands on it -- the threshold exactly for a left branch, the next representable value
+    above for a right one. The target's own feature is set from the discriminating value and never
+    from the path: constraining it first and overwriting it after is what made an earlier attempt
+    miss every node splitting on a feature its own path also constrains, which was all three of the
+    ones that mattered. Whether the result still arrives is then decided by walking it.
+    """
+    probes: list[list[float]] = []
+
+    for tree in export.trees:
+        for target, node in enumerate(tree.nodes):
+            if node["split_feature"] < 0:
+                continue
+
+            path = _path_to(tree, target)
+            if path is None:
+                continue
+
+            split = int(node["split_feature"])
+            for filler in (0.0, float("nan")):
+                for value in (0.0, float("nan")):
+                    candidate = [filler] * export.feature_count
+                    for index, went_left in path:
+                        ancestor = tree.nodes[index]
+                        if int(ancestor["split_feature"]) == split:
+                            continue
+                        threshold = float(ancestor["threshold"])
+                        candidate[int(ancestor["split_feature"])] = (
+                            threshold if went_left else float(np.nextafter(threshold, np.inf))
+                        )
+                    candidate[split] = value
+
+                    if _reaches(tree, candidate, target):
+                        probes.append(candidate)
+
+    return probes
+
+
+def _path_to(tree: FlattenedTree, target: int) -> list[tuple[int, bool]] | None:
+    """The branch taken at each ancestor of ``target``, or None when it is unreachable."""
+
+    def walk(index: int, taken: list[tuple[int, bool]]) -> list[tuple[int, bool]] | None:
+        if index == target:
+            return taken
+        node = tree.nodes[index]
+        if node["split_feature"] < 0:
+            return None
+        return walk(node["left"], [*taken, (index, True)]) or walk(
+            node["right"], [*taken, (index, False)]
+        )
+
+    return walk(0, [])
+
+
+def _reaches(tree: FlattenedTree, features: list[float], target: int) -> bool:
+    index = 0
+    for _ in range(len(tree.nodes) + 1):
+        if index == target:
+            return True
+        node = tree.nodes[index]
+        if node["split_feature"] < 0:
+            return False
+        index = node["left"] if route(node, features[node["split_feature"]]) else node["right"]
+    return False
+
+
+def missing_convention_separation(
+    export: TreeEnsembleExport, probes: NDArray[np.float64]
+) -> dict[str, int]:
+    """How many probes score differently under each missing convention this model does not use.
+
+    Parity is only evidence if it can fail, and the traversal being verified had exactly one defect:
+    it routed every missing value down the default branch, which is right for one of the three
+    conventions and wrong for the other two. A probe set scoring identically under all three proves
+    nothing about the thing most likely to be wrong.
+
+    A zero here does not always mean the probes are weak. A model's structure can make the
+    conventions genuinely indistinguishable: on one fitted booster every split where they disagree
+    sat behind a default branch that steered missing values away from it, and forty thousand random
+    inputs separated nothing because nothing could. So this reports rather than judges, and the
+    caller decides what a zero means -- a fixture whose job is to catch a routing bug must separate;
+    a production model has the structure it has.
+    """
+    conventions = {
+        node["missing_type"]
+        for tree in export.trees
+        for node in tree.nodes
+        if node["split_feature"] >= 0
+    }
+    baseline = np.array([_score(export.trees, row) for row in probes])
+
+    separation: dict[str, int] = {}
+    for alternative in sorted(SUPPORTED_MISSING_TYPES - conventions):
+        swapped = [
+            FlattenedTree(
+                nodes=[
+                    {**item, "missing_type": alternative} if item["split_feature"] >= 0 else item
+                    for item in tree.nodes
+                ]
+            )
+            for tree in export.trees
+        ]
+        scored = np.array([_score(swapped, row) for row in probes])
+        separation[alternative] = int(np.sum(np.abs(scored - baseline) > 1e-12))
+
+    return separation
 
 
 def export_tree_artifact(
@@ -319,10 +452,25 @@ def export_tree_artifact(
     target_units: str,
     evidence_grade: str = "B",
     promotion_state: str = "VALIDATED",
+    require_missing_discrimination: bool = False,
 ) -> RuntimeInferenceArtifact:
-    """Seal a booster into the artifact the runtime loads, trees and all."""
+    """Seal a booster into the artifact the runtime loads, trees and all.
+
+    ``require_missing_discrimination`` refuses a model whose probes cannot separate the missing
+    conventions. Off by default, because a production model's structure may make them genuinely
+    equivalent and that is not a fault. On for the committed fixtures, whose whole job is to fail
+    against a traversal that routes missing values wrongly.
+    """
     export = flatten_booster(booster)
-    cases = tree_parity_cases(export, booster, threshold_probes(export, probes))
+    probe_grid = threshold_probes(export, probes)
+    separation = missing_convention_separation(export, probe_grid)
+    if require_missing_discrimination and any(count == 0 for count in separation.values()):
+        raise TreeExportRejected(
+            f"probe separation by convention is {separation}; a suite scoring the same under a "
+            "convention this model does not use would accept a traversal that routes missing values "
+            "wrongly, which is the defect it exists to catch"
+        )
+    cases = tree_parity_cases(export, booster, probe_grid)
 
     schema = feature_schema_of(
         schema_version="lightgbm-regression-v1",
@@ -373,6 +521,7 @@ def export_tree_artifact(
             "num_iteration": export.num_iteration,
             "best_iteration": int(booster.best_iteration),
             "parity_probe_count": len(cases),
+            "missing_convention_separation": separation,
         },
         git_commit=git_commit,
         created_at=utc_now(),

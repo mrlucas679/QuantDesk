@@ -137,7 +137,7 @@ public sealed class HarVarianceModelTests
             },
         };
 
-        negative = negative with { ParityChecks = [new ModelParityCheck([1d, 1d, 1d], 0d)] };
+        negative = negative with { ParityChecks = [new ModelParityCheck([[1d, 1d, 1d]], [0d])] };
 
         Assert.True(HarVarianceModel.TryLoad(negative, RuntimeHash, out HarVarianceModel model, out _));
         Assert.Equal(0d, model.Predict(1d, 1d, 1d)!.Value, precision: 9);
@@ -185,6 +185,6 @@ public sealed class HarVarianceModelTests
     {
         // What the fit produced for one input, so the runtime can prove it reproduces the model
         // rather than merely accepting its coefficients.
-        ParityChecks = [new ModelParityCheck([2d, 3d, 4d], 2.501d)],
+        ParityChecks = [new ModelParityCheck([[2d, 3d, 4d]], [2.501d])],
     };
 }

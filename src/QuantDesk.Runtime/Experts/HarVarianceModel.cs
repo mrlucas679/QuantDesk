@@ -105,8 +105,14 @@ public sealed class HarVarianceModel
         return true;
     }
 
-    private double? Score(IReadOnlyList<double> features) =>
-        features.Count == FeatureNames.Count ? Predict(features[0], features[1], features[2]) : null;
+    private IReadOnlyList<double>? Score(IReadOnlyList<IReadOnlyList<double>> inputs)
+    {
+        // Stateless, so a parity case is one observation. More than one would mean the fitting side
+        // believes this model carries state, which it does not.
+        if (inputs.Count != 1 || inputs[0].Count != FeatureNames.Count) return null;
+        IReadOnlyList<double> features = inputs[0];
+        return Predict(features[0], features[1], features[2]) is { } value ? [value] : null;
+    }
 
     /// <summary>True when a validated artifact is driving the forecast.</summary>
     public bool IsFitted => _artifact is not null;

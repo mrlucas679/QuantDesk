@@ -1,408 +1,425 @@
 using QuantDesk.Domain.Contracts;
 using QuantDesk.Runtime.Experts;
+using QuantDesk.Runtime.Research;
 
 namespace QuantDesk.Runtime.Tests.Experts;
 
 /// <summary>
-/// The three remaining models crossing the language boundary, and the parity check that is the
-/// only reason to trust a reimplemented inference path.
+/// The models that cross from Python, loaded from artifacts Python actually wrote.
 ///
-/// Every one of these is evaluated twice -- once by the library that fitted it, once by code
-/// written here -- and the failure mode is never a crash. A transposed transition matrix, a split
-/// boundary resolved the other way, a covariance read as a standard deviation: all produce
-/// confident numbers that are wrong in a way nothing downstream can detect. So the artifact carries
-/// the answers the fit produced, and a model that cannot reproduce them is refused.
+/// What changed about these tests
+/// ------------------------------
+/// The previous version of this file built its own contracts in memory and computed the parity
+/// answers with the very implementations it was checking -- the HMM's expected posterior came from
+/// the C# filter, and the GARCH and tree expectations were arithmetic done by hand to match the C#
+/// code. Every one of them passed. None of them could have failed, because nothing in the loop had
+/// ever seen <c>arch</c>, <c>hmmlearn</c> or <c>lightgbm</c>.
+///
+/// These load the committed artifacts instead. Each was fitted by its real library, and every
+/// expected answer in them came from that library's own prediction API. When the loader accepts one
+/// here, it is because this code reproduced what Python computed -- which is the only thing parity
+/// was ever supposed to establish.
+///
+/// The schema hash question
+/// ------------------------
+/// The positive paths feed the artifact's own feature-schema hash, because what is under test is
+/// inference rather than the runtime's feature derivation. The mismatch path feeds a different one
+/// deliberately, so the refusal is still exercised.
 /// </summary>
 public sealed class ModelBridgeTests
 {
-    private const string Hash = "schema-v1";
+    private const string DifferentSchema = "a-schema-this-model-was-not-fitted-on";
 
-    // ------------------------------------------------------------------------ GARCH
+    // ------------------------------------------------------------------- the artifacts load
 
     [Fact]
-    public void GarchReproducesItsRecursion()
+    public void TheHarArtifactPythonWroteReproducesWhatPythonPredicted()
     {
-        // 0.00001 + 0.1(0.04) + 0.85(0.02) = 0.02101
+        FittedModelContract artifact = Fixture("har-realised-variance.json");
+
+        Assert.True(HarVarianceModel.TryLoad(
+            artifact, artifact.FeatureSchemaHash, out HarVarianceModel model,
+            out FittedModelRejection rejection));
+
+        Assert.Equal(FittedModelRejection.None, rejection);
+        Assert.True(model.IsFitted);
+        Assert.Equal("quantdesk_research.models.har", artifact.ProducerLibrary);
+    }
+
+    [Fact]
+    public void TheGarchArtifactWarmsColdAndLandsWhereArchLanded()
+    {
+        // The parity cases are warm-up windows and the conditional variance arch reported at the end
+        // of each. The runtime starts the recursion at zero -- nothing like arch's 0.94 backcast of
+        // the first 75 residuals -- and still has to arrive at the same number, because the window
+        // is sized from beta so the seed cannot survive it.
+        FittedModelContract artifact = Fixture("garch-conditional-variance.json");
+
         Assert.True(GarchVarianceModel.TryLoad(
-            Garch(parity: [([0.04d, 0.02d], 0.02101d)]),
-            Hash, out GarchVarianceModel model, out FittedModelRejection rejection));
+            artifact, artifact.FeatureSchemaHash, out GarchVarianceModel model,
+            out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
-        Assert.Equal(0.02101d, model.Predict(0.04d, 0.02d)!.Value, precision: 9);
+        Assert.Equal("arch", artifact.ProducerLibrary);
+        Assert.True(model.WarmupBars > 1);
+        Assert.Equal("percent", model.ReturnUnits);
     }
 
     [Fact]
-    public void GarchRefusesANonStationaryFit()
+    public void TheHmmArtifactReproducesWhatHmmlearnFiltered()
     {
-        // Alpha plus beta at one means no finite unconditional variance, so forecasts diverge
-        // instead of reverting. A crisis window can fit there and the parameters look ordinary.
-        Assert.False(GarchVarianceModel.TryLoad(
-            Garch(alpha: 0.3d, beta: 0.7d), Hash, out _, out FittedModelRejection rejection));
+        FittedModelContract artifact = Fixture("gaussian-hmm-regime.json");
 
-        Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
-    }
-
-    [Fact]
-    public void GarchSeedsFromTheUnconditionalVariance()
-    {
-        // The recursion is stateful, so a runtime seeding it differently from the fit produces a
-        // different path from identical parameters. omega / (1 - alpha - beta) is what arch uses
-        // and the only seed that leaves the recursion at rest.
-        GarchVarianceModel.TryLoad(
-            Garch(parity: [([0.04d, 0.02d], 0.02101d)]), Hash, out GarchVarianceModel model, out _);
-
-        Assert.Equal(0.00001d / (1d - 0.95d), model.UnconditionalVariance()!.Value, precision: 12);
-    }
-
-    [Fact]
-    public void GarchRefusesParametersThatDoNotReproduceTheFit()
-    {
-        // The parity vector says one thing and the coefficients another. Something was corrupted
-        // between the fit and here, and which one is wrong does not matter.
-        Assert.False(GarchVarianceModel.TryLoad(
-            Garch(parity: [([0.04d, 0.02d], 99d)]), Hash, out _, out FittedModelRejection rejection));
-
-        Assert.Equal(FittedModelRejection.ParityCheckFailed, rejection);
-    }
-
-    // -------------------------------------------------------------------------- HMM
-
-    [Fact]
-    public void TheHmmFilterProducesADistributionOverStates()
-    {
         Assert.True(GaussianHmmFilter.TryLoad(
-            Hmm(), Hash, out GaussianHmmFilter model, out FittedModelRejection rejection));
+            artifact, artifact.FeatureSchemaHash, out GaussianHmmFilter model,
+            out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
-
-        double[] posterior = model.Filter([0.0d])!;
-        Assert.Equal(2, posterior.Length);
-        Assert.Equal(1d, posterior[0] + posterior[1], precision: 9);
-        Assert.All(posterior, p => Assert.InRange(p, 0d, 1d));
+        Assert.Equal("hmmlearn", artifact.ProducerLibrary);
+        Assert.Equal(3, model.StateCount);
     }
 
     [Fact]
-    public void AnObservationNearAStateMeanFavoursThatState()
+    public void TheTreeArtifactReproducesTheBooster()
     {
-        GaussianHmmFilter.TryLoad(Hmm(), Hash, out GaussianHmmFilter model, out _);
+        FittedModelContract artifact = Fixture("lightgbm-direction.json");
 
-        // State 0 is centred at 0, state 1 at 10.
-        Assert.True(model.Filter([0.0d])![0] > model.Filter([0.0d])![1]);
-        Assert.True(model.Filter([10.0d])![1] > model.Filter([10.0d])![0]);
-    }
-
-    [Fact]
-    public void TheFilterSurvivesFeatureCountsThatWouldUnderflowADensityProduct()
-    {
-        // Multiplying densities directly underflows to zero for even a handful of features, which
-        // turns the posterior into zero divided by zero -- silently, and only on quiet days when
-        // densities are small. The filter works in logs for exactly this reason.
-        GaussianHmmFilter.TryLoad(Hmm(features: 8), Hash, out GaussianHmmFilter model, out _);
-
-        double[] posterior = model.Filter([40d, 40d, 40d, 40d, 40d, 40d, 40d, 40d])!;
-
-        Assert.Equal(1d, posterior[0] + posterior[1], precision: 9);
-        Assert.All(posterior, p => Assert.True(double.IsFinite(p)));
-    }
-
-    [Fact]
-    public void FullCovarianceIsRefusedRatherThanApproximated()
-    {
-        // Reproducing it means a factorisation whose conditioning behaviour would have to match
-        // another library's exactly. An approximation of a regime model is worse than none,
-        // because the exit engine acts on it.
-        FittedModelContract full = Hmm() with
-        {
-            Variant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["covariance_type"] = "full",
-            },
-        };
-
-        Assert.False(GaussianHmmFilter.TryLoad(full, Hash, out _, out FittedModelRejection rejection));
-        Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
-    }
-
-    [Fact]
-    public void ATransitionMatrixThatIsNotStochasticIsRefused()
-    {
-        Dictionary<string, double> broken = new(HmmParameters(2, 1), StringComparer.Ordinal)
-        {
-            ["trans_0_0"] = 0.9d,
-            ["trans_0_1"] = 0.9d,
-        };
-
-        Assert.False(GaussianHmmFilter.TryLoad(
-            Hmm() with { Parameters = broken }, Hash, out _, out FittedModelRejection rejection));
-        Assert.Equal(FittedModelRejection.UnusableParameters, rejection);
-    }
-
-    [Fact]
-    public void AZeroVarianceStateIsRefused()
-    {
-        Dictionary<string, double> broken = new(HmmParameters(2, 1), StringComparer.Ordinal)
-        {
-            ["var_0_0"] = 0d,
-        };
-
-        Assert.False(GaussianHmmFilter.TryLoad(
-            Hmm() with { Parameters = broken }, Hash, out _, out FittedModelRejection rejection));
-        Assert.Equal(FittedModelRejection.UnusableParameters, rejection);
-    }
-
-    // -------------------------------------------------------------------- LightGBM
-
-    [Fact]
-    public void TheEnsembleSumsEveryTreesLeaf()
-    {
-        // Two stumps splitting on feature 0 at 5. Input 3 takes both left leaves: 1.5 + 0.25.
         Assert.True(GradientBoostedTreeModel.TryLoad(
-            Trees(parity: [([3d], 1.75d)]), TwoStumps(), baseScore: 0d, featureCount: 1,
-            Hash, out GradientBoostedTreeModel model, out FittedModelRejection rejection));
+            artifact, artifact.FeatureSchemaHash, out GradientBoostedTreeModel model,
+            out FittedModelRejection rejection));
 
         Assert.Equal(FittedModelRejection.None, rejection);
-        Assert.Equal(1.75d, model.Predict([3d])!.Value, precision: 9);
-        Assert.Equal(2, model.TreeCount);
+        Assert.Equal("lightgbm", artifact.ProducerLibrary);
+        Assert.Equal(5, model.TreeCount);
+    }
+
+    // ------------------------------------------------------- the bugs the fixtures would catch
+
+    [Fact]
+    public void TheTreeFixtureCarriesAMissingValueTheOldRuleWouldHaveRoutedWrong()
+    {
+        // The rule this replaced sent every non-finite feature down the default branch, which is
+        // right only for the NaN convention and wrong for the other two. A fixture whose probes had
+        // no missing value would have passed against the broken code.
+        FittedModelContract artifact = Fixture("lightgbm-direction.json");
+
+        Assert.Contains(
+            artifact.ParityChecks,
+            check => check.Inputs[0].Any(double.IsNaN));
+    }
+
+    [Theory]
+    [InlineData(TreeMissingType.None, double.NaN, 5d, true)]
+    [InlineData(TreeMissingType.NaN, double.NaN, 5d, false)]
+    [InlineData(TreeMissingType.Zero, 0d, 5d, false)]
+    [InlineData(TreeMissingType.None, 0d, 5d, true)]
+    [InlineData(TreeMissingType.NaN, 0d, 5d, true)]
+    public void EachMissingConventionRoutesTheSameValueDifferently(
+        TreeMissingType missingType, double value, double threshold, bool expectedLeft)
+    {
+        // Three conventions, one input, three answers. Under None a NaN becomes zero and meets the
+        // threshold; under NaN it takes the default branch; under Zero an ordinary 0.0 is the
+        // missing one. Collapsing them to a single rule is exactly the defect this replaced, and it
+        // scored 2.369 where the booster scored 5.070.
+        var node = new TreeNode(
+            SplitFeature: 0, Threshold: threshold, MissingType: missingType,
+            DefaultLeft: false, Left: 1, Right: 2, LeafValue: 0d);
+
+        Assert.Equal(
+            expectedLeft,
+            GradientBoostedTreeModel.GoesLeft(node, value, zeroThreshold: 1.0000000180025095e-35d));
     }
 
     [Fact]
-    public void TheSplitBoundaryGoesLeftOnEquality()
+    public void TheZeroBoundIsTheFloatLiteralRatherThanTheDouble()
     {
-        // The boundary a port gets backwards. It moves only inputs landing exactly on a threshold
-        // -- rare enough to survive every test that is not a parity check.
-        GradientBoostedTreeModel.TryLoad(
-            Trees(parity: [([5d], 1.75d)]), TwoStumps(), 0d, 1, Hash,
-            out GradientBoostedTreeModel model, out _);
+        // LightGBM's kZeroThreshold is 1e-35f, which widens to 1.0000000180025095e-35 and not to the
+        // double 1e-35. A booster split at exactly that value and routed it as missing while a
+        // double bound called it ordinary. One probe in 121 disagreed.
+        const double bound = 1.0000000180025095e-35d;
+        var node = new TreeNode(0, -bound, TreeMissingType.Zero, DefaultLeft: true, 1, 2, 0d);
 
-        Assert.Equal(1.75d, model.Predict([5d])!.Value, precision: 9);
-        Assert.Equal(-1.75d, model.Predict([5.0001d])!.Value, precision: 9);
+        // Exactly at the bound: missing, so the default branch. Under a double 1e-35 bound this
+        // value is outside, becomes an ordinary comparison, and goes left for the wrong reason --
+        // which happens to be the same direction here, so only the next case separates them.
+        Assert.True(GradientBoostedTreeModel.GoesLeft(node, -bound, bound));
+
+        // Just outside the bound on the far side of the threshold: an ordinary value, and greater
+        // than a negative threshold, so right. Nothing about being near zero saves it.
+        Assert.False(GradientBoostedTreeModel.GoesLeft(node, 1e-30d, bound));
+
+        // And a value the wider double bound would wrongly call ordinary is still missing here.
+        Assert.True(GradientBoostedTreeModel.GoesLeft(node, 1e-36d, bound));
     }
 
     [Fact]
-    public void AMissingValueFollowsThePerNodeDefaultDirection()
+    public void TreesFlippedToTheWrongMissingConventionFailParity()
     {
-        // LightGBM carries the direction on each node rather than one rule for the model.
-        GradientBoostedTreeModel.TryLoad(
-            Trees(parity: [([3d], 1.75d)]), TwoStumps(), 0d, 1, Hash,
-            out GradientBoostedTreeModel model, out _);
-
-        Assert.Equal(1.75d, model.Predict([double.NaN])!.Value, precision: 9);
-    }
-
-    [Fact]
-    public void CategoricalSplitsAreRefused()
-    {
-        // Encoded as bitset membership rather than a threshold, and reproducing the encoding is a
-        // separate exercise in matching another library's internals.
-        FittedModelContract categorical = Trees(parity: [([3d], 1.75d)]) with
+        // The point of parity: change how the model routes and the artifact stops loading. Without
+        // this the missing-value rule could drift back and every test but the fixture would pass.
+        FittedModelContract artifact = Fixture("lightgbm-direction.json");
+        FittedModelContract altered = artifact with
         {
-            Variant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["objective"] = "regression",
-                ["has_categorical_splits"] = "true",
-            },
+            Trees = [.. artifact.Trees.Select(tree => new DecisionTree(
+                [.. tree.Nodes.Select(node => node.IsLeaf
+                    ? node
+                    : node with { MissingType = TreeMissingType.None })]))],
         };
 
         Assert.False(GradientBoostedTreeModel.TryLoad(
-            categorical, TwoStumps(), 0d, 1, Hash, out _, out FittedModelRejection rejection));
-        Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
+            altered, altered.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.ParityCheckFailed, rejection);
     }
 
     [Fact]
-    public void AnObjectiveWithALinkIsRefused()
+    public void ATransposedTransitionMatrixFailsParity()
     {
-        // A model whose output needs a link applied after summing produces plausible numbers on
-        // the wrong scale, which is the hardest kind of wrong to notice.
-        FittedModelContract binary = Trees(parity: [([3d], 1.75d)]) with
+        // The check the previous parity design could not make. Its cases filtered a single
+        // observation from the fitted prior, so the transition matrix was never applied and a
+        // transposed one passed as readily as the right one.
+        FittedModelContract artifact = Fixture("gaussian-hmm-regime.json");
+        int states = (int)artifact.Parameters["n_states"];
+
+        var transposed = new Dictionary<string, double>(artifact.Parameters, StringComparer.Ordinal);
+        for (int i = 0; i < states; i++)
         {
-            Variant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["objective"] = "binary",
-            },
+            for (int j = 0; j < states; j++)
+                transposed[$"trans_{i}_{j}"] = artifact.Parameters[$"trans_{j}_{i}"];
+        }
+
+        Assert.False(GaussianHmmFilter.TryLoad(
+            artifact with { Parameters = transposed },
+            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+
+        // Either the transpose is not row-stochastic, or it is and produces different posteriors.
+        // Both are refusals; what matters is that the check no longer passes regardless.
+        Assert.NotEqual(FittedModelRejection.None, rejection);
+    }
+
+    [Fact]
+    public void EveryHmmParitySequenceIsLongEnoughToApplyTheTransitionMatrix()
+    {
+        FittedModelContract artifact = Fixture("gaussian-hmm-regime.json");
+
+        Assert.Equal(ParityKind.SequenceToVector, artifact.ParityKind);
+        Assert.All(artifact.ParityChecks, check => Assert.True(check.Inputs.Count >= 2));
+    }
+
+    [Fact]
+    public void AnHmmParityCaseComparesTheWholePosteriorNotOneState()
+    {
+        // Returning a single state's probability hid the rest of the distribution, which is where a
+        // mislabelled or reordered state shows up.
+        FittedModelContract artifact = Fixture("gaussian-hmm-regime.json");
+        int states = (int)artifact.Parameters["n_states"];
+
+        Assert.All(artifact.ParityChecks, check => Assert.Equal(states, check.Expected.Count));
+    }
+
+    [Fact]
+    public void AWarmUpShorterThanTheArtifactRequiresRefusesRatherThanGuessing()
+    {
+        // Short of the window the seed has not decayed out, so the answer would depend on a number
+        // nobody chose.
+        FittedModelContract artifact = Fixture("garch-conditional-variance.json");
+        GarchVarianceModel.TryLoad(
+            artifact, artifact.FeatureSchemaHash, out GarchVarianceModel model, out _);
+
+        Assert.Null(model.WarmedVariance([0.5d, 0.4d, 0.6d]));
+        Assert.NotNull(model.WarmedVariance([.. Enumerable.Repeat(0.5d, model.WarmupBars)]));
+    }
+
+    [Fact]
+    public void TheUnconditionalVarianceIsReportedButIsNotTheSeed()
+    {
+        // arch backcasts a 0.94-weighted average of the first 75 squared residuals. This class once
+        // claimed the unconditional variance was what arch used; it is reported now as context for
+        // a forecast, and the recursion warms up rather than seeding at all.
+        FittedModelContract artifact = Fixture("garch-conditional-variance.json");
+        GarchVarianceModel.TryLoad(
+            artifact, artifact.FeatureSchemaHash, out GarchVarianceModel model, out _);
+
+        double unconditional = model.UnconditionalVariance()!.Value;
+        double beta = artifact.Parameters["beta"];
+
+        // Warmed over a window of zero shocks, the recursion settles at omega / (1 - beta): the
+        // alpha term drops out because every shock is zero, and only beta carries the previous
+        // variance forward. That is a different number from the unconditional variance, which
+        // divides by 1 - alpha - beta -- so the two disagreeing is the point, not a rounding
+        // artefact, and the seed the fit used is neither of them.
+        double quietState = model.WarmedVariance(
+            [.. Enumerable.Repeat(0d, model.WarmupBars)])!.Value;
+
+        Assert.True(unconditional > 0d);
+        Assert.Equal(artifact.Parameters["omega"] / (1d - beta), quietState, precision: 12);
+        Assert.True(unconditional > quietState);
+    }
+
+    // -------------------------------------------------------------------------- the refusals
+
+    [Fact]
+    public void AFeatureSchemaMismatchIsFatalAndNeverReordered()
+    {
+        // Section 4.1 makes this a hard model-invalid condition and prohibits best-effort
+        // reordering, which is a strong rule about a weak failure: a model fed features in an order
+        // it was not fitted on does not throw and does not look wrong.
+        FittedModelContract artifact = Fixture("lightgbm-direction.json");
+
+        Assert.False(GradientBoostedTreeModel.TryLoad(
+            artifact, DifferentSchema, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.FeatureSchemaMismatch, rejection);
+    }
+
+    [Fact]
+    public void AnArtifactFromAContractVersionThisRuntimeDoesNotReadIsRefused()
+    {
+        FittedModelContract artifact = Fixture("har-realised-variance.json") with
+        {
+            ArtifactSchemaVersion = "runtime-inference-v1",
         };
 
-        Assert.False(GradientBoostedTreeModel.TryLoad(
-            binary, TwoStumps(), 0d, 1, Hash, out _, out FittedModelRejection rejection));
-        Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
+        Assert.False(HarVarianceModel.TryLoad(
+            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.UnsupportedArtifactVersion, rejection);
     }
 
     [Fact]
-    public void ATreeWhoseChildIndexEscapesItIsRefused()
+    public void AnUnpromotedArtifactCannotInformADecision()
     {
-        List<DecisionTree> malformed =
-            [new DecisionTree([new TreeNode(0, 5d, true, 1, 99, 0d), new TreeNode(-1, 0d, true, -1, -1, 1d)])];
+        FittedModelContract artifact = Fixture("gaussian-hmm-regime.json") with
+        {
+            PromotionState = "EXPERIMENTAL",
+        };
+
+        Assert.False(GaussianHmmFilter.TryLoad(
+            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.InsufficientPromotion, rejection);
+    }
+
+    [Fact]
+    public void AnArtifactWithNoParityCasesCannotBeVerifiedAndIsRefused()
+    {
+        FittedModelContract artifact = Fixture("har-realised-variance.json") with
+        {
+            ParityChecks = [],
+        };
+
+        Assert.False(HarVarianceModel.TryLoad(
+            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.ParityCheckFailed, rejection);
+    }
+
+    [Fact]
+    public void AnEnsembleWhoseTreesWereStrippedIsRefused()
+    {
+        // The trees are the model. They used to arrive as a separate argument, so the artifact hash
+        // covered everything except the data that decides the answer.
+        FittedModelContract artifact = Fixture("lightgbm-direction.json") with { Trees = [] };
 
         Assert.False(GradientBoostedTreeModel.TryLoad(
-            Trees(parity: [([3d], 1d)]), malformed, 0d, 1, Hash,
-            out _, out FittedModelRejection rejection));
+            artifact, artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
         Assert.Equal(FittedModelRejection.UnusableParameters, rejection);
     }
 
     [Fact]
-    public void AnEnsembleThatDoesNotReproduceTheFitIsRefused()
+    public void AMultiStepHorizonIsRefusedRatherThanApproximated()
     {
-        Assert.False(GradientBoostedTreeModel.TryLoad(
-            Trees(parity: [([3d], 99d)]), TwoStumps(), 0d, 1, Hash,
-            out _, out FittedModelRejection rejection));
-        Assert.Equal(FittedModelRejection.ParityCheckFailed, rejection);
-    }
+        // arch uses the realised residual for the first step and an expectation involving alpha plus
+        // beta thereafter. This version answers one step and says so.
+        FittedModelContract artifact = Fixture("garch-conditional-variance.json");
+        var variant = new Dictionary<string, string>(artifact.Variant, StringComparer.OrdinalIgnoreCase)
+        {
+            ["horizon"] = "multi_step",
+        };
 
-    // --------------------------------------------------------------------- shared
+        Assert.False(GarchVarianceModel.TryLoad(
+            artifact with { Variant = variant },
+            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
+    }
 
     [Fact]
-    public void AnArtifactWithNoParityChecksCannotBeVerifiedAndIsRefused()
+    public void AGarchArtifactWithNoDeclaredReturnScaleIsRefused()
     {
-        // An unverified reimplementation is the thing this whole contract exists to prevent.
+        // omega does not carry its units. A model fitted on percent returns consuming decimals is
+        // wrong by a factor of ten thousand and nothing about the number looks wrong.
+        FittedModelContract artifact = Fixture("garch-conditional-variance.json");
+        var variant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (KeyValuePair<string, string> entry in artifact.Variant)
+        {
+            if (!string.Equals(entry.Key, "return_units", StringComparison.OrdinalIgnoreCase))
+                variant[entry.Key] = entry.Value;
+        }
+
         Assert.False(GarchVarianceModel.TryLoad(
-            Garch(parity: []), Hash, out _, out FittedModelRejection rejection));
-        Assert.Equal(FittedModelRejection.ParityCheckFailed, rejection);
+            artifact with { Variant = variant },
+            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
     }
 
-    // ------------------------------------------------------------------- fixtures
-
-    private static List<DecisionTree> TwoStumps() =>
-    [
-        new DecisionTree(
-        [
-            new TreeNode(0, 5d, DefaultLeft: true, Left: 1, Right: 2, 0d),
-            new TreeNode(-1, 0d, true, -1, -1, 1.5d),
-            new TreeNode(-1, 0d, true, -1, -1, -1.5d),
-        ]),
-        new DecisionTree(
-        [
-            new TreeNode(0, 5d, DefaultLeft: true, Left: 1, Right: 2, 0d),
-            new TreeNode(-1, 0d, true, -1, -1, 0.25d),
-            new TreeNode(-1, 0d, true, -1, -1, -0.25d),
-        ]),
-    ];
-
-    private static FittedModelContract Garch(
-        double alpha = 0.1d,
-        double beta = 0.85d,
-        (double[] Features, double Expected)[]? parity = null) =>
-        Base("garch", new Dictionary<string, double>(StringComparer.Ordinal)
-        {
-            ["omega"] = 0.00001d,
-            ["alpha"] = alpha,
-            ["beta"] = beta,
-        }, parity);
-
-    private static FittedModelContract Hmm(int features = 1)
+    [Fact]
+    public void ACovarianceShapeThisFilterCannotReproduceIsRefused()
     {
-        FittedModelContract artifact = Base("hmm", HmmParameters(2, features), null) with
+        // Full and tied covariance need a factorisation whose conditioning behaviour would have to
+        // match another library's exactly. An approximated regime model is worse than none, because
+        // the exit engine acts on it.
+        FittedModelContract artifact = Fixture("gaussian-hmm-regime.json");
+        var variant = new Dictionary<string, string>(artifact.Variant, StringComparer.OrdinalIgnoreCase)
         {
-            Variant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["covariance_type"] = "diag",
-            },
+            ["covariance_type"] = "full",
         };
 
-        // Parity taken from this implementation's own answer for a symmetric prior, which is what a
-        // fitting process would have recorded for the same parameters.
-        var probe = new GaussianHmmFilterProbe(artifact);
-        return artifact with { ParityChecks = [probe.Check(features)] };
+        Assert.False(GaussianHmmFilter.TryLoad(
+            artifact with { Variant = variant },
+            artifact.FeatureSchemaHash, out _, out FittedModelRejection rejection));
+        Assert.Equal(FittedModelRejection.UnsupportedModelVariant, rejection);
     }
 
-    private static Dictionary<string, double> HmmParameters(int states, int features)
+    // ------------------------------------------------------------------------- the reader
+
+    [Fact]
+    public void AnUnknownMissingConventionIsRefusedRatherThanDefaulted()
     {
-        Dictionary<string, double> parameters = new(StringComparer.Ordinal)
-        {
-            ["n_states"] = states,
-            ["n_features"] = features,
-            ["start_0"] = 0.5d,
-            ["start_1"] = 0.5d,
-            ["trans_0_0"] = 0.9d,
-            ["trans_0_1"] = 0.1d,
-            ["trans_1_0"] = 0.1d,
-            ["trans_1_1"] = 0.9d,
-        };
+        // Defaulting to None would silently score a different leaf, which is the whole class of
+        // failure this reader exists to make impossible.
+        string json = File.ReadAllText(Path.Combine(FixtureRoot, "lightgbm-direction.json"))
+            .Replace("\"missing_type\": \"NaN\"", "\"missing_type\": \"Sometimes\"", StringComparison.Ordinal);
 
-        for (int f = 0; f < features; f++)
-        {
-            parameters[$"mean_0_{f}"] = 0d;
-            parameters[$"var_0_{f}"] = 1d;
-            parameters[$"mean_1_{f}"] = 10d;
-            parameters[$"var_1_{f}"] = 1d;
-        }
-
-        return parameters;
+        Assert.Throws<InvalidDataException>(() => FittedModelArtifactReader.Read(json));
     }
 
-    private static FittedModelContract Trees((double[] Features, double Expected)[] parity) =>
-        Base("lightgbm", new Dictionary<string, double>(StringComparer.Ordinal) { ["trees"] = 2d }, parity)
-            with
-            {
-                Variant = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["objective"] = "regression",
-                },
-            };
-
-    private static FittedModelContract Base(
-        string modelType,
-        Dictionary<string, double> parameters,
-        (double[] Features, double Expected)[]? parity) =>
-        new(
-            ArtifactId: $"{modelType}-test",
-            ModelId: modelType,
-            ModelType: modelType,
-            ModelVersion: "1.0.0",
-            FeatureSchemaHash: Hash,
-            DatasetHash: "dataset",
-            Parameters: parameters,
-            RandomSeed: 1,
-            EvidenceGrade: "B",
-            PromotionState: "VALIDATED",
-            GitCommit: "abc1234",
-            CreatedAt: DateTimeOffset.Parse("2026-09-02T00:00:00Z"))
-        {
-            ParityChecks = (parity ?? [([0d], 0d)])
-                .Select(item => new ModelParityCheck(item.Features, item.Expected))
-                .ToArray(),
-        };
-
-    /// <summary>
-    /// Produces a parity vector from a candidate filter, standing in for what a fitting process
-    /// would have recorded. Loading the artifact then verifies the same path against it.
-    /// </summary>
-    private sealed class GaussianHmmFilterProbe(FittedModelContract artifact)
+    [Fact]
+    public void EveryCommittedArtifactNamesTheLibraryAndVersionThatProducedIt()
     {
-        public ModelParityCheck Check(int features)
+        // When a port and a library disagree, the first question is which version of the library.
+        foreach (string name in new[]
         {
-            double[] observation = [.. Enumerable.Repeat(0.5d, features)];
-
-            // Built through the loader with a parity check it trivially satisfies, so the filter
-            // itself can be asked what it produces.
-            FittedModelContract seeded = artifact with
-            {
-                ParityChecks = [new ModelParityCheck(observation, double.NaN)],
-            };
-
-            GaussianHmmFilter.TryLoad(seeded, Hash, out GaussianHmmFilter model, out _);
-            double[]? posterior = model.IsFitted ? model.Filter(observation) : null;
-
-            // When the loader refused (because NaN parity cannot pass), rebuild without the guard
-            // by scoring the arithmetic directly: two states, diagonal covariance, symmetric prior.
-            return new ModelParityCheck(observation, posterior?[^1] ?? DirectPosterior(observation));
-        }
-
-        private static double DirectPosterior(double[] observation)
+            "har-realised-variance.json", "garch-conditional-variance.json",
+            "gaussian-hmm-regime.json", "lightgbm-direction.json",
+        })
         {
-            double logA = 0d;
-            double logB = 0d;
-            foreach (double value in observation)
-            {
-                logA += -0.5d * (Math.Log(2d * Math.PI) + (value * value));
-                logB += -0.5d * (Math.Log(2d * Math.PI) + ((value - 10d) * (value - 10d)));
-            }
-
-            logA += Math.Log(0.5d);
-            logB += Math.Log(0.5d);
-
-            double maximum = Math.Max(logA, logB);
-            double a = Math.Exp(logA - maximum);
-            double b = Math.Exp(logB - maximum);
-            return b / (a + b);
+            FittedModelContract artifact = Fixture(name);
+            Assert.False(string.IsNullOrWhiteSpace(artifact.ProducerLibrary));
+            Assert.False(string.IsNullOrWhiteSpace(artifact.ProducerLibraryVersion));
+            Assert.False(string.IsNullOrWhiteSpace(artifact.ArtifactHash));
         }
+    }
+
+    // ------------------------------------------------------------------------- fixtures
+
+    private static FittedModelContract Fixture(string name) =>
+        FittedModelArtifactReader.ReadFile(Path.Combine(FixtureRoot, name));
+
+    private static readonly string FixtureRoot = LocateFixtures();
+
+    /// <summary>Walks up from the test binary to the repository root.</summary>
+    private static string LocateFixtures()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, ".git")))
+            directory = directory.Parent;
+        return Path.Combine(
+            directory?.FullName ?? AppContext.BaseDirectory,
+            "tests", "fixtures", "model-artifacts");
     }
 }

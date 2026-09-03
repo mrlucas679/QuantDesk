@@ -143,12 +143,15 @@ def build_hmm() -> RuntimeInferenceArtifact:
 def build_lightgbm() -> RuntimeInferenceArtifact:
     """A booster fitted with NaNs present, so its nodes carry the ``NaN`` missing convention.
 
-    Deliberately the convention the first C# traversal happened to implement, paired in the same
-    suite with the ``None`` convention it got wrong -- a fixture that only ever exercised the rule
-    the code already had would have shipped the bug.
+    Deliberately the convention the first C# traversal happened to implement, and the seed is
+    chosen so the probe grid can tell it apart from the two it got wrong. That is not automatic: on
+    the first six seeds tried, the fitted structure put every split where the conventions disagree
+    behind a default branch that steered missing values away from it, so all three scored
+    identically on forty thousand random inputs. A fixture built from one of those would have loaded
+    happily against the broken traversal.
     """
-    rng = np.random.default_rng(13)
-    features = np.where(rng.random((800, 4)) < 0.2, np.nan, rng.normal(size=(800, 4)))
+    rng = np.random.default_rng(19)
+    features = np.where(rng.random((800, 4)) < 0.3, np.nan, rng.normal(size=(800, 4)))
     target = (
         np.nan_to_num(features[:, 0]) * 2.0
         - np.nan_to_num(features[:, 1])
@@ -186,6 +189,7 @@ def build_lightgbm() -> RuntimeInferenceArtifact:
             lookback_periods=48,
             feature_units=dict.fromkeys(booster.feature_name(), "zscore"),
             target_units="basis_points",
+            require_missing_discrimination=True,
         )
     )
 
