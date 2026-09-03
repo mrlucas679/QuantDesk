@@ -757,14 +757,27 @@ app.MapGet("/api/research/shadow", (ShadowSignalLog shadow) =>
         recorded = all.Count,
         resolved = all.Count(item => item.IsResolved),
         basis = "reference-price move less the venue round trip; excludes spread and slippage",
-        strategies = shadow.Summarise()
-            .OrderByDescending(pair => pair.Value.MeanNetBps)
-            .Select(pair => new
+
+        // Reported per book, because that is how it is read. The two books define rules under the
+        // same identifiers while paying costs an order of magnitude apart, so a single figure per
+        // identifier describes neither -- and the pooled number, being almost all crypto, reads as
+        // an endorsement of an equity rule that has barely traded.
+        books = new[] { TradedAssetClass.SpotCrypto, TradedAssetClass.UsEquity }
+            .Select(book => new
             {
-                strategyId = pair.Key,
-                signals = pair.Value.Signals,
-                meanNetBps = Math.Round(pair.Value.MeanNetBps, 1),
-                lowerBoundBps = Math.Round(pair.Value.LowerBoundBps, 1),
+                book = book.ToString(),
+                roundTripBps = VenueRoundTripCosts.For(book),
+                strategies = shadow.Summarise(book)
+                    .OrderByDescending(pair => pair.Value.MeanNetBps)
+                    .Select(pair => new
+                    {
+                        strategyId = pair.Key,
+                        signals = pair.Value.Signals,
+                        meanNetBps = Math.Round(pair.Value.MeanNetBps, 1),
+                        lowerBoundBps = Math.Round(pair.Value.LowerBoundBps, 1),
+                        tradable = pair.Value.Signals >= SignalStrategies.MinimumShadowSignals
+                            && pair.Value.LowerBoundBps > 0d,
+                    }),
             }),
     });
 });
