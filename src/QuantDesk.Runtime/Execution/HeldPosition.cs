@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Trading;
 
 namespace QuantDesk.Runtime.Execution;
 
@@ -39,7 +40,8 @@ public readonly record struct HeldPosition(
     decimal ProfitTarget = 0m,
     decimal? SellableQuantity = null,
     decimal ExitCostRate = 0m,
-    string? StrategyId = null)
+    string? StrategyId = null,
+    SignalDirection Direction = SignalDirection.Long)
 {
     /// <summary>
     /// What closing this position would actually realise at <paramref name="mid"/>.
@@ -57,6 +59,17 @@ public readonly record struct HeldPosition(
     /// realise more than that maximum once the exit is paid -- which makes a bound that sizes the
     /// capital reservation quietly wrong in the one direction that matters.
     /// </summary>
+    /// <remarks>
+    /// A short is not a long with the sign flipped at the end. It receives its proceeds at entry and
+    /// pays them back at exit, so the cost rate lands on the closing purchase rather than the
+    /// closing sale -- the same rate, applied to the other leg. Negating a long's answer would put
+    /// the exit cost on the wrong side and quietly flatter every short by two exit fees.
+    ///
+    /// Quantity is unsigned in both directions here. The broker reports a short position as a
+    /// negative quantity, but letting that sign travel into this arithmetic would combine with
+    /// <see cref="Direction"/> and cancel it out, so the lifecycle takes the magnitude and this
+    /// record carries the direction as a direction.
+    /// </remarks>
     /// <param name="mid">The current mid, or null when no healthy quote exists.</param>
     public decimal? RealisableProfit(decimal? mid)
     {
@@ -65,6 +78,14 @@ public readonly record struct HeldPosition(
 
         decimal held = SellableQuantity ?? Quantity;
         if (held <= 0m) return null;
+
+        if (Direction is SignalDirection.Short)
+        {
+            // Sold at entry, bought back at the mark. The buyback costs more than the mark, not
+            // less, which is why the rate is added rather than subtracted.
+            decimal buyback = price * held * (1m + ExitCostRate);
+            return (entry * Quantity) - buyback;
+        }
 
         decimal proceeds = price * held * (1m - ExitCostRate);
         return proceeds - (entry * Quantity);

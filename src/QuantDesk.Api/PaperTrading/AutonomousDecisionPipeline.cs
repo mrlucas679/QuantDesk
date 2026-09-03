@@ -410,13 +410,18 @@ public sealed class AutonomousDecisionPipeline(
             // understate every edge by a full round trip.
             expectedMoveBps = selection.Strategy.ResearchMeanGrossBps;
 
-            // Refused until execution can express it, and this is the dangerous half of the change
-            // that added direction to the rules.
+            // Refused before the compiler, and the reason has moved one layer down.
             //
-            // The rules can now say Short. Execution cannot: SubmitEntryAsync sends OrderSide.Buy
-            // and the only Sell is the close of a long. So a bearish signal reaching the compiler
-            // would open a long position on it -- acting on a rule's opinion with the sign reversed,
-            // which is worse than the long-only book that at least abstained when it disagreed.
+            // Execution can now express a short: the spot lifecycle carries a direction, opens with
+            // Sell, closes with Buy, signs the entry fence and the realisable-profit arithmetic, and
+            // the Alpaca gateway reads shortable and easy_to_borrow rather than tradable alone.
+            //
+            // What still cannot express it is the path between here and there.
+            // CryptoDirectionalStrategyCompiler refuses any forecast whose expected return is <= 0,
+            // so a bearish view produces no candidate at all; and TradeCandidate has no direction to
+            // carry, so even a candidate that did emerge would reach the risk governor and the
+            // reservation as a long. Routing a short through unchanged would be the sign-reversal
+            // hazard again, one layer further in.
             //
             // Spot crypto cannot be shorted at the venue at all -- there is no borrow and Alpaca
             // offers no paper crypto derivative -- so that refusal is permanent rather than

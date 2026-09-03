@@ -30,10 +30,16 @@ model may not silently claim Level-2/Level-3 evidence.
 - Done: `SignalDirection` {None, Long, Short}; all 13 rules return it with the bearish half written
   for the first time; `IndicatorSet.DonchianLow` added so breakouts can be symmetric;
   `StrategySelection.Direction` carries it.
-- Remaining: `AutonomousDecisionPipeline` still treats `Fires` as bool; `SignalStrategyTests` still
-  builds bool lambdas; execution must open a short (`OrderSide.Sell` to open, Buy to close); read
-  Alpaca's `shortable` flag, which the gateway currently ignores; refuse Short on spot crypto —
-  the venue has no borrow, so bearish crypto needs options.
+- Done: the spot lifecycle carries `Direction`; entry opens `Sell` and exit closes `Buy` for a
+  short; the entry fence signs the adverse-move test; `HeldPosition.RealisableProfit` puts the exit
+  cost on the buyback rather than negating a long; broker quantities are taken as magnitudes, since
+  the venue reports a short as negative; `BrokerAssetSnapshot` reads `shortable` and
+  `easy_to_borrow`; `None` is never reserved.
+- Remaining, and it is one layer in from where I expected: `CryptoDirectionalStrategyCompiler`
+  refuses any forecast with `ExpectedReturnBps <= 0`, so a bearish view produces no candidate at
+  all, and `TradeCandidate` has no direction to carry — a candidate that did emerge would reach the
+  risk governor and the reservation as a long. Until both change, the pipeline keeps refusing Short
+  with `ShortNotYetExecutable`. Spot crypto stays permanently refused: no borrow at the venue.
 
 ### Phase 2 — support domain (in-process, not containers)
 - Fit and publish per (asset class, symbol, timeframe) instead of one global artifact.

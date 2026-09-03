@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Trading;
 using System.Text.Json;
 using QuantDesk.Domain.Serialization;
 
@@ -55,6 +56,17 @@ public sealed record SpotExecutionRecord(
 {
     /// <summary>Always PAPER. A record that says otherwise is refused on load.</summary>
     public string ExecutionMode { get; init; } = "PAPER";
+
+    /// <summary>
+    /// Which way this position is held, which decides the side of both orders.
+    ///
+    /// Long by default, and deliberately not <see cref="SignalDirection.None"/>: every record
+    /// written before this field existed is a long, so a record loaded without it must read as one.
+    /// The enum's own default is None precisely so that a *signal* deserialised without a direction
+    /// cannot read as an instruction to take exposure; here the exposure already exists and the
+    /// question is only which way it points.
+    /// </summary>
+    public SignalDirection Direction { get; init; } = SignalDirection.Long;
 
     public decimal DefinedMaximumLoss { get; init; }
 

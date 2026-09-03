@@ -63,7 +63,9 @@ public sealed class AlpacaTradingGateway(
                 asset.Symbol,
                 asset.Status ?? "unknown",
                 asset.AssetClass ?? "unknown",
-                asset.Tradable);
+                asset.Tradable,
+                asset.Shortable,
+                asset.EasyToBorrow);
     }
 
     public async Task<BrokerSubmitResult> SubmitAsync(ExecutionCommand command, CancellationToken cancellationToken)
@@ -390,7 +392,9 @@ public sealed class AlpacaTradingGateway(
         [property: JsonPropertyName("symbol")] string Symbol,
         [property: JsonPropertyName("status")] string? Status,
         [property: JsonPropertyName("class")] string? AssetClass,
-        [property: JsonPropertyName("tradable")] bool Tradable);
+        [property: JsonPropertyName("tradable")] bool Tradable,
+        [property: JsonPropertyName("shortable")] bool Shortable = false,
+        [property: JsonPropertyName("easy_to_borrow")] bool EasyToBorrow = false);
 
     private sealed record AlpacaPosition(
         [property: JsonPropertyName("symbol")] string Symbol,

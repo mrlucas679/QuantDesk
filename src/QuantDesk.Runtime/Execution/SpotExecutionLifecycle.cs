@@ -89,7 +89,8 @@ public sealed class SpotExecutionLifecycle(
         decimal profitTarget = 0m,
         IReadOnlyList<PositionMark>? positionMarksBefore = null,
         bool admittedAsExploration = false,
-        double? decisionRelativeSpread = null)
+        double? decisionRelativeSpread = null,
+        SignalDirection direction = SignalDirection.Long)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(strategyId);
@@ -97,6 +98,11 @@ public sealed class SpotExecutionLifecycle(
 
         if (!broker.IsPaperEnvironment || !store.IsAvailable()) return false;
         if (quantity <= 0 || definedMaximumLoss <= 0 || maximumHoldingPeriod <= TimeSpan.Zero) return false;
+
+        // None is a refusal to commit, not a direction to hold. Reserving on it would open exposure
+        // no rule asked for, and it is the value a record deserialised without a direction carries,
+        // so it must never reach an order.
+        if (direction is SignalDirection.None) return false;
 
         // Refuse a second concurrent execution on the same symbol. The caller's broker-position
         // check cannot cover this on its own: between submitting an order and that order becoming
@@ -131,7 +137,8 @@ public sealed class SpotExecutionLifecycle(
             ProfitTarget = profitTarget,
             PositionMarksBefore = positionMarksBefore ?? [],
             AdmittedAsExploration = admittedAsExploration,
-            DecisionRelativeSpread = decisionRelativeSpread
+            DecisionRelativeSpread = decisionRelativeSpread,
+            Direction = direction
         });
     }
 
@@ -208,7 +215,9 @@ public sealed class SpotExecutionLifecycle(
             CapitalReservationId: 0,
             claimed.EntryClientOrderId,
             claimed.InstrumentSlot,
-            OrderSide.Buy,
+            // Sell to open a short, buy to open a long. Until this line existed the lane sent Buy
+            // unconditionally, so a bearish rule reaching execution would have opened a long on it.
+            claimed.Direction is SignalDirection.Short ? OrderSide.Sell : OrderSide.Buy,
             PositionIntent.Open,
             claimed.EntryLimitPrice is > 0 ? ExecutionOrderType.Limit : ExecutionOrderType.Market,
             ExecutionTimeInForce.Ioc,
@@ -331,8 +340,12 @@ public sealed class SpotExecutionLifecycle(
         // retaken every cycle until the feed returned.
         if (referencePrices?.CurrentMid(record.Symbol) is not { } now || now <= 0m) return null;
 
-        // Long-only: a rise above the decision price is the move against the entry.
+        // Which way is against us depends on which way we are about to go. A rise is adverse to a
+        // long and favourable to a short; reading the long's sign for both would have refused every
+        // short entry into a falling market -- exactly the entries a short exists to take -- while
+        // waving through the ones that had already run away.
         decimal movedBps = (now - decided) / decided * 10_000m;
+        if (record.Direction is SignalDirection.Short) movedBps = -movedBps;
         if (movedBps > MaximumAdverseEntryMoveBps)
             return $"ENTRY_FENCE_ADVERSE_MOVE:{movedBps:0.0}bps";
 
@@ -424,7 +437,8 @@ public sealed class SpotExecutionLifecycle(
         ProfitTarget: record.ProfitTarget,
         SellableQuantity: sellableQuantity,
         ExitCostRate: exitCostRate,
-        StrategyId: record.StrategyId);
+        StrategyId: record.StrategyId,
+        Direction: record.Direction);
 
     private SpotExecutionRecord StartHold(SpotExecutionRecord record)
     {
@@ -507,7 +521,10 @@ public sealed class SpotExecutionLifecycle(
             if (BrokerSymbol.Matches(position.Symbol, record.Symbol)) total += position.Quantity;
         }
 
-        return total;
+        // A short is reported as a negative quantity. The caller asks 'is anything still held',
+        // and -5 is emphatically something; returning it unchanged would leave the zero test
+        // reading true only by luck and the comparisons below reading backwards.
+        return Math.Abs(total);
     }
 
     private SpotExecutionRecord EvaluateHold(
@@ -596,7 +613,7 @@ public sealed class SpotExecutionLifecycle(
             CapitalReservationId: 0,
             claimed.ExitClientOrderId,
             claimed.InstrumentSlot,
-            OrderSide.Sell,
+            claimed.Direction is SignalDirection.Short ? OrderSide.Buy : OrderSide.Sell,
             PositionIntent.Close,
             claimed.ExitLimitPrice is > 0 ? ExecutionOrderType.Limit : ExecutionOrderType.Market,
             ExecutionTimeInForce.Ioc,
@@ -659,9 +676,9 @@ public sealed class SpotExecutionLifecycle(
         {
             IReadOnlyList<BrokerPositionSnapshot> positions =
                 await broker.ListPositionsAsync(cancellationToken);
-            decimal held = positions
+            decimal held = Math.Abs(positions
                 .Where(position => BrokerSymbol.Matches(position.Symbol, record.Symbol))
-                .Sum(position => position.Quantity);
+                .Sum(position => position.Quantity));
 
             return held <= 0m ? 0m : Math.Min(record.InternalOpenQuantity, held);
         }

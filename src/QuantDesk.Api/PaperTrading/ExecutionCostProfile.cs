@@ -143,8 +143,25 @@ public sealed record ExecutionCostProfile(
     /// <summary>
     /// Whether an order of this size can pay its own costs and still keep most of its edge.
     /// </summary>
+    /// <param name="explorationBudgetAvailable">
+    /// Whether a bounded budget exists to buy evidence about a rule with no expected edge.
+    ///
+    /// This is the third place the same net-edge comparison is made -- here, in the actionability
+    /// gate, and in the risk governor -- and each had to be told about the budget separately. Two
+    /// of the three were found only by switching the budget on and watching the lane refuse
+    /// everything for a different reason each time. The decision belongs in one place, and until it
+    /// is there this will keep happening.
+    ///
+    /// The sizing checks below are a different question and still bind. Fixed venue charges do not
+    /// shrink with order size, so an order too small to pay them loses whichever way the market
+    /// moves, and no budget makes that worth doing.
+    /// </param>
     public bool IsEconomicallyViable(
-        decimal notional, decimal expectedGrossEdgeBps, decimal spreadBps, out string reason)
+        decimal notional,
+        decimal expectedGrossEdgeBps,
+        decimal spreadBps,
+        out string reason,
+        bool explorationBudgetAvailable = false)
     {
         if (notional <= 0m)
         {
@@ -160,7 +177,7 @@ public sealed record ExecutionCostProfile(
 
         decimal grossEdgeUsd = notional * expectedGrossEdgeBps / 10_000m;
         decimal costUsd = RoundTripCostUsd(notional, spreadBps);
-        if (costUsd >= grossEdgeUsd)
+        if (!explorationBudgetAvailable && costUsd >= grossEdgeUsd)
         {
             reason = "CostExceedsExpectedEdge";
             return false;
@@ -172,8 +189,10 @@ public sealed record ExecutionCostProfile(
             return false;
         }
 
+        // Derived from the edge, so it asks the same question as the cost test and yields with it.
+        // The venue minimum above is the one that still binds when there is no edge to size against.
         decimal minimum = MinimumViableNotionalUsd(expectedGrossEdgeBps);
-        if (notional < minimum)
+        if (!explorationBudgetAvailable && notional < minimum)
         {
             reason = "NotionalBelowMinimumViable";
             return false;

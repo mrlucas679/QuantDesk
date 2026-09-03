@@ -77,11 +77,25 @@ public sealed record BrokerPositionSnapshot(
     decimal AveragePrice);
 
 /// <summary>Broker-reported asset eligibility needed before an execution can be admitted.</summary>
+/// <param name="Shortable">
+/// Whether the venue will accept a sell-to-open on this asset. Distinct from <paramref
+/// name="Tradable"/>, which only says the symbol may be traded at all: an asset can be perfectly
+/// tradable long and refuse every short. The gateway ignored this field entirely, so nothing in the
+/// system could tell the two apart.
+/// </param>
+/// <param name="EasyToBorrow">
+/// Whether the borrow is on the venue's easy-to-borrow list. Shortable without a borrow is a locate
+/// request, not an executable order, so a short is admitted only when both are true — the
+/// conservative reading, and the only one that does not depend on a locate desk this account has no
+/// access to.
+/// </param>
 public sealed record BrokerAssetSnapshot(
     string Symbol,
     string Status,
     string AssetClass,
-    bool Tradable);
+    bool Tradable,
+    bool Shortable = false,
+    bool EasyToBorrow = false);
 
 /// <summary>Minimal broker account state required to preflight paper execution.</summary>
 public sealed record BrokerAccountSnapshot(
