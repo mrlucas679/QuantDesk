@@ -51,8 +51,30 @@ public sealed class RealizedVolatilityExpert(
     /// </summary>
     private HarVarianceModel Fitted => models?.Har ?? HarVarianceModel.Unfitted();
 
+    /// <summary>
+    /// The second estimate of the same quantity, read the same way and for the same reason.
+    ///
+    /// GARCH was fitted, parity-checked against <c>arch</c>, adopted on every cycle, and consulted
+    /// by nothing. A model that is verified and then ignored is not a safeguard; it is an artifact
+    /// with a passing test beside it.
+    /// </summary>
+    private GarchVarianceModel FittedGarch => models?.Garch ?? GarchVarianceModel.Unfitted();
+
     /// <summary>True when a validated Python artifact is driving the forecast.</summary>
     public bool IsFitted => Fitted.IsFitted;
+
+    /// <summary>
+    /// Squared percent return to squared log return.
+    ///
+    /// GARCH is fitted on percent returns -- the artifact says so in
+    /// <c>variant.return_units</c> and again in <c>feature_semantics.units</c>, which reads
+    /// <c>squared_percent_return</c> -- while everything here is in mean squared log return. That
+    /// is a factor of ten thousand, and it is the difference between two models disagreeing and two
+    /// models being quoted in different currencies. Left unconverted, GARCH would appear to
+    /// disagree with HAR by four orders of magnitude on every bar, and the disagreement term below
+    /// would report permanent maximum uncertainty while looking like it was measuring something.
+    /// </summary>
+    private const double SquaredPercentToSquaredLogReturn = 1e-4;
 
     /// <summary>
     /// What this expert computes, so a fitted model can be checked against it rather than believed.
@@ -149,6 +171,24 @@ public sealed class RealizedVolatilityExpert(
              + ((medium - mean) * (medium - mean))
              + ((longRun - mean) * (longRun - mean))) / 3d;
 
+        // A second, independent estimate of the same quantity -- and its disagreement with the
+        // first is better evidence about this forecast's uncertainty than the dispersion of one
+        // model's own inputs, because the two models fail in different ways. HAR is a linear
+        // combination of realised variance at three horizons; GARCH is a recursion on the last
+        // shock and the last variance. When they agree, the number is worth more.
+        //
+        // It is added to the uncertainty and never to the point forecast. Blending them would make
+        // a third model nobody fitted, validated or parity-checked -- the same objection the
+        // fallback above is careful about, where a fitted HAR is used or the conventional weights
+        // are used, never a quiet mixture. And a variance forecast is advisory in any case: it
+        // sizes a position or ends one early, and section 10.1 keeps it from ever becoming a
+        // direction.
+        if (GarchVariance(indicators.Close, last) is { } garch)
+        {
+            double disagreement = (expected - garch) * (expected - garch);
+            spread += disagreement;
+        }
+
         return new VolatilityForecast(
             new ForecastMetadata(
                 expertId, instrumentSlot, ForecastType.RealizedVolatility, horizon,
@@ -173,6 +213,52 @@ public sealed class RealizedVolatilityExpert(
     /// Log returns rather than simple ones so the measure is additive across horizons, which is the
     /// property the HAR combination depends on.
     /// </summary>
+    /// <summary>
+    /// GARCH's conditional variance for the next bar, in this expert's units, or nothing.
+    ///
+    /// Nothing, in three cases, each of which is a refusal rather than a zero: no artifact has been
+    /// adopted; the artifact was fitted on a return scale this does not know how to convert; or
+    /// there is less history than the model's warm-up requires. The warm-up is 289 bars against
+    /// HAR's 288, so on exactly one bar of history HAR answers and GARCH does not -- and the
+    /// forecast is then simply the one it always was.
+    /// </summary>
+    private double? GarchVariance(double[] closes, int last)
+    {
+        GarchVarianceModel garch = FittedGarch;
+        if (!garch.IsFitted) return null;
+
+        // Refuse rather than guess. A model fitted on a scale nobody has mapped is not evidence
+        // about this instrument, and assuming it matched would be the units error this whole
+        // conversion exists to avoid.
+        if (!string.Equals(garch.ReturnUnits, "percent", StringComparison.Ordinal)) return null;
+
+        int required = garch.WarmupBars;
+        if (required <= 0 || last < required) return null;
+
+        var squaredPercentReturns = new List<double>(required);
+        for (int i = last - required + 1; i <= last; i++)
+        {
+            double previous = closes[i - 1];
+            double current = closes[i];
+            if (previous <= 0d || current <= 0d) return null;
+
+            double percentReturn = Math.Log(current / previous) * 100d;
+            if (!double.IsFinite(percentReturn)) return null;
+
+            squaredPercentReturns.Add(percentReturn * percentReturn);
+        }
+
+        double? warmed = garch.WarmedVariance(squaredPercentReturns);
+        if (warmed is not { } variance) return null;
+
+        // One step forward, so both models are answering the same question: what is the variance of
+        // the next bar. The warmed figure is the variance of the bar just seen.
+        double? predicted = garch.Predict(squaredPercentReturns[^1], variance);
+        return predicted is { } next && double.IsFinite(next)
+            ? next * SquaredPercentToSquaredLogReturn
+            : null;
+    }
+
     private static double RealizedVariance(double[] closes, int last, int bars)
     {
         int first = last - bars + 1;

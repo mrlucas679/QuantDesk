@@ -136,10 +136,21 @@ services:
       QUANTDESK_SPOT_STORE_PATH: /app/runtime-data/spot-executions.json
       QUANTDESK_FAULT_CAMPAIGN_PATH: /app/runtime-data/fault-campaign.json
       QUANTDESK_AGENT_STORE_PATH: /app/runtime-data/agent-runs.json
-      # Agent providers are opt-in. When disabled, deterministic trading and exits continue.
-      QUANTDESK_AGENTS_ENABLED: ${QUANTDESK_AGENTS_ENABLED:-false}
-      QUANTDESK_AGENT_BASE_URL: ${QUANTDESK_AGENT_BASE_URL:-}
-      QUANTDESK_AGENT_MODEL: ${QUANTDESK_AGENT_MODEL:-qwen3:8b}
+      # Agent providers are opt-in and configured entirely from .env, deliberately not here.
+      #
+      # QUANTDESK_AGENTS_ENABLED, QUANTDESK_AGENT_BASE_URL and QUANTDESK_AGENT_MODEL used to sit in
+      # this block as ${VAR:-default}, which is the exact pattern the comment above this section
+      # describes as having cost a working operator key and an Alpaca credential pair: interpolation
+      # consults the shell first, so a stale shell value silently replaced whatever the operator had
+      # just written in .env, and the hardcoded default replaced it when neither was set.
+      #
+      # It was not hypothetical here either. The default was `qwen3:8b`, an Ollama tag, while .env
+      # documents Featherless -- whose model identifiers are of the form provider/model-id. An
+      # operator setting the key and the model in .env would have had the model quietly replaced by
+      # a name their provider has never heard of, and read the resulting failure as a bad key.
+      #
+      # env_file loads .env without consulting the shell at all, so leaving these out of this block
+      # is what makes the file the operator edits the one that decides.
       # No execution symbol is implicit. Disabled research services retain their own BTC/USD
       # dataset fallback, but enabling autonomy requires an explicit chosen symbol.
       # Spot holds the instrument; DefinedRiskVertical expresses the view as a debit spread.
