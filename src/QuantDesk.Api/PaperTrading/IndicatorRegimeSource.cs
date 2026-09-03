@@ -25,6 +25,7 @@ public sealed class IndicatorRegimeSource(
     MarketRegimeExpert expert,
     RealizedVolatilityExpert volatility,
     TypedForecastCommittee committee,
+    MeasuredCalibrationSource calibrationSource,
     IRuntimeClock clock,
     ForecastOutcomeLog? outcomes = null) : IRegimeSource
 {
@@ -70,6 +71,12 @@ public sealed class IndicatorRegimeSource(
         // rule fire and stop firing with the feed rather than with the market.
         if (forecast is { } regime) _regimes[symbol] = regime.MostLikely;
 
+        // Recorded from the expert's own output, before the committee sees it.
+        //
+        // Scoring and deciding are different uses. Gating the recording would mean a badly
+        // calibrated expert stops producing the outcomes that would show it improving, so it
+        // could never earn its way back -- the trap the shadow signal log exists to avoid for
+        // rules. What the committee gates is what informs a decision.
         RecordVolatilityForecast(symbol, indicators, instrumentSlot, eventNs, nowMonotonicTicks, sourceStateVersion);
         ResolveDueForecasts(symbol, indicators);
     }
@@ -142,11 +149,16 @@ public sealed class IndicatorRegimeSource(
     {
         if (outcomes is null) return;
 
-        outcomes.Resolve(clock.UtcNow, (candidate, family) =>
+        int resolved = outcomes.Resolve(clock.UtcNow, (candidate, family) =>
             family is ForecastType.RealizedVolatility
             && string.Equals(candidate, symbol, StringComparison.OrdinalIgnoreCase)
                 ? RealisedVarianceOverHorizon(indicators)
                 : null);
+
+        // Rescored only when something actually resolved. Scoring walks every resolved outcome, so
+        // doing it on every observation would put a full pass over the log inside the decision
+        // path -- and it would produce the same answer, because nothing new had been measured.
+        if (resolved > 0) calibrationSource.Refresh(outcomes.Scores());
     }
 
     /// <summary>Mean squared log return over the bars the forecast horizon covered.</summary>

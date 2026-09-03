@@ -107,6 +107,11 @@ builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
 // The gate every typed forecast passes through. Section 10.1 keeps the families apart here, so a
 // volatility reading cannot become a direction, and the staleness and calibration checks a single
 // expert's output does not carry are applied in one place rather than at each call site.
+// What the experts report as their own calibration, measured by the scorer rather than assumed.
+// Refreshed when an outcome resolves, which is the only moment the answer can have changed.
+builder.Services.AddSingleton<MeasuredCalibrationSource>();
+builder.Services.AddSingleton<IForecastCalibrationSource>(services =>
+    services.GetRequiredService<MeasuredCalibrationSource>());
 builder.Services.AddSingleton<TypedForecastCommittee>();
 builder.Services.AddSingleton<MarketRegimeExpert>();
 // The models the research plane fits, and the service that loads them. Registered before the

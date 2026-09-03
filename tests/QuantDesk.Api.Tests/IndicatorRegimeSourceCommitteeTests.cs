@@ -1,3 +1,4 @@
+using QuantDesk.Runtime.Scoring;
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Runtime.Experts;
@@ -97,7 +98,8 @@ public sealed class IndicatorRegimeSourceCommitteeTests
     private const long MonotonicTicks = 1_000_000L;
 
     private static IndicatorRegimeSource Source(TypedForecastCommittee committee) =>
-        new(new MarketRegimeExpert(), new RealizedVolatilityExpert(), committee, new LiveRuntimeClock());
+        new(new MarketRegimeExpert(), new RealizedVolatilityExpert(), committee,
+            new MeasuredCalibrationSource(), new LiveRuntimeClock());
 
     /// <summary>
     /// Bars warmed through the real builder, because the regime expert reads derived series.

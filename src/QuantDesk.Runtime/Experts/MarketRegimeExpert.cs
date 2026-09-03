@@ -1,6 +1,7 @@
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Runtime.Indicators;
+using QuantDesk.Runtime.Scoring;
 
 namespace QuantDesk.Runtime.Experts;
 
@@ -33,7 +34,7 @@ namespace QuantDesk.Runtime.Experts;
 /// they mean size differently, hold differently, and trust a directional forecast more or less. The
 /// typed committee keeps the families apart so that this can never be read as an order.
 /// </summary>
-public sealed class MarketRegimeExpert
+public sealed class MarketRegimeExpert(IForecastCalibrationSource? calibration = null)
 {
     /// <summary>Bars of history the volatility percentile is measured against.</summary>
     public const int VolatilityLookback = 288;
@@ -111,7 +112,11 @@ public sealed class MarketRegimeExpert
 
             // A deterministic baseline that has never been scored against realised regimes. Half is
             // the value that claims nothing, which is the correct claim to make.
-            CalibrationScore: 0.5d);
+            // Measured Brier from the scorer, or the unmeasured default until enough independent
+            // episodes exist to say anything. A regime classifier that is confident and wrong ends
+            // positions early, which is a cost that never shows up as a bad entry.
+            CalibrationScore: calibration?.For(expertId, ForecastType.Regime)
+                ?? ForecastCalibration.Unmeasured);
     }
 
     /// <summary>

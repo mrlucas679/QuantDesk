@@ -2,6 +2,7 @@ using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Research;
+using QuantDesk.Runtime.Scoring;
 
 namespace QuantDesk.Runtime.Experts;
 
@@ -36,7 +37,9 @@ namespace QuantDesk.Runtime.Experts;
 /// widen a stop, never a reason to buy or sell. The typed committee keeps the two apart by
 /// construction, and this expert publishes into the volatility family only.
 /// </summary>
-public sealed class RealizedVolatilityExpert(IFittedModelSource? models = null)
+public sealed class RealizedVolatilityExpert(
+    IFittedModelSource? models = null,
+    IForecastCalibrationSource? calibration = null)
 {
     /// <summary>
     /// Read on every forecast, not captured at construction.
@@ -155,12 +158,13 @@ public sealed class RealizedVolatilityExpert(IFittedModelSource? models = null)
             ExpectedAnnualizedVolatility: Math.Sqrt(Math.Max(expected, 0d) * BarsPerYear),
             ForecastVariance: spread,
 
-            // Unscored until it has been scored, whether or not the coefficients were fitted. A
-            // fitted model is not a calibrated one: the fit says the coefficients came from data,
-            // the calibration would say the resulting forecasts were checked against outcomes, and
-            // only the second is a claim about being right. The scorer now measures exactly that
-            // and its QLIKE is the number that should eventually replace this.
-            CalibrationScore: 0.5d);
+            // The scorer's measured QLIKE, mapped through ForecastCalibration, or the
+            // unmeasured default until there is enough independent evidence to say anything. A
+            // fitted model is still not a calibrated one -- the fit says the coefficients came from
+            // data, this says the resulting forecasts were checked against what happened -- and
+            // only the second is a claim about being right.
+            CalibrationScore: calibration?.For(expertId, ForecastType.RealizedVolatility)
+                ?? ForecastCalibration.Unmeasured);
     }
 
     /// <summary>
