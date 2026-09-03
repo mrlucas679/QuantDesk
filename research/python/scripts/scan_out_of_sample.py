@@ -22,6 +22,8 @@ import statistics
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
+import pathlib
+
 import numpy as np
 
 from quantdesk_research.evaluation.deflated_sharpe import calculate_deflated_sharpe_ratio
@@ -30,11 +32,24 @@ from quantdesk_research.evaluation.pbo import calculate_pbo
 CRYPTO = ["BTC/USD", "ETH/USD", "UNI/USD", "AAVE/USD", "BCH/USD", "AVAX/USD", "LINK/USD"]
 EQUITY = ["SPY", "QQQ", "IWM", "DIA"]
 
-# Measured, not assumed. See the 2026-09-02 forensic reconstruction.
-CRYPTO_COST = 33.7
+# What the venue actually charges for a round trip, in basis points.
+#
+# This said 33.7 for crypto under a comment claiming it was measured rather than assumed. It was
+# the assumption. The account is charged about 60, and the gap is not academic: every crypto figure
+# this scan produced was roughly 26 bps too generous, which is the whole reason crypto rules cleared
+# a committee floor that honest equity rules did not, and why the registry showed a "best" crypto
+# rule at +1.5 bps net that is really about -25.
+CRYPTO_COST = 60.0
 EQUITY_COST = 8.0
 
-HOLDS = (12, 24, 48)
+# Holding periods in 5-minute bars: one hour through twelve.
+#
+# It stopped at 48 (four hours), which is exactly where the interesting behaviour starts. Edge grows
+# with the square root of holding time while the toll stays fixed, and the 2026-09-04 model
+# comparison measured that directly: equity mean net edge is negative at fifteen minutes, crosses
+# zero somewhere past an hour, and reaches +17 bps on IWM at four hours and +20 at twelve. A scan
+# that never looked past four hours could not have found any of it.
+HOLDS = (12, 24, 48, 96, 144)
 TRAIN_FRACTION = 0.6
 BAR_MINUTES = 5
 
@@ -377,7 +392,16 @@ def run(symbols: list[str], cost: float, label: str, session_scoped: bool) -> No
     print(f"  deflated Sharpe ratio       {dsr:.3f}   "
           f"{'survives' if dsr > 0.95 else 'does not survive the trial count'}")
 
-    with open(f"/src/research/python/scan_{label.split()[0].lower()}.json", "w") as handle:
+    # Relative to this script, not an absolute container path. Hardcoding /src meant the scan ran
+    # to completion, printed its table, and then died writing the file -- so the equity half never
+    # ran at all when crypto went first.
+    destination = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "artifacts"
+        / f"scan_{label.split()[0].lower()}.json"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8") as handle:
         json.dump(
             {key: {"train_n": a[0], "train_mean": a[1], "test_n": b[0],
                    "test_mean": b[1], "test_lower": b[2], "trials": trials, "pbo": pbo}

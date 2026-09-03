@@ -103,9 +103,11 @@ public sealed class OrphanedComponentTests
             + "nothing currently computes in Python.",
         ["GradientBoostedTreeModel"] =
             "Verified against a real booster across every missing-value convention, and nothing "
-            + "fits a tree for it to score. Fitting one means a directional crypto model, and the "
-            + "last out-of-sample scan produced no survivors -- so the honest state is a verified "
-            + "inference path waiting for evidence that does not exist yet.",
+            + "fits a tree for it to score. The 2026-09-04 comparison settles why: LightGBM, Ridge, "
+            + "a random forest and their average were scored on every instrument against each "
+            + "venue's real round trip, and none of the twenty-four pairs cleared its costs at a "
+            + "fifteen-minute horizon. Wiring this path would connect a verified scorer to a model "
+            + "measured to lose money, which is worse than leaving it unwired and saying so.",
 
         // -- Scoring and features built ahead of the path that would feed them.
         ["OrderBookImbalanceExpert"] =

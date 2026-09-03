@@ -173,6 +173,60 @@ public sealed class SpotShortExecutionTests : IDisposable
         Assert.Equal(47.375m, position.RealisableProfit(105m)!.Value, precision: 6);
     }
 
+    // --------------------------------------------------- closing one position on demand
+
+    [Fact]
+    public async Task AnOperatorCanBringOneHeldPositionsExitForward()
+    {
+        // The gap that mattered on 2026-09-03: a bleeding position had to run its remaining hours
+        // because the only alternatives were halting everything or waiting for the timer.
+        var broker = new RecordingBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        Assert.True(Reserve(lifecycle, SignalDirection.Long));
+        SpotExecutionRecord opened =
+            await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        broker.Order = new BrokerOrderSnapshot(
+            "broker-1", opened.EntryClientOrderId, "filled", 4m, 100m);
+        broker.Positions = [new BrokerPositionSnapshot(Symbol, 0, 4m, 100m)];
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // fills
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);   // starts the hold
+        broker.Order = null;
+
+        SpotExecutionRecord? closed = await lifecycle.RequestImmediateExitAsync(
+            ExecutionId, "operator", CancellationToken.None);
+
+        Assert.NotNull(closed);
+        Assert.Equal("OperatorRequested:operator", closed!.EarlyExitReason);
+
+        // Through the managed exit, not around it: an order was sent, and it is the close.
+        ExecutionCommand exit = Assert.Single(
+            broker.Submitted, command => command.PositionIntent == PositionIntent.Close);
+        Assert.Equal(OrderSide.Sell, exit.Side);
+        Assert.Equal(opened.ExitClientOrderId, exit.ClientOrderId);
+    }
+
+    [Fact]
+    public async Task AnExecutionStillWorkingItsEntryIsNotClosedOutFromUnderItself()
+    {
+        // An order is in flight. Marking it due to exit would race the fill, and the honest answer
+        // is that this is not a state the request can act on.
+        var broker = new RecordingBroker();
+        SpotExecutionLifecycle lifecycle = Build(broker);
+        Assert.True(Reserve(lifecycle, SignalDirection.Long));
+        await lifecycle.AdvanceAsync(ExecutionId, CancellationToken.None);
+
+        Assert.Null(await lifecycle.RequestImmediateExitAsync(
+            ExecutionId, "operator", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AnUnknownExecutionIsRefusedRatherThanCreated()
+    {
+        Assert.Null(await Build(new RecordingBroker()).RequestImmediateExitAsync(
+            "no-such-execution", "operator", CancellationToken.None));
+    }
+
     // ------------------------------------------------------------------------------- fixtures
 
     private static HeldPosition Short(decimal entry, decimal quantity) => new(

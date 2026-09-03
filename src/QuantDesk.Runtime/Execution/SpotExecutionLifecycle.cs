@@ -169,6 +169,52 @@ public sealed class SpotExecutionLifecycle(
         };
     }
 
+    /// <summary>
+    /// Brings a held position's exit forward to now, at an operator's request.
+    ///
+    /// The gap this closes: there was no way to close one spot position on demand. An operator
+    /// watching a position lose money could halt the whole system, flatten an options execution, or
+    /// wait for the hold timer -- but could not say "close that one". On 2026-09-03 that meant a
+    /// bleeding crypto position had to run its remaining hours because the only alternative was
+    /// stopping everything.
+    ///
+    /// It moves the record to ExitDue rather than sending an order. Every guarantee the managed
+    /// exit provides -- the deterministic client order ID, lookup-before-retry, selling only what
+    /// the account actually holds, reconciliation before completion -- lives on that path, and an
+    /// operator request is not a reason to bypass any of them. It is the same transition the hold
+    /// interrupts make, with a reason that names who asked.
+    ///
+    /// Only from a hold. An execution still working its entry has an order in flight, and marking
+    /// it due to exit would race the fill; one already exiting needs no help. Both return false so
+    /// the caller can say which rather than reporting a success that did nothing.
+    /// </summary>
+    public async Task<SpotExecutionRecord?> RequestImmediateExitAsync(
+        string executionId, string requestedBy, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestedBy);
+
+        SpotExecutionRecord? record = store.Find(executionId);
+        if (record is null || record.IsTerminal) return null;
+        if (record.State is not (SpotExecutionState.Holding or SpotExecutionState.EntryFilled))
+            return null;
+
+        SpotExecutionRecord due = record with
+        {
+            State = SpotExecutionState.ExitDue,
+            EarlyExitReason = $"OperatorRequested:{requestedBy}",
+
+            // The decision price is the mid now, for the same reason the hold loop captures it:
+            // implementation shortfall measures the gap between the decision and the outcome, and
+            // the decision is this moment.
+            ExitReferencePrice =
+                record.ExitReferencePrice ?? referencePrices?.CurrentMid(record.Symbol),
+        };
+        store.Update(due);
+
+        return await AdvanceAsync(executionId, cancellationToken);
+    }
+
     /// <summary>Resumes every nonterminal execution. Called on startup and on a timer.</summary>
     public async Task RecoverAllAsync(CancellationToken cancellationToken)
     {

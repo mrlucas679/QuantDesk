@@ -42,9 +42,16 @@ public static class ForecastCalibration
     /// <summary>What an expert reports before anything has been measured about it.</summary>
     ///
     /// <remarks>
-    /// Deliberately at the committee's floor rather than above it. An unmeasured expert is neither
-    /// trusted nor refused: it passes while nothing is known and is refused the moment a
-    /// measurement says it should be. Starting higher would grant confidence no one has earned.
+    /// A half. Not, as this comment claimed for a long time, "the committee's floor" -- the floor is
+    /// 0.60, so an unmeasured expert sits *below* it and is refused rather than admitted. The claim
+    /// went unnoticed because the directional votes carried a hardcoded 0.75 that cleared the floor
+    /// on their own, so nothing ever depended on this value being what it said it was.
+    ///
+    /// A half is still the right number, for a better reason than the one that was written here:
+    /// <see cref="MeasuredEdgeConfidence"/> returns exactly this for a measured edge of zero, so an
+    /// expert with no record and an expert measured to have no edge weigh the same by construction.
+    /// The consequence -- unmeasured means not actionable -- is what "no record, no weight" means,
+    /// and it is intended.
     /// </remarks>
     public const double Unmeasured = 0.5d;
 

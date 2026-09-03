@@ -117,7 +117,29 @@ ABSTAIN are valid outcomes. Never commit `.env`, keys, account identifiers or ra
 Never push to `main`; use a `codex/` branch.
 
 ## Open gaps not yet scheduled
-- No operator endpoint closes a single spot position on demand.
-- A rule re-enters seconds after a losing exit (LINK: three trips, -$4.30, all cost).
-- Unused: `GaussianHmmFilter`, `GradientBoostedTreeModel`, `OrderBookImbalanceExpert`,
-  `ExpertCatalog`.
+- Unused, each with a stated reason in `OrphanedComponentTests`: `GaussianHmmFilter`,
+  `GradientBoostedTreeModel`, `OrderBookImbalanceExpert`, `ExpertCatalog`. The tree scorer's
+  reason is now settled rather than pending: nothing fits a model worth scoring.
+- Phase 4.5 (agents read model disagreement) and Phase 5 (promotion) are unblocked mechanically but
+  have nothing to act on while no model or rule qualifies.
+
+## Where this actually stands, 2026-09-04
+
+Nothing trades, and that is correct. Every rule in both books is measured to lose against what its
+venue really charges, so `Tradable` is empty; exploration is empty too now that it refuses rules
+that execution reality could never redeem.
+
+Three independent measurements agree:
+- The rule scan, re-run at the real 60 bps crypto cost and extended to twelve-hour holds: every
+  rule negative on both books at every horizon. Best equity test mean -4.0 bps, PBO 0.619,
+  deflated Sharpe 0.000.
+- The model comparison: Ridge, LightGBM, a random forest and their average, 0 of 24 pairs clearing
+  costs at fifteen minutes.
+- The horizon sweep: equity means turn positive at four to twelve hours, but no lower confidence
+  bound clears zero at any horizon.
+
+The one live lead is that the models' long-horizon gains came from **thresholding** -- trading only
+the top quantile of forecasts -- not from the hold length. Rules fire whenever their condition is
+met and so inherit none of it. A selective rule, or a model with a threshold, is the only thing
+either measurement suggests could work; both need more out-of-sample evidence than two years of
+five-minute bars can supply at a four-hour hold.

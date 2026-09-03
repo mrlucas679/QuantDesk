@@ -652,6 +652,43 @@ app.MapPost("/api/options/{executionId}/emergency-flatten", async (
         ? StatusCodes.Status200OK
         : result.Pending ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
 });
+app.MapPost("/api/paper/spot/{executionId}/close", async (
+    HttpRequest request,
+    string executionId,
+    SpotExecutionLifecycle lifecycle,
+    OperatorKeyAuthorizer authorizer,
+    CancellationToken cancellationToken) =>
+{
+    // Closing one held position on demand, through the managed exit rather than around it.
+    //
+    // There was no way to do this. An operator watching a position lose money could halt the whole
+    // system, flatten an options execution, or wait out the hold timer -- so on 2026-09-03 a
+    // bleeding crypto position ran its remaining hours because the only alternative was stopping
+    // everything.
+    //
+    // Operator-keyed, like every other endpoint that moves money. It brings the exit forward; it
+    // does not send an order, so the deterministic client order ID, lookup-before-retry, selling
+    // only what the account holds and reconciliation before completion all still apply.
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+
+    SpotExecutionRecord? record =
+        await lifecycle.RequestImmediateExitAsync(executionId, "operator", cancellationToken);
+
+    // Null covers three different situations -- unknown, already finished, or not yet holding --
+    // and 409 says "not in a state this can act on" without claiming to know which, since the
+    // record may legitimately have moved between the read and the request.
+    return record is null
+        ? Results.Conflict(new { executionId, reason = "NotHoldingOrAlreadyClosing" })
+        : Results.Ok(new
+        {
+            executionId,
+            record.Symbol,
+            state = record.State.ToString(),
+            record.EarlyExitReason,
+            record.ExitClientOrderId,
+        });
+});
 app.MapGet("/api/diagnostics/{experimentId}", (
     HttpRequest request,
     string experimentId,
