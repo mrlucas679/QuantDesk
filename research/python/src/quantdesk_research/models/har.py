@@ -18,6 +18,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from quantdesk_research.models.runtime_artifact import (
+    SupportDomain,
     FeatureSemantics,
     ParityCase,
     ParitySuite,
@@ -137,6 +138,7 @@ def export_har_artifact(
     random_seed: int,
     as_of: datetime,
     bar_duration_minutes: int,
+    support_domain: SupportDomain,
     short_bars: int,
     medium_bars: int,
     long_bars: int,
@@ -176,6 +178,7 @@ def export_har_artifact(
         ),
         feature_schema=schema,
         feature_schema_hash=schema.feature_hash,
+        support_domain=support_domain,
         feature_semantics=FeatureSemantics(
             units=dict.fromkeys(FEATURE_NAMES, variance_units),
             missing_policy="refuse",

@@ -61,7 +61,7 @@ internal static class FaultCampaignDrivers
     internal static FaultDisposition ArtifactMissing()
     {
         var store = new FittedModelStore();
-        return !store.Har.IsFitted && !store.Garch.IsFitted
+        return !store.Har("BTC/USD", 5).IsFitted && !store.Garch("BTC/USD", 5).IsFitted
             ? FaultDisposition.Abstain
             : FaultDisposition.DegradeReadOnly;
     }

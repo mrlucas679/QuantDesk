@@ -31,6 +31,7 @@ from numpy.typing import NDArray
 
 from quantdesk_research.models.garch import export_garch_artifact, fit_garch
 from quantdesk_research.models.har import HARModel, export_har_artifact
+from quantdesk_research.models.runtime_artifact import SupportDomain
 from quantdesk_research.models.regime_hmm import export_regime_hmm_artifact, fit_regime_hmm
 from quantdesk_research.models.runtime_artifact import RuntimeInferenceArtifact
 from quantdesk_research.models.tree_export import export_tree_artifact
@@ -82,6 +83,14 @@ def _regime_observations() -> NDArray[np.float64]:
     )
 
 
+#: Every fixture is fitted on the same synthetic BTC/USD five-minute series, and now says so.
+#: A fixture that declared a wider domain than it was built from would make the runtime's support
+#: check pass in tests for reasons that do not hold in production.
+FIXTURE_DOMAIN = SupportDomain(
+    asset_class="spot_crypto", symbols=["BTC/USD"], bar_duration_minutes=5
+)
+
+
 def build_har() -> RuntimeInferenceArtifact:
     """A HAR fit at the windows the runtime actually serves, not the daily convention.
 
@@ -112,6 +121,7 @@ def build_har() -> RuntimeInferenceArtifact:
             random_seed=0,
             as_of=FIXTURE_TIMESTAMP,
             bar_duration_minutes=5,
+            support_domain=FIXTURE_DOMAIN,
             short_bars=SHORT_BARS,
             medium_bars=MEDIUM_BARS,
             long_bars=LONG_BARS,
@@ -133,6 +143,7 @@ def build_garch() -> RuntimeInferenceArtifact:
             random_seed=0,
             as_of=FIXTURE_TIMESTAMP,
             bar_duration_minutes=5,
+            support_domain=FIXTURE_DOMAIN,
         )
     )
 
@@ -155,6 +166,7 @@ def build_hmm() -> RuntimeInferenceArtifact:
             random_seed=0,
             as_of=FIXTURE_TIMESTAMP,
             bar_duration_minutes=5,
+            support_domain=FIXTURE_DOMAIN,
             lookback_periods=360,
             feature_units={"vol_percentile": "percentile", "adx_normalised": "ratio"},
         )
@@ -214,6 +226,7 @@ def build_lightgbm() -> RuntimeInferenceArtifact:
             random_seed=3,
             as_of=FIXTURE_TIMESTAMP,
             bar_duration_minutes=5,
+            support_domain=FIXTURE_DOMAIN,
             lookback_periods=48,
             feature_units=dict.fromkeys(booster.feature_name(), "zscore"),
             target_units="basis_points",

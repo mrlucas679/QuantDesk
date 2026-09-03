@@ -27,6 +27,17 @@ def main() -> None:
     # MCP
     mcp_parser = subparsers.add_parser("mcp")
     mcp_parser.add_argument("--port", type=int, default=8000)
+    mcp_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP bind address. The safe local default prevents LAN exposure.",
+    )
+    mcp_parser.add_argument(
+        "--transport",
+        choices=("streamable-http", "stdio"),
+        default="streamable-http",
+        help="MCP transport used by the selected client or harness.",
+    )
 
     worker_parser = subparsers.add_parser("worker")
     worker_parser.add_argument("--data-root", type=str, default="/app/data")
@@ -66,8 +77,17 @@ def main() -> None:
     elif args.command == "mcp":
         from quantdesk_research.mcp.server import mcp
 
-        logger.info(f"Starting MCP server on port {args.port}...")
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=args.port)
+        if args.transport == "stdio":
+            logger.info("Starting MCP server over stdio...")
+            mcp.run(transport="stdio", show_banner=False)
+        else:
+            logger.info(f"Starting MCP server at http://{args.host}:{args.port}/mcp ...")
+            mcp.run(
+                transport="streamable-http",
+                host=args.host,
+                port=args.port,
+                show_banner=False,
+            )
 
     elif args.command == "worker":
         if args.interval_seconds < 60:

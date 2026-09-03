@@ -53,6 +53,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from quantdesk_research.models.runtime_artifact import (
+    SupportDomain,
     FeatureSemantics,
     ParityCase,
     ParitySuite,
@@ -511,6 +512,7 @@ def export_tree_artifact(
     random_seed: int,
     as_of: datetime,
     bar_duration_minutes: int,
+    support_domain: SupportDomain,
     lookback_periods: int,
     feature_units: dict[str, str],
     target_units: str,
@@ -574,6 +576,7 @@ def export_tree_artifact(
         ),
         feature_schema=schema,
         feature_schema_hash=schema.feature_hash,
+        support_domain=support_domain,
         feature_semantics=FeatureSemantics(
             units={**feature_units, "__target__": target_units},
             # Not "refuse": LightGBM has a defined answer for a missing feature and the node

@@ -48,6 +48,16 @@ public sealed class FittedModelMonitorService(
 
     private string? _lastPointerFingerprint;
 
+    /// <summary>
+    /// Refused for saying nothing about what it was fitted on.
+    ///
+    /// Distinct from every other rejection here, which are all failures to reproduce. This one is a
+    /// complete, correct, parity-passing artifact whose reach was never established -- and it is
+    /// the state every artifact written before the support domain existed is in. Adopting it
+    /// globally is what let one BTC-fitted HAR forecast four equity ETFs.
+    /// </summary>
+    private const string UndeclaredDomain = "UndeclaredSupportDomain";
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -129,7 +139,12 @@ public sealed class FittedModelMonitorService(
                 "har", false, rejection.ToString(), artifact!.ArtifactId, artifact.ProducerLibrary);
         }
 
-        store.Adopt(model);
+        if (!store.Adopt(model, artifact!.SupportDomain))
+        {
+            return new FittedModelStatus(
+                "har", false, UndeclaredDomain, artifact.ArtifactId, artifact.ProducerLibrary);
+        }
+
         return new FittedModelStatus(
             "har", true, nameof(FittedModelRejection.None),
             artifact!.ArtifactId, $"{artifact.ProducerLibrary} {artifact.ProducerLibraryVersion}");
@@ -148,7 +163,12 @@ public sealed class FittedModelMonitorService(
                 "garch", false, rejection.ToString(), artifact!.ArtifactId, artifact.ProducerLibrary);
         }
 
-        store.Adopt(model);
+        if (!store.Adopt(model, artifact!.SupportDomain))
+        {
+            return new FittedModelStatus(
+                "garch", false, UndeclaredDomain, artifact.ArtifactId, artifact.ProducerLibrary);
+        }
+
         return new FittedModelStatus(
             "garch", true, nameof(FittedModelRejection.None),
             artifact!.ArtifactId, $"{artifact.ProducerLibrary} {artifact.ProducerLibraryVersion}");

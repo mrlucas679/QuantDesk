@@ -1,5 +1,5 @@
 {
- "artifact_hash": "51da3211a650e4c26abce0445724a648337a9f43328dcbac9df47ed643b5142a",
+ "artifact_hash": "8c7aa10b6369da055e5dae3c19c1c2ac1c3ab38d3391eb49abeff79220dad22b",
  "artifact_id": "garch-conditional-variance-fixture",
  "artifact_schema_version": "runtime-inference-v2",
  "as_of": "2026-09-03T00:00:00Z",
@@ -3287,6 +3287,13 @@
  },
  "promotion_state": "VALIDATED",
  "random_seed": 0,
+ "support_domain": {
+  "asset_class": "spot_crypto",
+  "bar_duration_minutes": 5,
+  "symbols": [
+   "BTC/USD"
+  ]
+ },
  "variant": {
   "horizon": "one_step",
   "mean": "Zero",

@@ -35,7 +35,7 @@ from quantdesk_research.models.regime_hmm import (
     export_regime_hmm_artifact,
     fit_regime_hmm,
 )
-from quantdesk_research.models.runtime_artifact import RuntimeInferenceArtifact
+from quantdesk_research.models.runtime_artifact import RuntimeInferenceArtifact, SupportDomain
 from quantdesk_research.models.tree_export import (
     TreeExportRejected,
     _score,
@@ -82,6 +82,7 @@ def test_a_cold_recursion_lands_on_the_path_arch_fitted() -> None:
         random_seed=1,
         as_of=AS_OF,
         bar_duration_minutes=5,
+        support_domain=SupportDomain(asset_class="spot_crypto", symbols=["BTC/USD"], bar_duration_minutes=5),
     )
 
     omega = artifact.parameters["omega"]
@@ -127,6 +128,7 @@ def test_the_artifact_records_which_arch_produced_it() -> None:
         random_seed=1,
         as_of=AS_OF,
         bar_duration_minutes=5,
+        support_domain=SupportDomain(asset_class="spot_crypto", symbols=["BTC/USD"], bar_duration_minutes=5),
     )
     assert artifact.producer.library == "arch"
     assert artifact.producer.library_version
@@ -169,6 +171,7 @@ def _hmm_artifact() -> RuntimeInferenceArtifact:
         random_seed=0,
         as_of=AS_OF,
         bar_duration_minutes=5,
+        support_domain=SupportDomain(asset_class="spot_crypto", symbols=["BTC/USD"], bar_duration_minutes=5),
         lookback_periods=360,
         feature_units={"vol_pct": "percentile", "adx_norm": "ratio"},
     )
@@ -430,6 +433,7 @@ def test_the_trees_are_inside_the_artifact_and_inside_its_hash() -> None:
         random_seed=3,
         as_of=AS_OF,
         bar_duration_minutes=5,
+        support_domain=SupportDomain(asset_class="spot_crypto", symbols=["BTC/USD"], bar_duration_minutes=5),
         lookback_periods=48,
         feature_units=dict.fromkeys(booster.feature_name(), "zscore"),
         target_units="basis_points",
@@ -510,6 +514,7 @@ def test_a_fit_that_does_not_clear_the_required_skill_is_refused() -> None:
             random_seed=3,
             as_of=AS_OF,
             bar_duration_minutes=5,
+            support_domain=SupportDomain(asset_class="spot_crypto", symbols=["BTC/USD"], bar_duration_minutes=5),
             lookback_periods=48,
             feature_units=dict.fromkeys(booster.feature_name(), "zscore"),
             target_units="basis_points",

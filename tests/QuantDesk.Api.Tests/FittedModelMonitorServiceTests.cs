@@ -55,7 +55,7 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
         FittedModelStatus har = store.Status.Single(entry => entry.Family == "har");
         Assert.True(har.Loaded, har.Rejection);
         Assert.Contains("quantdesk_research", har.ProducerLibrary);
-        Assert.True(new RealizedVolatilityExpert(store).IsFitted);
+        Assert.True(new RealizedVolatilityExpert(store).IsFittedFor(FixtureSymbol));
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
 
         FittedModelStatus har = store.Status.Single(entry => entry.Family == "har");
         Assert.False(har.Loaded);
-        Assert.False(new RealizedVolatilityExpert(store).IsFitted);
+        Assert.False(new RealizedVolatilityExpert(store).IsFittedFor(FixtureSymbol));
     }
 
     [Fact]
@@ -110,12 +110,12 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
         var store = new FittedModelStore();
         FittedModelMonitorService monitor = Monitor(store);
         monitor.Probe();
-        Assert.True(new RealizedVolatilityExpert(store).IsFitted);
+        Assert.True(new RealizedVolatilityExpert(store).IsFittedFor(FixtureSymbol));
 
         Publish(har: "garch-conditional-variance.json");
         monitor.Probe();
 
-        Assert.True(new RealizedVolatilityExpert(store).IsFitted);
+        Assert.True(new RealizedVolatilityExpert(store).IsFittedFor(FixtureSymbol));
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
         Monitor(store).Probe();
 
         Assert.All(store.Status, entry => Assert.Equal("NO_POINTER", entry.Rejection));
-        Assert.False(new RealizedVolatilityExpert(store).IsFitted);
+        Assert.False(new RealizedVolatilityExpert(store).IsFittedFor(FixtureSymbol));
     }
 
     [Fact]
@@ -178,8 +178,11 @@ public sealed class FittedModelMonitorServiceTests : IDisposable
             }));
     }
 
+    /// <summary>What every committed fixture declares it was fitted on.</summary>
+    private const string FixtureSymbol = "BTC/USD";
+
     private static double? Forecast(RealizedVolatilityExpert expert, IndicatorSet indicators) =>
-        expert.Forecast(indicators, 0, 20, TimeSpan.FromMinutes(5), 1, 1, 1_000, 1)
+        expert.Forecast(indicators, FixtureSymbol, 0, 20, TimeSpan.FromMinutes(5), 1, 1, 1_000, 1)
             ?.ExpectedRealizedVariance;
 
     /// <summary>Bars with enough history for the long window, and a volatility pattern in them.</summary>

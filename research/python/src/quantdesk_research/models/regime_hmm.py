@@ -52,6 +52,7 @@ from hmmlearn import hmm
 from numpy.typing import NDArray
 
 from quantdesk_research.models.runtime_artifact import (
+    SupportDomain,
     FeatureSemantics,
     ParityCase,
     ParitySuite,
@@ -411,6 +412,7 @@ def export_regime_hmm_artifact(
     random_seed: int,
     as_of: datetime,
     bar_duration_minutes: int,
+    support_domain: SupportDomain,
     lookback_periods: int,
     feature_units: dict[str, str],
     evidence_grade: str = "B",
@@ -457,6 +459,7 @@ def export_regime_hmm_artifact(
         ),
         feature_schema=schema,
         feature_schema_hash=schema.feature_hash,
+        support_domain=support_domain,
         feature_semantics=FeatureSemantics(
             units=feature_units,
             missing_policy="refuse",

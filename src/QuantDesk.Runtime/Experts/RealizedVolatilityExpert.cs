@@ -49,7 +49,14 @@ public sealed class RealizedVolatilityExpert(
     /// existed at boot -- which on a fresh volume is nothing, and is precisely why this expert has
     /// been registered, reachable and permanently unfitted.
     /// </summary>
-    private HarVarianceModel Fitted => models?.Har ?? HarVarianceModel.Unfitted();
+    /// <remarks>
+    /// Keyed by the instrument being forecast. There used to be one HAR for the whole runtime, and
+    /// it was fitted on BTC/USD -- so every SPY, QQQ, IWM and DIA variance forecast came from
+    /// Bitcoin's coefficients. Nothing detected it: the schema hash matched, the parity cases
+    /// reproduced, and the artifact never said what it was fitted on.
+    /// </remarks>
+    private HarVarianceModel Fitted(string symbol) =>
+        models?.Har(symbol, FeatureContract.BarDurationMinutes) ?? HarVarianceModel.Unfitted();
 
     /// <summary>
     /// The second estimate of the same quantity, read the same way and for the same reason.
@@ -58,10 +65,11 @@ public sealed class RealizedVolatilityExpert(
     /// by nothing. A model that is verified and then ignored is not a safeguard; it is an artifact
     /// with a passing test beside it.
     /// </summary>
-    private GarchVarianceModel FittedGarch => models?.Garch ?? GarchVarianceModel.Unfitted();
+    private GarchVarianceModel FittedGarch(string symbol) =>
+        models?.Garch(symbol, FeatureContract.BarDurationMinutes) ?? GarchVarianceModel.Unfitted();
 
-    /// <summary>True when a validated Python artifact is driving the forecast.</summary>
-    public bool IsFitted => Fitted.IsFitted;
+    /// <summary>True when a validated Python artifact fitted on this instrument drives its forecast.</summary>
+    public bool IsFittedFor(string symbol) => Fitted(symbol).IsFitted;
 
     /// <summary>
     /// Squared percent return to squared log return.
@@ -133,8 +141,13 @@ public sealed class RealizedVolatilityExpert(
     /// model with the same name, and section 9.4 is explicit that missing history is not to be
     /// encoded as a value.
     /// </summary>
+    /// <param name="symbol">
+    /// Which instrument this forecast is about. Required, not incidental: it selects the fitted
+    /// model, and a model fitted on something else is refused rather than substituted.
+    /// </param>
     public VolatilityForecast? Forecast(
         IndicatorSet indicators,
+        string symbol,
         int instrumentSlot,
         int expertId,
         TimeSpan horizon,
@@ -158,7 +171,7 @@ public sealed class RealizedVolatilityExpert(
         // never a silent blend of the two. The fallback is the same combination this expert has
         // always used and is documented as unfitted; what changes with an artifact is that the
         // coefficients came from data rather than from convention.
-        double expected = Fitted.Predict(shortRun, medium, longRun)
+        double expected = Fitted(symbol).Predict(shortRun, medium, longRun)
             ?? (ShortWeight * shortRun) + (MediumWeight * medium) + (LongWeight * longRun);
         if (!double.IsFinite(expected) || expected < 0d) return null;
 
@@ -183,7 +196,7 @@ public sealed class RealizedVolatilityExpert(
         // are used, never a quiet mixture. And a variance forecast is advisory in any case: it
         // sizes a position or ends one early, and section 10.1 keeps it from ever becoming a
         // direction.
-        if (GarchVariance(indicators.Close, last) is { } garch)
+        if (GarchVariance(symbol, indicators.Close, last) is { } garch)
         {
             double disagreement = (expected - garch) * (expected - garch);
             spread += disagreement;
@@ -222,9 +235,9 @@ public sealed class RealizedVolatilityExpert(
     /// HAR's 288, so on exactly one bar of history HAR answers and GARCH does not -- and the
     /// forecast is then simply the one it always was.
     /// </summary>
-    private double? GarchVariance(double[] closes, int last)
+    private double? GarchVariance(string symbol, double[] closes, int last)
     {
-        GarchVarianceModel garch = FittedGarch;
+        GarchVarianceModel garch = FittedGarch(symbol);
         if (!garch.IsFitted) return null;
 
         // Refuse rather than guess. A model fitted on a scale nobody has mapped is not evidence

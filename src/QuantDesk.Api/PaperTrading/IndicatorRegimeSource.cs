@@ -106,7 +106,7 @@ public sealed class IndicatorRegimeSource(
         if (outcomes is null) return;
 
         VolatilityForecast? produced = volatility.Forecast(
-            indicators, instrumentSlot, VolatilityExpertId, Horizon,
+            indicators, symbol, instrumentSlot, VolatilityExpertId, Horizon,
             eventNs, nowMonotonicTicks, nowMonotonicTicks + HorizonTicks, sourceStateVersion);
 
         // Same gate, same reason. A variance recorded as an outcome that was already stale when it

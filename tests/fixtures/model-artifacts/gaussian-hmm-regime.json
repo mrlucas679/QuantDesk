@@ -1,5 +1,5 @@
 {
- "artifact_hash": "0674808592bfae60e4349b11c1d3bc30192c157ebcfaa6a9e6d08298256212c7",
+ "artifact_hash": "7a43ab3593fbfdb6f99c0041f8875adca5b96e8669b256b9ba615f7a97c98acd",
  "artifact_id": "gaussian-hmm-regime-fixture",
  "artifact_schema_version": "runtime-inference-v2",
  "as_of": "2026-09-03T00:00:00Z",
@@ -221,6 +221,13 @@
  },
  "promotion_state": "VALIDATED",
  "random_seed": 0,
+ "support_domain": {
+  "asset_class": "spot_crypto",
+  "bar_duration_minutes": 5,
+  "symbols": [
+   "BTC/USD"
+  ]
+ },
  "variant": {
   "covariance_type": "diag",
   "emission": "gaussian",

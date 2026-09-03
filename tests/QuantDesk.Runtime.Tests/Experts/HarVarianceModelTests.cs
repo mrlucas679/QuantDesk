@@ -167,10 +167,11 @@ public sealed class HarVarianceModelTests
     {
         // Without an artifact nothing changes and nothing pretends otherwise: the expert keeps the
         // conventional weights it has always used and reports itself unfitted.
-        Assert.False(new RealizedVolatilityExpert().IsFitted);
+        Assert.False(new RealizedVolatilityExpert().IsFittedFor("BTC/USD"));
 
         HarVarianceModel.TryLoad(Artifact(), Runtime, out HarVarianceModel model, out _);
-        Assert.True(new RealizedVolatilityExpert(FittedModelStore.Of(model)).IsFitted);
+        Assert.True(new RealizedVolatilityExpert(FittedModelStore.Of(
+            new ExpertSupportDomain("spot_crypto", ["BTC/USD"], 5), model)).IsFittedFor("BTC/USD"));
     }
 
     private static FittedModelContract Artifact() => new(

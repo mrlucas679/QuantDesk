@@ -44,8 +44,18 @@ model may not silently claim Level-2/Level-3 evidence.
   can short today. Spot crypto stays permanently refused: no borrow at the venue.
 
 ### Phase 2 — support domain (in-process, not containers)
-- Fit and publish per (asset class, symbol, timeframe) instead of one global artifact.
-- Enforce at load: a BTC-fitted model is refused for SPY rather than silently used.
+- Done: `ExpertSupportDomain` exists in code for the first time (the blueprint has named it since
+  §44). Every runtime-inference artifact declares `support_domain` — asset class, symbols, bar —
+  under the artifact seal; the reader parses it; `FittedModelStore` is keyed by it and holds several
+  instruments at once; `IFittedModelSource` cannot be asked a question without naming an instrument.
+  An artifact declaring no domain is refused rather than adopted globally.
+- Done: the fitting loop reads `symbol` and `timeframe` from the dataset manifest, which carried
+  both all along. That is what makes the previous behaviour hard to defend — the file naming the
+  instrument sat unread beside the artifact.
+- Effect today: the BTC-fitted HAR and GARCH stop serving SPY/QQQ/IWM/DIA. Those instruments have
+  no fitted model and now say so, instead of using Bitcoin's coefficients.
+- Remaining: fit per symbol so the equities get real models. The loop still fits one dataset per
+  cycle; a per-symbol bank has somewhere to put the results but nothing yet filling it.
 - Not separate containers. Newman's *Building Microservices* §Premature Decomposition recommends the
   bounded context as a module inside the monolith first; a container would happily load a BTC model
   and score SPY anyway. The typed scope plus a load-time gate is what prevents it.

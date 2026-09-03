@@ -51,6 +51,7 @@ from arch import arch_model
 from numpy.typing import NDArray
 
 from quantdesk_research.models.runtime_artifact import (
+    SupportDomain,
     FeatureSemantics,
     ParityCase,
     ParitySuite,
@@ -218,6 +219,7 @@ def export_garch_artifact(
     random_seed: int,
     as_of: datetime,
     bar_duration_minutes: int,
+    support_domain: SupportDomain,
     evidence_grade: str = "B",
     promotion_state: str = "VALIDATED",
 ) -> RuntimeInferenceArtifact:
@@ -247,6 +249,7 @@ def export_garch_artifact(
         ),
         feature_schema=schema,
         feature_schema_hash=schema.feature_hash,
+        support_domain=support_domain,
         feature_semantics=FeatureSemantics(
             # Squared, so the unit is the square of the return unit. Spelled out because "percent"
             # on a variance is the ambiguity that puts omega off by four orders of magnitude.

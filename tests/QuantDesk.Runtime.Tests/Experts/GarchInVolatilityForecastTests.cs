@@ -127,6 +127,7 @@ public sealed class GarchInVolatilityForecastTests
         var expert = new RealizedVolatilityExpert(new StubModels(garch));
         VolatilityForecast? forecast = expert.Forecast(
             Build(closes),
+            symbol: "BTC/USD",
             instrumentSlot: 0,
             expertId: 7,
             horizon: TimeSpan.FromMinutes(5),
@@ -197,8 +198,9 @@ public sealed class GarchInVolatilityForecastTests
     /// <summary>A model source carrying a GARCH artifact and no HAR, so the fallback weights apply.</summary>
     private sealed class StubModels(GarchVarianceModel garch) : IFittedModelSource
     {
-        public HarVarianceModel Har => HarVarianceModel.Unfitted();
+        public HarVarianceModel Har(string symbol, int barDurationMinutes) =>
+            HarVarianceModel.Unfitted();
 
-        public GarchVarianceModel Garch => garch;
+        public GarchVarianceModel Garch(string symbol, int barDurationMinutes) => garch;
     }
 }

@@ -45,6 +45,7 @@ from numpy.typing import NDArray
 
 from quantdesk_research.models.garch import GarchFitRejected, export_garch_artifact, fit_garch
 from quantdesk_research.models.har import HARModel, export_har_artifact
+from quantdesk_research.models.runtime_artifact import SupportDomain
 from quantdesk_research.models.runtime_artifact import RuntimeInferenceArtifact
 
 #: The windows the runtime's volatility expert computes, in bars. Changing one here without
@@ -178,6 +179,31 @@ def _git_commit() -> str:
     return commit
 
 
+def support_domain_of(manifest: dict[str, Any]) -> SupportDomain:
+    """What this dataset licenses a model fitted on it to be asked about.
+
+    Read from the manifest rather than assumed, and the manifest has carried both fields all along
+    -- which is what makes the previous behaviour so hard to defend. One artifact was fitted on the
+    BTC/USD five-minute series and consulted for SPY, QQQ, IWM and DIA, while the file naming the
+    instrument sat beside it unread.
+
+    The asset class is derived from the symbol's shape because nothing records it: Alpaca's crypto
+    pairs are slash-separated and its equities are not. A rule that has to be inferred is worth
+    stating out loud rather than burying at a call site.
+    """
+    symbol = str(manifest["symbol"])
+    timeframe = str(manifest["timeframe"])
+    digits = "".join(character for character in timeframe if character.isdigit())
+    if not digits:
+        raise ModelFittingSkipped(f"cannot read a bar duration from timeframe {timeframe!r}")
+
+    return SupportDomain(
+        asset_class="spot_crypto" if "/" in symbol else "us_equity",
+        symbols=[symbol],
+        bar_duration_minutes=int(digits),
+    )
+
+
 def fit_har(
     closes: NDArray[np.float64],
     *,
@@ -185,6 +211,7 @@ def fit_har(
     short_hash: str,
     as_of: datetime,
     git_commit: str,
+    support_domain: SupportDomain,
 ) -> RuntimeInferenceArtifact:
     """Fit HAR on everything but the tail, and probe it on the tail."""
     design, target, _ = har_design(closes)
@@ -213,7 +240,8 @@ def fit_har(
         git_commit=git_commit,
         random_seed=0,
         as_of=as_of,
-        bar_duration_minutes=5,
+        bar_duration_minutes=support_domain.bar_duration_minutes,
+        support_domain=support_domain,
         short_bars=SHORT_BARS,
         medium_bars=MEDIUM_BARS,
         long_bars=LONG_BARS,
@@ -230,6 +258,7 @@ def fit_garch_model(
     short_hash: str,
     as_of: datetime,
     git_commit: str,
+    support_domain: SupportDomain,
 ) -> RuntimeInferenceArtifact:
     """Fit GARCH(1,1) on percent log returns, holding back the same tail."""
     returns = _log_returns_percent(closes)
@@ -247,7 +276,8 @@ def fit_garch_model(
         git_commit=git_commit,
         random_seed=0,
         as_of=as_of,
-        bar_duration_minutes=5,
+        bar_duration_minutes=support_domain.bar_duration_minutes,
+        support_domain=support_domain,
         evidence_grade="C",
         promotion_state="SHADOW",
     )
@@ -299,7 +329,8 @@ def publish_fitted_models(data_root: Path, artifacts_root: Path) -> FittedModelP
         try:
             artifact = fit(
                 closes, dataset_hash=dataset_hash, short_hash=short_hash,
-                as_of=as_of, git_commit=git_commit)
+                as_of=as_of, git_commit=git_commit,
+                support_domain=support_domain_of(manifest))
         except (ModelFittingSkipped, GarchFitRejected, ValueError) as refusal:
             # A refused fit is a result. The gates it failed -- non-convergence, a persistence at or
             # above one, too little history -- are the ones that keep an unusable model out of the

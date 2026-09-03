@@ -153,6 +153,52 @@ class FeatureSemantics(BaseModel):
         return value
 
 
+class SupportDomain(BaseModel):
+    """What this model was fitted on, and therefore what it may be asked about.
+
+    Nothing carried this before, and the consequence was live and silent: one HAR and one GARCH,
+    both fitted on the BTC/USD five-minute series, were consulted for SPY, QQQ, IWM and DIA. Every
+    check passed -- the schema hashes matched, the parity cases reproduced -- because no check
+    could compare what the model was fitted on against what it was being asked, the artifact having
+    never said.
+
+    A variance model carried across instruments is not a slightly worse one. Bitcoin's realised
+    variance and an equity ETF's differ by roughly an order of magnitude, and their session
+    structure differs completely.
+    """
+
+    asset_class: str
+    symbols: list[str]
+    bar_duration_minutes: int
+
+    @field_validator("asset_class")
+    @classmethod
+    def asset_class_must_be_named(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("support domain must name an asset class")
+        return value
+
+    @field_validator("symbols")
+    @classmethod
+    def symbols_must_not_be_empty(cls, value: list[str]) -> list[str]:
+        """An artifact fitted on nothing identifiable cannot have its reach bounded."""
+        if not value or any(not symbol.strip() for symbol in value):
+            raise ValueError("support domain must name at least one symbol")
+        return value
+
+    @field_validator("bar_duration_minutes")
+    @classmethod
+    def bar_must_be_positive(cls, value: int) -> int:
+        """Carried separately from the feature schema hash, which covers names and ordering only.
+
+        A HAR fitted on five-minute bars and fed one-minute bars has an identical schema hash and
+        is a different model.
+        """
+        if value <= 0:
+            raise ValueError("support domain bar duration must be positive")
+        return value
+
+
 class RuntimeInferenceArtifact(BaseModel):
     """Everything a reimplemented inference path needs, and everything needed to refuse it.
 
@@ -172,6 +218,7 @@ class RuntimeInferenceArtifact(BaseModel):
     feature_schema: FeatureSchema
     feature_schema_hash: str
     feature_semantics: FeatureSemantics
+    support_domain: SupportDomain
     dataset_hash: str
 
     parameters: dict[str, float]
@@ -194,6 +241,16 @@ class RuntimeInferenceArtifact(BaseModel):
     def artifact_is_self_consistent(self) -> RuntimeInferenceArtifact:
         if self.feature_schema_hash != self.feature_schema.feature_hash:
             raise ValueError("artifact feature_schema_hash does not match its own schema")
+        # The bar appears twice and has to agree. feature_semantics states what the features were
+        # computed on; support_domain states what may be asked. An artifact whose two answers
+        # differ cannot be applied correctly under either reading.
+        if (
+            self.support_domain.bar_duration_minutes
+            != self.feature_semantics.bar_duration_minutes
+        ):
+            raise ValueError(
+                "support_domain bar duration disagrees with feature_semantics bar duration"
+            )
         if self.promotion_state not in DECISION_CAPABLE_STATES:
             raise ValueError(f"promotion_state must be one of {sorted(DECISION_CAPABLE_STATES)}")
         for name, value in self.parameters.items():

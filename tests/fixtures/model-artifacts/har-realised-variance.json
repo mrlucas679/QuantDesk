@@ -1,5 +1,5 @@
 {
- "artifact_hash": "4e94d91e97c8c48626e7c27dd47448b0e6cd521c666ef20bbaf180f9a63782d2",
+ "artifact_hash": "b35a13e90d09c4796b879c66e16af1cfdd500f38a6692d1b951227625793eaca",
  "artifact_id": "har-realised-variance-fixture",
  "artifact_schema_version": "runtime-inference-v2",
  "as_of": "2026-09-03T00:00:00Z",
@@ -120,6 +120,13 @@
  },
  "promotion_state": "VALIDATED",
  "random_seed": 0,
+ "support_domain": {
+  "asset_class": "spot_crypto",
+  "bar_duration_minutes": 5,
+  "symbols": [
+   "BTC/USD"
+  ]
+ },
  "variant": {
   "long_bars": "288",
   "medium_bars": "60",

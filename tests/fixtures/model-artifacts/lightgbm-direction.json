@@ -1,5 +1,5 @@
 {
- "artifact_hash": "a865d91ef73671179340e731495768da36fd24ee176acf83956a14ca1c9c045c",
+ "artifact_hash": "336de2aed8bf8f21d5847633e1706afea51aca41d4c4db0116a8bab4d4401884",
  "artifact_id": "lightgbm-direction-fixture",
  "artifact_schema_version": "runtime-inference-v2",
  "as_of": "2026-09-03T00:00:00Z",
@@ -6562,6 +6562,13 @@
  },
  "promotion_state": "VALIDATED",
  "random_seed": 3,
+ "support_domain": {
+  "asset_class": "spot_crypto",
+  "bar_duration_minutes": 5,
+  "symbols": [
+   "BTC/USD"
+  ]
+ },
  "variant": {
   "average_output": "false",
   "has_categorical_splits": "false",

@@ -24,8 +24,9 @@ dependencies = [
     "loguru",
     "psutil",
     "hmmlearn",
-    "mcp[cli]",
-    "fastmcp",
+    # Pin the protocol/runtime pair so the host, CI, and Docker expose the same MCP contract.
+    "mcp[cli]==1.29.1",
+    "fastmcp==3.4.7",
     "pytest-asyncio"
 ]
 

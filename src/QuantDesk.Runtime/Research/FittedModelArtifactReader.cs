@@ -52,6 +52,7 @@ public static class FittedModelArtifactReader
                 RequireDouble(parity, "absolute_tolerance"),
                 RequireDouble(parity, "relative_tolerance")),
             ParityChecks = ReadParityChecks(parity),
+            SupportDomain = ReadSupportDomain(root),
             ArtifactHash = RequirePropertyString(root, "artifact_hash"),
             FeatureSemantics = ReadFeatureSemantics(
                 RequireObject(RequireProperty(root, "feature_semantics"), "feature_semantics")),
@@ -84,6 +85,42 @@ public static class FittedModelArtifactReader
             RequirePropertyString(semantics, "missing_policy"),
             RequireInt(semantics, "lookback_periods"),
             RequireInt(semantics, "bar_duration_minutes"));
+    }
+
+    /// <summary>
+    /// What the fit was fitted on, or <see cref="ExpertSupportDomain.Undeclared"/>.
+    ///
+    /// Optional at the reader, unlike feature semantics, and the asymmetry is deliberate: an
+    /// artifact predating the field is readable, it simply supports nothing. Throwing here would
+    /// make every historical artifact unreadable rather than inapplicable, which loses the record
+    /// of what was fitted instead of bounding its reach.
+    /// </summary>
+    private static ExpertSupportDomain ReadSupportDomain(JsonElement root)
+    {
+        if (!root.TryGetProperty("support_domain", out JsonElement domain) ||
+            domain.ValueKind != JsonValueKind.Object)
+            return ExpertSupportDomain.Undeclared;
+
+        var symbols = new List<string>();
+        if (domain.TryGetProperty("symbols", out JsonElement listed) &&
+            listed.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement symbol in listed.EnumerateArray())
+            {
+                string? value = symbol.GetString();
+                if (!string.IsNullOrWhiteSpace(value)) symbols.Add(value);
+            }
+        }
+
+        return new ExpertSupportDomain(
+            domain.TryGetProperty("asset_class", out JsonElement assetClass)
+                ? assetClass.GetString() ?? string.Empty
+                : string.Empty,
+            symbols,
+            domain.TryGetProperty("bar_duration_minutes", out JsonElement bar) &&
+            bar.TryGetInt32(out int minutes)
+                ? minutes
+                : 0);
     }
 
     private static IReadOnlyDictionary<string, double> ReadParameters(JsonElement parameters)

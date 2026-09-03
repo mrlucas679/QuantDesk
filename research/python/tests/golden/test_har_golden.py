@@ -1,3 +1,4 @@
+from quantdesk_research.models.runtime_artifact import SupportDomain
 """HAR fitting and the artifact it exports.
 
 The previous version of this file called itself a cross-language reproducibility test and was not
@@ -36,6 +37,7 @@ def _artifact(model: HARModel):
         random_seed=7,
         as_of=datetime(2026, 9, 3, tzinfo=UTC),
         bar_duration_minutes=5,
+        support_domain=SupportDomain(asset_class="spot_crypto", symbols=["BTC/USD"], bar_duration_minutes=5),
         short_bars=1,
         medium_bars=5,
         long_bars=22,

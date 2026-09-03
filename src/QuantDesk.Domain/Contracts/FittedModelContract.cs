@@ -256,6 +256,15 @@ public sealed record FittedModelContract(
     public IReadOnlyDictionary<string, string> Variant { get; init; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// What this model was fitted on, and therefore what it may be asked about.
+    ///
+    /// Undeclared for anything written before the field existed, and undeclared supports nothing.
+    /// Reading silence as universal permission is exactly the behaviour that let one BTC-fitted HAR
+    /// serve four equity ETFs.
+    /// </summary>
+    public ExpertSupportDomain SupportDomain { get; init; } = ExpertSupportDomain.Undeclared;
+
     /// <summary>The hash the artifact was sealed under, covering every other field.</summary>
     public string ArtifactHash { get; init; } = string.Empty;
 
