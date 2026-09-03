@@ -1,3 +1,4 @@
+using QuantDesk.Runtime.Research;
 using QuantDesk.Domain.Contracts;
 using QuantDesk.Runtime.Experts;
 
@@ -169,7 +170,7 @@ public sealed class HarVarianceModelTests
         Assert.False(new RealizedVolatilityExpert().IsFitted);
 
         HarVarianceModel.TryLoad(Artifact(), Runtime, out HarVarianceModel model, out _);
-        Assert.True(new RealizedVolatilityExpert(model).IsFitted);
+        Assert.True(new RealizedVolatilityExpert(FittedModelStore.Of(model)).IsFitted);
     }
 
     private static FittedModelContract Artifact() => new(

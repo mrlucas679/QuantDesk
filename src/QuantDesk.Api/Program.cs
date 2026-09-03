@@ -105,6 +105,13 @@ builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
 // The regime classifier, and the shared place its answer is written and read. Bounded by the
 // traded universe, which is fixed at startup.
 builder.Services.AddSingleton<MarketRegimeExpert>();
+// The models the research plane fits, and the service that loads them. Registered before the
+// experts that read them so the store exists when they are resolved -- the expert reads it on every
+// forecast rather than capturing a model at construction, because artifacts arrive after boot.
+builder.Services.AddSingleton<FittedModelStore>();
+builder.Services.AddSingleton<IFittedModelSource>(services =>
+    services.GetRequiredService<FittedModelStore>());
+builder.Services.AddHostedService<FittedModelMonitorService>();
 builder.Services.AddSingleton<RealizedVolatilityExpert>();
 // Where forecasts and their outcomes are kept, so the scorers have something to score. Volatility
 // is the family whose loop closes without a trade in between: the expert predicts a variance and

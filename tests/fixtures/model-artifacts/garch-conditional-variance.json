@@ -1,5 +1,5 @@
 {
- "artifact_hash": "2b856dda89527011d55ef252420a92fe5e9b4faa015ea9267853f48d78935828",
+ "artifact_hash": "51da3211a650e4c26abce0445724a648337a9f43328dcbac9df47ed643b5142a",
  "artifact_id": "garch-conditional-variance-fixture",
  "artifact_schema_version": "runtime-inference-v2",
  "as_of": "2026-09-03T00:00:00Z",
@@ -18,18 +18,18 @@
   "dtypes": {
    "squared_residual": "float64"
   },
-  "feature_hash": "8f8b49c6c4c5cf273f2f8cff85a6076d449b768f77e4785c170e21e0f3dc0651",
+  "feature_hash": "a3e19662d59e47bd3788c3ec95010887807b92bba963cd70a53f0e3c431340b2",
   "feature_names": [
    "squared_residual"
   ],
-  "lookback_periods": 356,
+  "lookback_periods": 5000,
   "normalization": {},
   "schema_version": "garch11-zero-mean-v1",
   "source_requirements": [
    "alpaca_ohlcv"
   ]
  },
- "feature_schema_hash": "8f8b49c6c4c5cf273f2f8cff85a6076d449b768f77e4785c170e21e0f3dc0651",
+ "feature_schema_hash": "a3e19662d59e47bd3788c3ec95010887807b92bba963cd70a53f0e3c431340b2",
  "feature_semantics": {
   "bar_duration_minutes": 5,
   "lookback_periods": 356,

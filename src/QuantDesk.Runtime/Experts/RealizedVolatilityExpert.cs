@@ -1,5 +1,7 @@
+using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Forecasts;
 using QuantDesk.Runtime.Indicators;
+using QuantDesk.Runtime.Research;
 
 namespace QuantDesk.Runtime.Experts;
 
@@ -34,12 +36,53 @@ namespace QuantDesk.Runtime.Experts;
 /// widen a stop, never a reason to buy or sell. The typed committee keeps the two apart by
 /// construction, and this expert publishes into the volatility family only.
 /// </summary>
-public sealed class RealizedVolatilityExpert(HarVarianceModel? fitted = null)
+public sealed class RealizedVolatilityExpert(IFittedModelSource? models = null)
 {
-    private readonly HarVarianceModel _fitted = fitted ?? HarVarianceModel.Unfitted();
+    /// <summary>
+    /// Read on every forecast, not captured at construction.
+    ///
+    /// This expert is a singleton built when the host starts; the artifacts arrive later and are
+    /// replaced while the process runs. Holding the model from construction meant holding whatever
+    /// existed at boot -- which on a fresh volume is nothing, and is precisely why this expert has
+    /// been registered, reachable and permanently unfitted.
+    /// </summary>
+    private HarVarianceModel Fitted => models?.Har ?? HarVarianceModel.Unfitted();
 
     /// <summary>True when a validated Python artifact is driving the forecast.</summary>
-    public bool IsFitted => _fitted.IsFitted;
+    public bool IsFitted => Fitted.IsFitted;
+
+    /// <summary>
+    /// What this expert computes, so a fitted model can be checked against it rather than believed.
+    ///
+    /// The schema hash is derived from this rather than read out of the artifact. Comparing an
+    /// artifact's hash to its own hash passes for every artifact, including one fitted on a
+    /// different feature set -- which is the failure the hash exists to prevent.
+    /// </summary>
+    public static RuntimeFeatureContract FeatureContract { get; } = new(
+        FeatureSchemaDigest.Compute(
+            schemaVersion: "har-realised-variance-v1",
+            featureNames: HarVarianceModel.FeatureNames,
+            dtypes: HarVarianceModel.FeatureNames.ToDictionary(name => name, _ => "float64"),
+            lookbackPeriods: LongBars,
+            sourceRequirements: ["alpaca_ohlcv"]),
+        HarVarianceModel.FeatureNames.ToDictionary(name => name, _ => VarianceUnits),
+        MissingPolicy,
+        BarDurationMinutes);
+
+    /// <summary>
+    /// Mean squared log return, which is what <see cref="RealizedVariance"/> computes.
+    ///
+    /// Stated because the schema hash does not cover it. Two models can agree on the names, the
+    /// order and the warm-up while one was fitted on squared returns and the other on a rolling
+    /// standard deviation, and nothing about either forecast would look wrong.
+    /// </summary>
+    public const string VarianceUnits = "mean_squared_log_return";
+
+    /// <summary>A missing bar is refused rather than interpolated: a gap is not a quiet market.</summary>
+    public const string MissingPolicy = "refuse";
+
+    /// <summary>The bar these windows are counted in.</summary>
+    public const int BarDurationMinutes = 5;
 
     /// <summary>Bars in the short, medium and long HAR components at five-minute sampling.</summary>
     public const int ShortBars = 12;
@@ -90,7 +133,7 @@ public sealed class RealizedVolatilityExpert(HarVarianceModel? fitted = null)
         // never a silent blend of the two. The fallback is the same combination this expert has
         // always used and is documented as unfitted; what changes with an artifact is that the
         // coefficients came from data rather than from convention.
-        double expected = _fitted.Predict(shortRun, medium, longRun)
+        double expected = Fitted.Predict(shortRun, medium, longRun)
             ?? (ShortWeight * shortRun) + (MediumWeight * medium) + (LongWeight * longRun);
         if (!double.IsFinite(expected) || expected < 0d) return null;
 

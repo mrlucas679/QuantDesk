@@ -1,5 +1,5 @@
 {
- "artifact_hash": "bb9dacf14c1681a5e99ddd1664fe227f954a9346a127105dad8811bb6cef33b9",
+ "artifact_hash": "4e94d91e97c8c48626e7c27dd47448b0e6cd521c666ef20bbaf180f9a63782d2",
  "artifact_id": "har-realised-variance-fixture",
  "artifact_schema_version": "runtime-inference-v2",
  "as_of": "2026-09-03T00:00:00Z",
@@ -7,14 +7,14 @@
  "dataset_hash": "fixture-har-dataset",
  "diagnostics": {
   "coefficients": [
-   0.0017366824794376175,
-   0.33333576566173595,
-   0.3333345981441026,
-   0.3333296361941613
+   3.651412281840682e-06,
+   -0.06490028273927051,
+   0.14993209862373535,
+   -1.5920911783994791
   ],
-  "long_bars": 22,
-  "medium_bars": 5,
-  "short_bars": 1
+  "long_bars": 288,
+  "medium_bars": 60,
+  "short_bars": 12
  },
  "evidence_grade": "B",
  "feature_schema": {
@@ -23,28 +23,28 @@
    "rv_medium": "float64",
    "rv_short": "float64"
   },
-  "feature_hash": "9e18c4dcf95efcae899866db5343310d8d7cbeafea79b750ce7ed97fa39c9cf9",
+  "feature_hash": "435d6ea2ca2c1251e71fd73a1854684a734f7bc63425bf6e75d913696cb5086e",
   "feature_names": [
    "rv_short",
    "rv_medium",
    "rv_long"
   ],
-  "lookback_periods": 22,
+  "lookback_periods": 288,
   "normalization": {},
   "schema_version": "har-realised-variance-v1",
   "source_requirements": [
    "alpaca_ohlcv"
   ]
  },
- "feature_schema_hash": "9e18c4dcf95efcae899866db5343310d8d7cbeafea79b750ce7ed97fa39c9cf9",
+ "feature_schema_hash": "435d6ea2ca2c1251e71fd73a1854684a734f7bc63425bf6e75d913696cb5086e",
  "feature_semantics": {
   "bar_duration_minutes": 5,
-  "lookback_periods": 22,
+  "lookback_periods": 288,
   "missing_policy": "refuse",
   "units": {
-   "rv_long": "decimal_return_variance",
-   "rv_medium": "decimal_return_variance",
-   "rv_short": "decimal_return_variance"
+   "rv_long": "mean_squared_log_return",
+   "rv_medium": "mean_squared_log_return",
+   "rv_short": "mean_squared_log_return"
   }
  },
  "git_commit": "fixture-generated",
@@ -52,59 +52,59 @@
  "model_id": "crypto-realised-variance",
  "model_version": "1.0.0",
  "parameters": {
-  "beta_long": 0.3333296361941613,
-  "beta_medium": 0.3333345981441026,
-  "beta_short": 0.33333576566173595,
-  "intercept": 0.0017366824794376175
+  "beta_long": -1.5920911783994791,
+  "beta_medium": 0.14993209862373535,
+  "beta_short": -0.06490028273927051,
+  "intercept": 3.651412281840682e-06
  },
  "parity": {
   "absolute_tolerance": 1e-18,
   "cases": [
    {
     "expected": [
-     0.03673671312677548
+     1.6167903884479476e-06
     ],
     "inputs": [
      [
-      0.04,
-      0.035,
-      0.03
+      1.0816158038940553e-06,
+      1.1167188189975108e-06,
+      1.3390292886069548e-06
      ]
     ]
    },
    {
     "expected": [
-     0.011736682479437618
+     1.6101045398430672e-06
     ],
     "inputs": [
      [
-      0.01,
-      0.01,
-      0.01
+      1.080643572962916e-06,
+      9.788415185473308e-07,
+      1.3302840065962424e-06
      ]
     ]
    },
    {
     "expected": [
-     0.040069996354143725
+     1.594486545246226e-06
     ],
     "inputs": [
      [
-      0.05,
-      0.02,
-      0.045
+      1.1907927085267822e-06,
+      9.692902610139952e-07,
+      1.3347041331343879e-06
      ]
     ]
    },
    {
     "expected": [
-     0.0017366824794376175
+     1.5838431261655131e-06
     ],
     "inputs": [
      [
-      0.0,
-      0.0,
-      0.0
+      1.2668274689626743e-06,
+      9.595942539422292e-07,
+      1.337376718096606e-06
      ]
     ]
    }
@@ -121,10 +121,10 @@
  "promotion_state": "VALIDATED",
  "random_seed": 0,
  "variant": {
-  "long_bars": "22",
-  "medium_bars": "5",
+  "long_bars": "288",
+  "medium_bars": "60",
   "output_floor": "0.0",
-  "short_bars": "1",
-  "variance_units": "decimal_return_variance"
+  "short_bars": "12",
+  "variance_units": "mean_squared_log_return"
  }
 }

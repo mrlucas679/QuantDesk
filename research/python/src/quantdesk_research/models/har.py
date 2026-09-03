@@ -66,6 +66,29 @@ class HARModel:
         self.coefficients = np.asarray(coefficients, dtype=np.float64)
         self.is_fitted = True
 
+    def fit_matrix(self, design: NDArray[np.float64], target: NDArray[np.float64]) -> None:
+        """Fit from an explicit design matrix, for windows other than the daily 1 / 5 / 22.
+
+        ``fit`` builds its own features at the daily convention. The runtime serves 12 / 60 / 288
+        bar windows, so a model fitted by ``fit`` and served there would have had coefficients
+        matched to different quantities than the features multiplying them -- no error, no throw,
+        just a wrong forecast that the schema hash cannot catch because both sides call the columns
+        rv_short, rv_medium and rv_long.
+
+        The caller supplies the design so the windows are its decision and travel in the artifact.
+        """
+        if design.ndim != 2 or design.shape[1] != 3:
+            raise ValueError("HAR design must have three feature columns")
+        if design.shape[0] != target.shape[0]:
+            raise ValueError("HAR design and target differ in length")
+        if design.shape[0] < 4:
+            raise ValueError("Insufficient rows to identify four coefficients")
+
+        with_intercept = np.column_stack([np.ones(design.shape[0]), design])
+        coefficients, _, _, _ = np.linalg.lstsq(with_intercept, target, rcond=None)
+        self.coefficients = np.asarray(coefficients, dtype=np.float64)
+        self.is_fitted = True
+
     def predict(self, rv_d: float, rv_w: float, rv_m: float) -> float:
         if not self.is_fitted or self.coefficients is None:
             raise ValueError("Model not fitted")

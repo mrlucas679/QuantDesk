@@ -34,6 +34,12 @@ from quantdesk_research.models.har import HARModel, export_har_artifact
 from quantdesk_research.models.regime_hmm import export_regime_hmm_artifact, fit_regime_hmm
 from quantdesk_research.models.runtime_artifact import RuntimeInferenceArtifact
 from quantdesk_research.models.tree_export import export_tree_artifact
+from quantdesk_research.runtime.model_fitting import (
+    LONG_BARS,
+    MEDIUM_BARS,
+    SHORT_BARS,
+    har_design,
+)
 
 #: Pinned so regeneration is byte-identical and the artifact hash is stable.
 FIXTURE_TIMESTAMP = datetime(2026, 9, 3, 0, 0, 0, tzinfo=UTC)
@@ -77,12 +83,27 @@ def _regime_observations() -> NDArray[np.float64]:
 
 
 def build_har() -> RuntimeInferenceArtifact:
+    """A HAR fit at the windows the runtime actually serves, not the daily convention.
+
+    This fixture previously fitted 1 / 5 / 22 -- the daily HAR convention -- and then labelled
+    itself with whatever windows the exporter was told. That made it a fixture of a model the
+    runtime would compute different features for, and its schema hash was one the runtime could
+    never derive. Building the design the way production builds it keeps the fixture a faithful
+    miniature rather than a plausible-looking one.
+    """
+    rng = np.random.default_rng(5)
+    closes = 30_000.0 * np.exp(
+        np.cumsum(rng.normal(0.0, 0.0012, size=SHORT_BARS + LONG_BARS + 600))
+    )
+    design, target, _ = har_design(closes)
+
     model = HARModel()
-    model.fit(np.linspace(0.01, 0.05, 120))
+    model.fit_matrix(design, target)
+
     return _pinned(
         export_har_artifact(
             model,
-            probes=[(0.04, 0.035, 0.03), (0.01, 0.01, 0.01), (0.05, 0.02, 0.045), (0.0, 0.0, 0.0)],
+            probes=[(float(row[0]), float(row[1]), float(row[2])) for row in design[:4]],
             artifact_id="har-realised-variance-fixture",
             model_id="crypto-realised-variance",
             model_version="1.0.0",
@@ -91,10 +112,10 @@ def build_har() -> RuntimeInferenceArtifact:
             random_seed=0,
             as_of=FIXTURE_TIMESTAMP,
             bar_duration_minutes=5,
-            short_bars=1,
-            medium_bars=5,
-            long_bars=22,
-            variance_units="decimal_return_variance",
+            short_bars=SHORT_BARS,
+            medium_bars=MEDIUM_BARS,
+            long_bars=LONG_BARS,
+            variance_units="mean_squared_log_return",
         )
     )
 

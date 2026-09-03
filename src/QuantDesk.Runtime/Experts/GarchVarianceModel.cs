@@ -60,6 +60,17 @@ public sealed class GarchVarianceModel
     /// <summary>The only horizon this version answers for.</summary>
     public const string SupportedHorizon = "one_step";
 
+    /// <summary>
+    /// The warm-up the *schema* declares, which is the class maximum rather than any one fit's.
+    ///
+    /// How much history a particular fit needs to settle depends on beta, so putting it in the
+    /// schema would make the schema hash depend on the fitted parameters -- and the runtime could
+    /// then never state in advance which schema it expects, collapsing the check back to comparing
+    /// the artifact against itself. The fit's own warm-up travels in the variant, where the loader
+    /// reads it and refuses to forecast before it has that much history.
+    /// </summary>
+    public const int SchemaLookbackBars = 5000;
+
     private const string Omega = "omega";
     private const string Alpha = "alpha";
     private const string Beta = "beta";

@@ -28,6 +28,10 @@ from quantdesk_research.experiments.strategy_ensemble import (
     run_independent_validation_campaign,
     run_prospective_campaign,
 )
+from quantdesk_research.runtime.model_fitting import (
+    ModelFittingSkipped,
+    publish_fitted_models,
+)
 
 
 @dataclass(frozen=True)
@@ -111,12 +115,38 @@ def run_forever(data_root: Path, interval_seconds: int) -> None:
 
 def run_cycle(data_root: Path, configs_root: Path, artifacts_root: Path) -> None:
     """Run one bounded worker cycle for deterministic orchestration and verification."""
+    fit_models(data_root, artifacts_root)
     validate_microstructure_evidence(data_root)
     for candidate in VALIDATION_CANDIDATES:
         validate_candidate(data_root, candidate)
     validate_prospective_campaign(data_root)
     for registration in INDEPENDENT_VALIDATIONS:
         validate_independent_campaign(data_root, configs_root, artifacts_root, registration)
+
+
+def fit_models(data_root: Path, artifacts_root: Path) -> None:
+    """Fit the models the runtime can load, and put them where it looks.
+
+    Before this, the loop validated rule-based campaigns and fitted nothing, so the directory the
+    execution plane watches for models stayed empty however complete the bridge on either side of
+    it was.
+
+    A refusal here is not a failure of the cycle. The gates a fit can miss -- non-convergence, a
+    GARCH persistence at or above one, too little history, a dataset already published -- are the
+    ones that keep an unusable model out of the runtime, and a cycle that stopped on one would stop
+    the campaign validation that has nothing to do with it.
+    """
+    try:
+        published = publish_fitted_models(data_root, artifacts_root)
+    except ModelFittingSkipped as skipped:
+        logger.info("Model fitting produced nothing this cycle: {}", skipped)
+        return
+
+    logger.info(
+        "Published {} fitted model(s) for dataset {}: {}",
+        len(published.written), published.dataset_hash[:16], ", ".join(published.written))
+    for family, reason in published.skipped.items():
+        logger.info("Model family {} was not published: {}", family, reason)
 
 
 def validate_independent_campaign(

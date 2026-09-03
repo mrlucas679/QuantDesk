@@ -222,12 +222,18 @@ def export_garch_artifact(
     promotion_state: str = "VALIDATED",
 ) -> RuntimeInferenceArtifact:
     """Seal the fit into the artifact the runtime loads, or refuse to."""
+    # The schema's warm-up is the class maximum, not this fit's. A schema describes the features a
+    # model consumes; how much history *this* fit needs to settle is a property of beta, and putting
+    # it in the hash would make the hash depend on the fitted parameters -- so the runtime could
+    # never state in advance which schema it expects, and the check would collapse back to
+    # comparing the artifact against itself. The fit's actual warm-up travels in the variant and in
+    # the semantics, where the loader reads and enforces it.
     schema = feature_schema_of(
         schema_version="garch11-zero-mean-v1",
         feature_names=FEATURE_NAMES,
         dtypes={"squared_residual": "float64"},
         normalization={},
-        lookback_periods=fit.warmup_bars,
+        lookback_periods=MAXIMUM_WARMUP_BARS,
         source_requirements=["alpaca_ohlcv"],
     )
 
