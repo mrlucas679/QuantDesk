@@ -408,29 +408,23 @@ public sealed class AutonomousDecisionPipeline(
             //
             // Gross, because the cost is subtracted again downstream. Subtracting it twice would
             // understate every edge by a full round trip.
-            expectedMoveBps = selection.Strategy.ResearchMeanGrossBps;
+            // Signed by the rule's own direction. ResearchMeanGrossBps is a magnitude -- how much
+            // this rule has historically earned when it fired -- and the vote built from it is what
+            // the committee, the forecast and the compiler all read as "which way". Publishing the
+            // magnitude for a Short would have described a bearish rule to everything downstream as
+            // a bullish one, which is the sign-reversal hazard wearing a different hat.
+            expectedMoveBps = selection.Direction is SignalDirection.Short
+                ? -selection.Strategy.ResearchMeanGrossBps
+                : selection.Strategy.ResearchMeanGrossBps;
 
-            // Refused before the compiler, and the reason has moved one layer down.
-            //
-            // Execution can now express a short: the spot lifecycle carries a direction, opens with
-            // Sell, closes with Buy, signs the entry fence and the realisable-profit arithmetic, and
-            // the Alpaca gateway reads shortable and easy_to_borrow rather than tradable alone.
-            //
-            // What still cannot express it is the path between here and there.
-            // CryptoDirectionalStrategyCompiler refuses any forecast whose expected return is <= 0,
-            // so a bearish view produces no candidate at all; and TradeCandidate has no direction to
-            // carry, so even a candidate that did emerge would reach the risk governor and the
-            // reservation as a long. Routing a short through unchanged would be the sign-reversal
-            // hazard again, one layer further in.
-            //
-            // Spot crypto cannot be shorted at the venue at all -- there is no borrow and Alpaca
-            // offers no paper crypto derivative -- so that refusal is permanent rather than
-            // temporary, and a bearish crypto view has to be expressed through options.
-            if (selection.Direction is SignalDirection.Short)
+            // Spot crypto cannot be shorted at the venue: there is no borrow, and Alpaca offers no
+            // paper crypto derivative. Refused here rather than left to the compiler, which also
+            // refuses it, so that an operator reading the status page sees the instrument's reason
+            // instead of a bare NoOpportunity.
+            if (selection.Direction is SignalDirection.Short &&
+                route.AssetClass is TradedAssetClass.SpotCrypto)
             {
-                return Reject(route.AssetClass is TradedAssetClass.SpotCrypto
-                    ? "ShortNotSupportedOnSpotCrypto"
-                    : "ShortNotYetExecutable");
+                return Reject("ShortNotSupportedOnSpotCrypto");
             }
 
             // The instrument still has to be able to move enough to pay for the round trip. That is

@@ -480,6 +480,24 @@ public sealed class AutonomousPaperTradingService(
         // whatever the market happened to be doing when the timer expired.
         decimal profitTarget = Math.Max(candidate.GrossExpectedPnl.Value, 0m);
 
+        // A short needs a borrow, and the venue is the only authority on whether one exists.
+        //
+        // The lane never asked: it read tradable when it checked assets at all, which says only
+        // that the symbol may be traded and nothing about whether a sell-to-open would be accepted.
+        // Both flags are required. Shortable without easy_to_borrow is a locate request rather than
+        // an executable order, and this account has no locate desk -- so the conservative reading is
+        // the only correct one here. An asset the broker will not describe is refused rather than
+        // assumed borrowable.
+        if (candidate.Direction is SignalDirection.Short)
+        {
+            BrokerAssetSnapshot? asset = await broker.GetAssetAsync(symbol, cancellationToken);
+            if (asset is not { Tradable: true, Shortable: true, EasyToBorrow: true })
+            {
+                state.UpdateSymbol(symbol, "abstained", symbol, reason: "NotShortableAtVenue");
+                return;
+            }
+        }
+
         if (!spotExecution.TryReserve(
                 executionId, candidate.StrategyId, symbol, slot, quantity,
                 definedMaximumLoss, candidate.ManagementPlan.MaximumHoldingPeriod,
@@ -494,7 +512,8 @@ public sealed class AutonomousPaperTradingService(
                 // a spread read at reconciliation describes a different market.
                 decisionRelativeSpread: evidence.Ask > 0m && evidence.Bid > 0m
                     ? (double)((evidence.Ask - evidence.Bid) / ((evidence.Ask + evidence.Bid) / 2m))
-                    : null))
+                    : null,
+                direction: candidate.Direction))
         {
             state.UpdateSymbol(symbol, "abstained", symbol, reason: "ReservationRejected");
             return;

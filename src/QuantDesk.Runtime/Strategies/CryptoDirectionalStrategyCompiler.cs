@@ -12,7 +12,7 @@ using QuantDesk.Runtime.Time;
 namespace QuantDesk.Runtime.Strategies;
 
 /// <summary>
-/// Compiles a validated long-only directional forecast into a managed candidate.
+/// Compiles a validated directional forecast into a managed candidate, either way round.
 ///
 /// Named for crypto because that is all it used to compile, and the assumption was baked in twice
 /// over rather than stated. It refused to produce a candidate unless the account had *crypto*
@@ -95,9 +95,22 @@ public sealed class CryptoDirectionalStrategyCompiler(
             direction.Metadata.InstrumentSlot != forecasts.InstrumentSlot ||
             market.StateVersion != forecasts.SourceStateVersion ||
             market.QuoteQuality != Domain.Runtime.DataQuality.Healthy ||
-            direction.ExpectedReturnBps <= 0 ||
+            direction.ExpectedReturnBps == 0 ||
             !double.IsFinite(direction.ExpectedReturnBps))
             return 0;
+
+        // A negative expected return used to end the compile. That is what made the whole system
+        // long-only below the rule layer: rules could say Short, and every bearish forecast was
+        // then dropped here without a reason anyone could see. It is a direction, not an invalid
+        // forecast. Zero still is one -- a forecast of no movement is not a trade.
+        SignalDirection side = direction.ExpectedReturnBps < 0
+            ? SignalDirection.Short
+            : SignalDirection.Long;
+
+        // The venue has no borrow for spot crypto and Alpaca offers no paper crypto derivative, so
+        // this is a permanent property of the instrument rather than a gap to be closed later. A
+        // bearish crypto view has to be expressed through options.
+        if (side is SignalDirection.Short && assetClass is TradedAssetClass.SpotCrypto) return 0;
 
         Usd stressLoss = new(targetNotional.Value * (decimal)stressLossFraction);
         destination[0] = new TradeCandidate(
@@ -108,16 +121,25 @@ public sealed class CryptoDirectionalStrategyCompiler(
             SourceStateVersion: forecasts.SourceStateVersion,
             GeneratedMonotonicTicks: nowMonotonicTicks,
             ValidUntilMonotonicTicks: AddDuration(nowMonotonicTicks, candidateLifetime),
-            GrossExpectedPnl: new Usd(targetNotional.Value * (decimal)(direction.ExpectedReturnBps / 10_000d)),
+            // Expected profit, so the magnitude. A short that expects the instrument to fall forty
+            // basis points expects to earn forty, and the risk governor subtracts cost from this
+            // figure -- passing the signed return would have refused every short as a negative edge
+            // before it reached any check that could explain why.
+            GrossExpectedPnl: new Usd(
+                targetNotional.Value * (decimal)(Math.Abs(direction.ExpectedReturnBps) / 10_000d)),
+            // The same fraction of notional either way. A short's loss is not bounded by its
+            // notional the way a long's is, and nothing here pretends otherwise: the bound is
+            // enforced by AdverseLossHoldInterrupt closing the position, not by the instrument.
             EstimatedStressLoss: stressLoss,
-            Exposure: BookExposure(stressLoss, assetClass),
+            Exposure: BookExposure(stressLoss, assetClass, side),
             ManagementPlan: new PositionManagementPlan(
                 maximumHoldingPeriod,
                 ExitOnThesisInvalidation: true,
                 ExitOnRegimeChange: true,
                 MaximumAdverseLoss: stressLoss,
                 MinimumDteToHold: null,
-                ExitPolicyVersion: ExitPolicyVersionFor(assetClass)));
+                ExitPolicyVersion: ExitPolicyVersionFor(assetClass, side)),
+            Direction: side);
         return 1;
     }
 
@@ -138,9 +160,16 @@ public sealed class CryptoDirectionalStrategyCompiler(
     /// equity booked as crypto leaves the equity limit unused and consumes a crypto limit against
     /// exposure the portfolio does not have.
     /// </summary>
-    private EconomicExposure BookExposure(Usd stressLoss, TradedAssetClass assetClass)
+    /// <remarks>
+    /// The betas are signed and the notional is not. A short SPY position genuinely offsets a long
+    /// one, and netting is the whole reason to measure beta at all; buying power, by contrast, is
+    /// consumed the same way in both directions, so signing the notional would let a short slip
+    /// past the buying-power check.
+    /// </remarks>
+    private EconomicExposure BookExposure(
+        Usd stressLoss, TradedAssetClass assetClass, SignalDirection side)
     {
-        double notional = (double)targetNotional.Value;
+        double notional = (double)targetNotional.Value * (side is SignalDirection.Short ? -1d : 1d);
         double equityBeta = assetClass is TradedAssetClass.SpotCrypto ? 0d : notional;
         double cryptoBeta = assetClass is TradedAssetClass.SpotCrypto ? notional : 0d;
 
@@ -149,10 +178,13 @@ public sealed class CryptoDirectionalStrategyCompiler(
             stressLoss, new Usd(targetNotional.Value * 0.08m), 0);
     }
 
-    private static string ExitPolicyVersionFor(TradedAssetClass assetClass) =>
-        assetClass is TradedAssetClass.SpotCrypto
-            ? "crypto-long-managed-v1"
-            : "equity-long-managed-v1";
+    private static string ExitPolicyVersionFor(TradedAssetClass assetClass, SignalDirection side) =>
+        (assetClass, side) switch
+        {
+            (TradedAssetClass.SpotCrypto, _) => "crypto-long-managed-v1",
+            (_, SignalDirection.Short) => "equity-short-managed-v1",
+            _ => "equity-long-managed-v1",
+        };
 
     /// <summary>
     /// A deadline this many units of the clock's own monotonic time from now.

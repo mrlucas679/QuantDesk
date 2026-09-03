@@ -35,11 +35,13 @@ model may not silently claim Level-2/Level-3 evidence.
   cost on the buyback rather than negating a long; broker quantities are taken as magnitudes, since
   the venue reports a short as negative; `BrokerAssetSnapshot` reads `shortable` and
   `easy_to_borrow`; `None` is never reserved.
-- Remaining, and it is one layer in from where I expected: `CryptoDirectionalStrategyCompiler`
-  refuses any forecast with `ExpectedReturnBps <= 0`, so a bearish view produces no candidate at
-  all, and `TradeCandidate` has no direction to carry — a candidate that did emerge would reach the
-  risk governor and the reservation as a long. Until both change, the pipeline keeps refusing Short
-  with `ShortNotYetExecutable`. Spot crypto stays permanently refused: no borrow at the venue.
+- Done: `TradeCandidate.Direction`; the compiler accepts a negative expected return and emits a
+  Short, keeping expected profit and notional as magnitudes and signing only the betas; the pipeline
+  signs the vote by the rule's direction; the service refuses a short unless the venue reports both
+  `shortable` and `easy_to_borrow`.
+- Remaining: the verified-forecast path still requires a positive point forecast
+  (`VerifiedForecastNotPositive`), so a *model*-driven short is still refused — only the rule path
+  can short today. Spot crypto stays permanently refused: no borrow at the venue.
 
 ### Phase 2 — support domain (in-process, not containers)
 - Fit and publish per (asset class, symbol, timeframe) instead of one global artifact.
