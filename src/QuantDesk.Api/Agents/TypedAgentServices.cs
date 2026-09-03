@@ -12,7 +12,7 @@ public sealed class ReviewAgent(IAgentCompletionClient client)
     {
         if (!input.IsValid()) throw new ArgumentException("INVALID_REVIEW_INPUT", nameof(input));
         AgentCompletion completion = await client.CompleteAsync(Invocation(
-            AgentRole.Review, ReviewPrompt, input, nameof(ReviewAgentOutput)), token);
+            AgentRole.Review, ReviewPrompt, input, AgentOutputSchema.For<ReviewAgentOutput>()), token);
         EnsureNoMutations(completion);
         ReviewAgentOutput output = Deserialize<ReviewAgentOutput>(completion.OutputJson);
         if (!output.IsValid() || output.EpisodeId != input.EpisodeId)
@@ -41,7 +41,7 @@ public sealed class ResearchAgent(IAgentCompletionClient client)
     {
         if (!input.IsValid()) throw new ArgumentException("INVALID_RESEARCH_INPUT", nameof(input));
         AgentCompletion completion = await client.CompleteAsync(ReviewAgent.Invocation(
-            AgentRole.Research, ResearchPrompt, input, nameof(ResearchHypothesisProposal)), token);
+            AgentRole.Research, ResearchPrompt, input, AgentOutputSchema.For<ResearchHypothesisProposal>()), token);
         ReviewAgent.EnsureNoMutations(completion);
         ResearchHypothesisProposal output = ReviewAgent.Deserialize<ResearchHypothesisProposal>(completion.OutputJson);
         if (!output.IsValid()) throw new InvalidDataException("INVALID_RESEARCH_OUTPUT");
@@ -60,7 +60,7 @@ public sealed class PolicyAgent(
     {
         if (!input.IsValid()) throw new ArgumentException("INVALID_POLICY_INPUT", nameof(input));
         AgentCompletion completion = await client.CompleteAsync(ReviewAgent.Invocation(
-            AgentRole.Policy, PolicyPrompt, input, nameof(PolicyAgentProposal)), token);
+            AgentRole.Policy, PolicyPrompt, input, AgentOutputSchema.For<PolicyAgentProposal>()), token);
         ReviewAgent.EnsureNoMutations(completion);
         PolicyProposalWire wire = ReviewAgent.Deserialize<PolicyProposalWire>(completion.OutputJson);
         PolicyAgentProposal proposal = new(
