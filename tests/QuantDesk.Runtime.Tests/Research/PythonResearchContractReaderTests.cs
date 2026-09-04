@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using QuantDesk.Domain.Contracts;
 using QuantDesk.Runtime.Research;
 
 namespace QuantDesk.Runtime.Tests.Research;
@@ -90,6 +91,30 @@ public sealed class PythonResearchContractReaderTests
             {"artifact_id":"artifact-1","model_id":"directional","model_version":"2","strategy_family":"regime_ensemble","feature_schema_hash":"schema-1",
              "artifact_hash":"artifact-hash","evidence_grade":"A","evidence_profile":{"evidence_id":"e","economic_hypothesis":"h","counter_hypothesis":"c","primary_evidence_ids":["source"],"transfer_grade":"A_Direct","transfer_reason":"direct"},"validation_gates":["R0","R1","R2","R3","R4","R5","R6","R7","R11","R12"],"support_domain":{},"creation_timestamp":"2026-08-29T12:00:00Z"}
             """));
+    }
+
+    [Fact]
+    public void Reader_BindsDefinedRiskVerticalPolicyToTheArtifact()
+    {
+        JsonObject root = JsonNode.Parse(WithValidationEvidence("""
+            {"artifact_id":"artifact-1","model_id":"directional","model_version":"2","strategy_family":"regime_ensemble","feature_schema_hash":"schema-1",
+             "artifact_hash":"artifact-hash","evidence_grade":"A","evidence_profile":{"evidence_id":"e","economic_hypothesis":"h","counter_hypothesis":"c","primary_evidence_ids":["source"],"transfer_grade":"A_Direct","transfer_reason":"direct"},"validation_gates":["R0","R1","R2","R3","R4","R5","R6","R7","R11","R12"],"support_domain":{},"creation_timestamp":"2026-08-29T12:00:00Z"}
+            """))!.AsObject();
+        JsonObject definition = root["strategy_definition"]!.AsObject();
+        definition["execution_kind"] = "defined_risk_vertical";
+        definition["option_vertical"] = new JsonObject
+        {
+            ["minimum_days_to_expiry"] = 7,
+            ["maximum_days_to_expiry"] = 60,
+            ["strike_band_fraction"] = 0.05,
+            ["maximum_defined_loss"] = 20,
+            ["exit_limit_fraction"] = 0.5
+        };
+
+        ModelArtifactContract artifact = PythonResearchContractReader.ReadModelArtifact(root.ToJsonString());
+
+        Assert.Equal(StrategyExecutionKind.DefinedRiskVertical, artifact.StrategyDefinition.ExecutionKind);
+        Assert.Equal(20m, artifact.StrategyDefinition.OptionVertical!.MaximumDefinedLoss);
     }
 
     private static string WithValidationEvidence(string json)

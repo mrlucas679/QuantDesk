@@ -16,7 +16,7 @@ public sealed class AlpacaTradingGateway(
     IInstrumentSymbolResolver symbols) : IBrokerExecutionGateway, IMultiLegBrokerExecutionGateway
 {
     private readonly Uri _paperBaseUrl = ValidatePaperBaseUrl(options.BaseUrl);
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
 
     public bool IsPaperEnvironment => true;
 
@@ -63,7 +63,9 @@ public sealed class AlpacaTradingGateway(
                 asset.Symbol,
                 asset.Status ?? "unknown",
                 asset.AssetClass ?? "unknown",
-                asset.Tradable);
+                asset.Tradable,
+                asset.Shortable,
+                asset.EasyToBorrow);
     }
 
     public async Task<BrokerSubmitResult> SubmitAsync(ExecutionCommand command, CancellationToken cancellationToken)
@@ -333,7 +335,10 @@ public sealed class AlpacaTradingGateway(
         FilledAt = order.FilledAt,
         CanceledAt = order.CanceledAt,
         ExpiredAt = order.ExpiredAt,
-        RejectedAt = order.FailedAt
+        RejectedAt = order.FailedAt,
+        Legs = order.Legs?.Select(leg => new BrokerOrderLegSnapshot(
+            leg.Id, leg.Symbol ?? string.Empty, leg.Status ?? "unknown", ParseDecimal(leg.FilledQuantity),
+            leg.FilledAveragePrice is null ? null : ParseDecimal(leg.FilledAveragePrice))).ToArray() ?? []
     };
 
     private static string NormalizeBrokerSymbol(string symbol) =>
@@ -380,13 +385,16 @@ public sealed class AlpacaTradingGateway(
         [property: JsonPropertyName("filled_at")] DateTimeOffset? FilledAt = null,
         [property: JsonPropertyName("canceled_at")] DateTimeOffset? CanceledAt = null,
         [property: JsonPropertyName("expired_at")] DateTimeOffset? ExpiredAt = null,
-        [property: JsonPropertyName("failed_at")] DateTimeOffset? FailedAt = null);
+        [property: JsonPropertyName("failed_at")] DateTimeOffset? FailedAt = null,
+        [property: JsonPropertyName("legs")] IReadOnlyList<AlpacaOrder>? Legs = null);
 
     private sealed record AlpacaAsset(
         [property: JsonPropertyName("symbol")] string Symbol,
         [property: JsonPropertyName("status")] string? Status,
         [property: JsonPropertyName("class")] string? AssetClass,
-        [property: JsonPropertyName("tradable")] bool Tradable);
+        [property: JsonPropertyName("tradable")] bool Tradable,
+        [property: JsonPropertyName("shortable")] bool Shortable = false,
+        [property: JsonPropertyName("easy_to_borrow")] bool EasyToBorrow = false);
 
     private sealed record AlpacaPosition(
         [property: JsonPropertyName("symbol")] string Symbol,

@@ -4,11 +4,12 @@ from pathlib import Path
 import pytest
 
 from quantdesk_research.contracts.feature_schema import FeatureSchema
-from quantdesk_research.contracts.forecast import Forecast
+from quantdesk_research.contracts.forecast import Forecast, ForecastUncertainty
 from quantdesk_research.contracts.model_artifact import (
     EvidenceProfile,
     ExitPolicyDefinition,
     ModelArtifact,
+    OptionVerticalExecutionPolicy,
     StrategyDefinition,
     ValidationGateEvidence,
 )
@@ -91,6 +92,17 @@ def _contracts() -> tuple[FeatureSchema, ModelArtifact, Forecast]:
         forecast_family="directional_return_bps",
         horizon_minutes=5,
         point_forecast=12.0,
+        units="basis_points",
+        # A directional forecast without this is a number with no claim attached. The consuming
+        # gate already refused one; publication now refuses it too, rather than emitting something
+        # the far side will decline.
+        uncertainty=ForecastUncertainty(
+            standard_error_bps=4.0,
+            historical_net_edge_bps=3.5,
+            historical_net_edge_standard_error_bps=1.2,
+            historical_observations=180,
+            assumed_round_trip_cost_bps=33.7,
+        ),
         confidence=0.8,
         calibration_status="validated",
         support_domain_status="in_domain",
@@ -218,3 +230,35 @@ def test_rejects_unknown_strategy_family() -> None:
 
     with pytest.raises(ValueError, match="strategy_family is not registered"):
         ModelArtifact(**(artifact.model_dump() | {"strategy_family": "current-candle-winner"}))
+
+
+def test_defined_risk_vertical_requires_complete_explicit_policy() -> None:
+    _, artifact, _ = _contracts()
+    payload = artifact.model_dump()
+    payload["strategy_definition"] = payload["strategy_definition"] | {
+        "execution_kind": "defined_risk_vertical",
+        "option_vertical": OptionVerticalExecutionPolicy(
+            minimum_days_to_expiry=7,
+            maximum_days_to_expiry=60,
+            strike_band_fraction=0.05,
+            maximum_defined_loss=20.0,
+            exit_limit_fraction=0.5,
+        ).model_dump(),
+    }
+
+    parsed = ModelArtifact(**payload)
+
+    assert parsed.strategy_definition.execution_kind == "defined_risk_vertical"
+    assert parsed.strategy_definition.option_vertical is not None
+
+
+def test_defined_risk_vertical_without_policy_is_rejected() -> None:
+    _, artifact, _ = _contracts()
+    payload = artifact.model_dump()
+    payload["strategy_definition"] = payload["strategy_definition"] | {
+        "execution_kind": "defined_risk_vertical",
+        "option_vertical": None,
+    }
+
+    with pytest.raises(ValueError, match="requires option_vertical"):
+        ModelArtifact(**payload)

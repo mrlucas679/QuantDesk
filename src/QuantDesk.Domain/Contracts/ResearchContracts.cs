@@ -57,6 +57,21 @@ public sealed record ModelArtifactContract(
     };
 }
 
+public enum StrategyExecutionKind { Spot, DefinedRiskVertical }
+
+/// <summary>Exact research-approved constraints for a debit vertical lifecycle.</summary>
+public sealed record OptionVerticalExecutionPolicyContract(
+    int MinimumDaysToExpiry,
+    int MaximumDaysToExpiry,
+    decimal StrikeBandFraction,
+    decimal MaximumDefinedLoss,
+    decimal ExitLimitFraction)
+{
+    public bool IsValid() => MinimumDaysToExpiry > 0 && MaximumDaysToExpiry >= MinimumDaysToExpiry &&
+        StrikeBandFraction is > 0 and <= 1 && MaximumDefinedLoss > 0 &&
+        ExitLimitFraction is > 0 and <= 1;
+}
+
 public sealed record StrategyDefinitionContract(
     string Symbol,
     int BarDurationMinutes,
@@ -73,7 +88,13 @@ public sealed record StrategyDefinitionContract(
         && !string.IsNullOrWhiteSpace(EntryRuleVersion)
         && SignalType is "Event" or "State"
         && !string.IsNullOrWhiteSpace(Parameters)
-        && ExitPolicy.IsValid();
+        && ExitPolicy.IsValid()
+        && (ExecutionKind == StrategyExecutionKind.Spot
+            ? OptionVertical is null
+            : ExecutionKind == StrategyExecutionKind.DefinedRiskVertical && OptionVertical?.IsValid() == true);
+
+    public StrategyExecutionKind ExecutionKind { get; init; } = StrategyExecutionKind.Spot;
+    public OptionVerticalExecutionPolicyContract? OptionVertical { get; init; }
 }
 
 public sealed record ExitPolicyDefinitionContract(
@@ -118,6 +139,35 @@ public sealed record EvidenceProfileContract(
     public bool IsExecutionEligible() => TransferGrade is "A_Direct" or "B_Close";
 }
 
+/// <summary>
+/// What a published forecast says about its own reliability, and about the family behind it.
+///
+/// Three separate questions, kept separate on purpose. <see cref="StandardErrorBps"/> says how
+/// wrong today's reading could be. <see cref="HistoricalNetEdgeBps"/> says what the family actually
+/// earned after costs in research. Neither substitutes for the other, and a point forecast answers
+/// neither. See <see cref="QuantDesk.Domain.Forecasts.ForecastEdge"/> for what went wrong when one
+/// number was asked to serve all three.
+///
+/// <see cref="AssumedRoundTripCostBps"/> is what makes the arithmetic safe across the boundary. The
+/// research plane publishes a point forecast already net of the cost *it* assumed, so an execution
+/// plane that subtracts cost again charges it twice and rejects everything. Stating the assumption
+/// lets execution add it back and substitute its own measured figure -- which is the point, since
+/// execution is the only side that can measure what a round trip really costs.
+/// </summary>
+public sealed record ForecastUncertaintyContract(
+    double StandardErrorBps,
+    double HistoricalNetEdgeBps,
+    double HistoricalNetEdgeStandardErrorBps,
+    int HistoricalObservations,
+    double AssumedRoundTripCostBps)
+{
+    public bool IsValid() => double.IsFinite(StandardErrorBps) && StandardErrorBps >= 0
+        && double.IsFinite(HistoricalNetEdgeBps)
+        && double.IsFinite(HistoricalNetEdgeStandardErrorBps) && HistoricalNetEdgeStandardErrorBps >= 0
+        && HistoricalObservations > 0
+        && double.IsFinite(AssumedRoundTripCostBps) && AssumedRoundTripCostBps >= 0;
+}
+
 public sealed record ForecastSnapshotContract(
     string ExpertId,
     string ModelId,
@@ -132,6 +182,15 @@ public sealed record ForecastSnapshotContract(
     string Status,
     string? ReasonCode)
 {
+    /// <summary>
+    /// The forecast's own uncertainty and its family's demonstrated edge.
+    ///
+    /// Optional on the wire, and null is refused at the gate rather than read as certainty. A
+    /// publisher that omits this has not said the forecast is exact; it has said nothing, and
+    /// treating silence as zero error is exactly how a point estimate came to be traded as a fact.
+    /// </summary>
+    public ForecastUncertaintyContract? Uncertainty { get; init; }
+
     public bool IsValid() => !string.IsNullOrWhiteSpace(ExpertId)
         && !string.IsNullOrWhiteSpace(ModelId)
         && !string.IsNullOrWhiteSpace(ModelVersion)
@@ -141,7 +200,8 @@ public sealed record ForecastSnapshotContract(
         && !string.IsNullOrWhiteSpace(FeatureSchemaHash)
         && !string.IsNullOrWhiteSpace(ArtifactHash)
         && !string.IsNullOrWhiteSpace(Status)
-        && (string.Equals(Status, "valid", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(ReasonCode));
+        && (string.Equals(Status, "valid", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(ReasonCode))
+        && (Uncertainty is null || Uncertainty.IsValid());
 }
 
 public static class ResearchContractValidator

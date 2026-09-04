@@ -1,0 +1,38 @@
+{
+  "datasetId": "alpaca-paper-realised-cost",
+  "datasetVersion": "20260901",
+  "assetClass": "crypto",
+  "venue": "alpaca",
+  "executionMode": "PAPER",
+  "observedFrom": "2026-09-01T12:05:00+00:00",
+  "observedTo": "2026-09-01T18:40:00+00:00",
+  "buckets": [
+    {
+      "minNotional": 0,
+      "maxNotional": 25,
+      "roundTripCount": 3,
+      "medianBps": 64.0,
+      "meanBps": 66.0,
+      "upperConfidenceBps": 71.2,
+      "sourceRecordIds": [
+        "qd-entry-0001",
+        "qd-entry-0002",
+        "qd-entry-0003"
+      ]
+    },
+    {
+      "minNotional": 25,
+      "maxNotional": 100,
+      "roundTripCount": 4,
+      "medianBps": 68.0,
+      "meanBps": 68.5,
+      "upperConfidenceBps": 74.3,
+      "sourceRecordIds": [
+        "qd-entry-0004",
+        "qd-entry-0005",
+        "qd-entry-0006",
+        "qd-entry-0007"
+      ]
+    }
+  ]
+}

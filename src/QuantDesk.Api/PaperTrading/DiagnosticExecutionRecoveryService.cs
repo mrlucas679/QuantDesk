@@ -1,4 +1,5 @@
 using QuantDesk.Runtime.Persistence;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -6,7 +7,8 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class DiagnosticExecutionRecoveryService(
     DiagnosticExecutionStore store,
     CryptoDiagnosticExecutionService diagnostics,
-    ILogger<DiagnosticExecutionRecoveryService> logger) : BackgroundService
+    ILogger<DiagnosticExecutionRecoveryService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     private static readonly TimeSpan RecoveryInterval = TimeSpan.FromSeconds(1);
 
@@ -16,7 +18,7 @@ public sealed class DiagnosticExecutionRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        StartedAt = DateTimeOffset.UtcNow;
+        StartedAt = clock.UtcNow;
         await ResumeAllAsync(stoppingToken);
         using var timer = new PeriodicTimer(RecoveryInterval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
@@ -43,7 +45,6 @@ public sealed class DiagnosticExecutionRecoveryService(
             {
                 await diagnostics.AdvanceAsync(
                     record.ExperimentId,
-                    instrumentSlot: 0,
                     record.RequestedQuantity,
                     cancellationToken);
             }
@@ -58,7 +59,7 @@ public sealed class DiagnosticExecutionRecoveryService(
             }
         }
 
-        LastCycleAt = DateTimeOffset.UtcNow;
+        LastCycleAt = clock.UtcNow;
         LastError = null;
     }
 }

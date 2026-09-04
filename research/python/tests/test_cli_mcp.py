@@ -11,5 +11,8 @@ def test_mcp_cli_honors_network_port(monkeypatch):
         main()
 
     fake_mcp.run.assert_called_once_with(
-        transport="streamable-http", host="0.0.0.0", port=8123
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=8123,
+        show_banner=False,
     )

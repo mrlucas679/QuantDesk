@@ -2,9 +2,11 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 from uuid import uuid4
 
@@ -13,17 +15,29 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]  # pandas-stubs is not installed
 from numpy.typing import NDArray
 
+from quantdesk_research.backtest.equity_costs import CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED
+from quantdesk_research.backtest.realised_costs import resolve_round_trip_bps
 from quantdesk_research.contracts.feature_schema import FeatureSchema
-from quantdesk_research.contracts.forecast import Forecast
+from quantdesk_research.contracts.forecast import Forecast, ForecastUncertainty
 from quantdesk_research.contracts.model_artifact import (
     EvidenceProfile,
     ExitPolicyDefinition,
     ModelArtifact,
     StrategyDefinition,
 )
+from quantdesk_research.data.manifest_keys import (
+    require_manifest_value,
+)
 from quantdesk_research.evaluation.trial_ledger import TrialLedger
 from quantdesk_research.models.contract_publication import ContractPublisher
 from quantdesk_research.models.model_registry import ModelRegistry
+from quantdesk_research.validation.gate_evaluation import (
+    CandidateMeasurements,
+    RuntimeAttestation,
+    describe_failures,
+    evaluate_required_gates,
+    failing_gates,
+)
 
 FEATURE_NAMES = (
     "return_1",
@@ -49,6 +63,12 @@ def annual_periods(timeframe: str) -> int:
     if normalized == "1day":
         return 365
     raise ValueError(f"Unsupported research timeframe: {timeframe}")
+
+
+#: Disjoint, chronological, purged out-of-sample windows the rolling design requires before it
+#: will call a result validated. Gate R3 asks for a distribution rather than one run, and this
+#: is the number that answers it.
+OUTER_TEST_WINDOWS = 2
 
 
 @dataclass(frozen=True)
@@ -130,10 +150,14 @@ def rolling_outer_slices(row_count: int, horizon_bars: int) -> tuple[tuple[slice
     return tuple(windows)
 
 
-def conservative_lower_mean(values: NDArray[np.float64]) -> float:
+def conservative_lower_mean(values: NDArray[np.float64], one_sided_alpha: float = 0.025) -> float:
+    """Return a lower confidence bound with an explicit comparison-adjusted alpha."""
     if len(values) < 2:
         return float("-inf")
-    return float(values.mean() - 1.96 * values.std(ddof=1) / math.sqrt(len(values)))
+    if not 0 < one_sided_alpha < 1:
+        raise ValueError("one_sided_alpha must be between zero and one.")
+    critical = NormalDist().inv_cdf(1 - one_sided_alpha)
+    return float(values.mean() - critical * values.std(ddof=1) / math.sqrt(len(values)))
 
 
 def non_overlapping_returns(
@@ -175,7 +199,7 @@ def select_threshold(
 
 def run_experiment(
     data_root: Path,
-    round_trip_cost_bps: float = 60.0,
+    round_trip_cost_bps: float = CRYPTO_TAKER_ROUND_TRIP_BPS_MEASURED,
     horizon_bars: int = 12,
     manifest_name: str = "latest-manifest.json",
     experiment_name: str = "crypto-direction",
@@ -183,7 +207,7 @@ def run_experiment(
     """Validate a causal directional model against one immutable dataset manifest."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     train_slice, calibration_slice, test_slice = chronological_slices(len(frame), horizon_bars)
     features = frame.loc[:, FEATURE_NAMES].to_numpy(dtype=float)
@@ -272,7 +296,7 @@ def run_rolling_experiment(
     """Require two disjoint, chronological out-of-sample windows before promotion."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     if len(frame) < 1_000:
         raise ValueError("At least 1,000 complete observations are required.")
@@ -345,7 +369,7 @@ def run_rolling_experiment(
             "parameters": {
                 "round_trip_cost_bps": round_trip_cost_bps,
                 "horizon_bars": horizon_bars,
-                "outer_test_windows": 2,
+                "outer_test_windows": OUTER_TEST_WINDOWS,
                 "features": FEATURE_NAMES,
             },
             "dataset_hash": manifest["sha256"],
@@ -368,7 +392,7 @@ def run_rolling_persistence_baseline(
     """Evaluate a causal prior-return baseline on the identical purged rolling windows."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     target = frame["target_return"].to_numpy(dtype=float)
     predictions = frame["return_1"].to_numpy(dtype=float)
@@ -430,12 +454,16 @@ def run_rolling_low_vol_persistence_experiment(
     """Test whether momentum survives costs only in a volatility regime chosen on calibration data."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     target = frame["target_return"].to_numpy(dtype=float)
     predictions = frame["return_1"].to_numpy(dtype=float)
     volatility = frame["volatility_48"].to_numpy(dtype=float)
     costs = round_trip_cost_bps / 10_000
+    # Four caps are the complete preregistered regime-search budget. Charge them during
+    # calibration selection and untouched reporting, rather than treating the selected cap free.
+    regime_comparison_count = 4
+    regime_alpha = 0.025 / regime_comparison_count
     selected_windows: list[np.ndarray] = []
     thresholds: list[float] = []
     for _, calibration_slice, test_slice in rolling_outer_slices(len(frame), horizon_bars):
@@ -453,7 +481,7 @@ def run_rolling_low_vol_persistence_experiment(
             returns = non_overlapping_returns(
                 calibration_predictions[eligible], calibration_target[eligible], threshold, horizon_bars
             ) - costs
-            lower = conservative_lower_mean(returns)
+            lower = conservative_lower_mean(returns, regime_alpha)
             if lower > best_lower:
                 best_threshold, best_cap, best_lower = threshold, float(cap), lower
         test_eligible = volatility[test_slice] <= best_cap
@@ -466,7 +494,7 @@ def run_rolling_low_vol_persistence_experiment(
         thresholds.append(best_threshold)
     selected = np.concatenate(selected_windows)
     mean = float(selected.mean()) if len(selected) else float("-inf")
-    lower = conservative_lower_mean(selected)
+    lower = conservative_lower_mean(selected, regime_alpha)
     std = float(selected.std(ddof=1)) if len(selected) > 1 else 0.0
     sharpe = mean / std * math.sqrt(annual_periods(timeframe) / horizon_bars) if std > 0 else 0.0
     cumulative = np.cumsum(selected) if len(selected) else np.array([0.0])
@@ -494,7 +522,9 @@ def run_rolling_low_vol_persistence_experiment(
                 "round_trip_cost_bps": round_trip_cost_bps,
                 "horizon_bars": horizon_bars,
                 "volatility_caps": [0.25, 0.5, 0.75, 1.0],
-                "outer_test_windows": 2,
+                "regime_comparison_count": regime_comparison_count,
+                "one_sided_alpha": regime_alpha,
+                "outer_test_windows": OUTER_TEST_WINDOWS,
             },
             "dataset_hash": manifest["sha256"], "sharpe_ratio": evaluation.test_sharpe,
             "status": "VALIDATION_PASS" if passed else "VALIDATION_FAIL",
@@ -514,7 +544,7 @@ def run_rolling_contrarian_baseline(
     """Evaluate a causal one-bar mean-reversion signal on identical rolling windows."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
     timeframe = str(manifest.get("timeframe", "unknown")).lower()
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_frame(bars, horizon_bars)
     target = frame["target_return"].to_numpy(dtype=float)
     predictions = -frame["return_1"].to_numpy(dtype=float)
@@ -578,8 +608,8 @@ def run_rolling_cross_asset_lead_experiment(
     """Test whether ETH's completed return leads the next BTC return without look-ahead."""
     btc_manifest = json.loads((data_root / btc_manifest_name).read_text(encoding="utf-8"))
     eth_manifest = json.loads((data_root / eth_manifest_name).read_text(encoding="utf-8"))
-    btc_bars = json.loads((data_root / btc_manifest["dataFile"]).read_text(encoding="utf-8"))
-    eth_bars = json.loads((data_root / eth_manifest["dataFile"]).read_text(encoding="utf-8"))
+    btc_bars = json.loads((data_root / require_manifest_value(btc_manifest, "data_file")).read_text(encoding="utf-8"))
+    eth_bars = json.loads((data_root / require_manifest_value(eth_manifest, "data_file")).read_text(encoding="utf-8"))
     btc = build_frame(btc_bars, horizon_bars)[["t", "target_return"]]
     eth = build_feature_frame(eth_bars, horizon_bars)[["t", "return_1"]]
     frame = btc.merge(eth, on="t", how="inner").dropna().reset_index(drop=True)
@@ -620,7 +650,7 @@ def run_rolling_cross_asset_lead_experiment(
         "hypothesis_family_id": f"{experiment_name}-eth-lead-{horizon_bars}bar",
         "model_family": "cross_asset_eth_return_lead", "feature_family": "eth_return_1_only",
         "parameters": {"round_trip_cost_bps": round_trip_cost_bps, "horizon_bars": horizon_bars,
-                       "outer_test_windows": 2, "source": "ETH/USD"},
+                       "outer_test_windows": OUTER_TEST_WINDOWS, "source": "ETH/USD"},
         "dataset_hash": btc_manifest["sha256"], "sharpe_ratio": evaluation.test_sharpe,
         "status": "VALIDATION_PASS" if passed else "VALIDATION_FAIL", "git_commit": "working-tree",
         "config_hash": f"{experiment_name}-eth-lead-v1",
@@ -639,8 +669,8 @@ def run_rolling_relative_strength_experiment(
     """Test whether completed ETH-versus-BTC relative strength predicts the next BTC return."""
     btc_manifest = json.loads((data_root / btc_manifest_name).read_text(encoding="utf-8"))
     eth_manifest = json.loads((data_root / eth_manifest_name).read_text(encoding="utf-8"))
-    btc_bars = json.loads((data_root / btc_manifest["dataFile"]).read_text(encoding="utf-8"))
-    eth_bars = json.loads((data_root / eth_manifest["dataFile"]).read_text(encoding="utf-8"))
+    btc_bars = json.loads((data_root / require_manifest_value(btc_manifest, "data_file")).read_text(encoding="utf-8"))
+    eth_bars = json.loads((data_root / require_manifest_value(eth_manifest, "data_file")).read_text(encoding="utf-8"))
     btc = build_frame(btc_bars, horizon_bars)[["t", "target_return", "return_1"]]
     eth = build_feature_frame(eth_bars, horizon_bars)[["t", "return_1"]].rename(
         columns={"return_1": "eth_return_1"}
@@ -695,12 +725,20 @@ def publish_validated_directional_forecast(
     evaluation: DirectionEvaluation,
     evidence_profile: EvidenceProfile,
     strategy_family: str,
+    baseline_lower_confidence_net_bps: float | None = None,
+    round_trip_cost_bps: float = 0.0,
+    attestation_path: Path | None = None,
 ) -> None:
-    """Fit and publish only a rolling-validation-passed directional model contract bundle."""
+    """Fit and publish only a rolling-validation-passed directional model contract bundle.
+
+    Passing the statistical evaluation is necessary and not sufficient. The R-gates are evaluated
+    here from what was measured, and publication is refused by name when any of them does not pass
+    -- including the two only the execution plane can answer, which come from its attestation.
+    """
     if not evaluation.passed:
         raise ValueError("A failed evaluation cannot be promoted.")
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     training_frame = build_frame(bars, horizon_bars)
     features = training_frame.loc[:, FEATURE_NAMES].to_numpy(dtype=float)
     target = training_frame["target_return"].to_numpy(dtype=float)
@@ -743,6 +781,38 @@ def publish_validated_directional_forecast(
     )
     timeframe = str(manifest["timeframe"])
     horizon_minutes = horizon_bars * (5 if timeframe == "5Min" else 24 * 60)
+    # The gates, from what this experiment measured. The horizon is used as the alpha life because
+    # a forecast is by construction a claim about that window and nothing here measures decay
+    # faster than it. OUTER_TEST_WINDOWS is the rolling design's own count of disjoint, purged
+    # out-of-sample windows, which is what R1 and R3 are asking about.
+    gate_evidence = evaluate_required_gates(
+        CandidateMeasurements(
+            strategy_name=experiment_name,
+            lower_confidence_net_bps=evaluation.test_lower_confidence_net_bps,
+            baseline_lower_confidence_net_bps=baseline_lower_confidence_net_bps,
+            trade_count=evaluation.test_trade_count,
+            sharpe=evaluation.test_sharpe,
+            maximum_drawdown_bps=evaluation.test_max_drawdown_bps,
+            round_trip_cost_bps=round_trip_cost_bps,
+            alpha_life_minutes=float(horizon_minutes),
+            labels_purged_and_embargoed=True,
+            fit_ends_before_prediction=True,
+            trials_evaluated=1,
+            seeds_evaluated=1,
+            walk_forward_folds=OUTER_TEST_WINDOWS,
+            evidence_class="PassiveHistoricalReplay",
+            dataset_hash=evaluation.dataset_hash,
+        ),
+        evidence_profile,
+        RuntimeAttestation.load(attestation_path) if attestation_path else None,
+        evidence_id_prefix=artifact_id,
+    )
+    refused = failing_gates(gate_evidence)
+    if refused:
+        raise ValueError(
+            f"Promotion refused: required gates did not pass: {describe_failures(gate_evidence)}"
+        )
+
     artifact = ModelArtifact(
         artifact_id=artifact_id, model_id=f"{experiment_name}-lgbm", model_type="lightgbm_huber",
         strategy_family=strategy_family,
@@ -763,8 +833,8 @@ def publish_validated_directional_forecast(
         model_version="rolling-v1", feature_schema_hash=feature_hash, dataset_hash=manifest["sha256"],
         training_window={"end": manifest["end"]}, parameters={"horizon_bars": horizon_bars},
         random_seed=42, metrics=asdict(evaluation), evidence_grade=evidence_profile.transfer_grade,
-        evidence_profile=evidence_profile, validation_gates=["R0", "R1", "R2", "R4"],
-        validation_evidence={},
+        evidence_profile=evidence_profile, validation_gates=sorted(gate_evidence),
+        validation_evidence=gate_evidence,
         support_domain={"instrument": manifest["symbol"], "timeframe": timeframe},
         git_commit="working-tree", config_hash=f"{experiment_name}-rolling-v1",
         creation_timestamp=datetime.now(UTC), artifact_hash=artifact_hash,
@@ -780,6 +850,7 @@ def publish_validated_directional_forecast(
         instrument=manifest["symbol"], as_of_time=forecast_time.to_pydatetime(),
         forecast_family="directional_return_bps", horizon_minutes=horizon_minutes,
         point_forecast=point_forecast, confidence=0.75, calibration_status="rolling_oos_pass",
+        uncertainty=_forecast_uncertainty(evaluation),
         support_domain_status="in_domain", feature_schema_hash=feature_hash,
         artifact_hash=artifact_hash, status="valid",
     )
@@ -790,14 +861,30 @@ def publish_validated_directional_forecast(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, default=Path("data"))
-    parser.add_argument("--round-trip-cost-bps", type=float, default=60.0)
+    parser.add_argument(
+        "--round-trip-cost-bps",
+        type=float,
+        default=None,
+        help=(
+            "Override the measured round-trip cost. Without this the cost is read from the "
+            "published realised-cost dataset; there is deliberately no default, because a "
+            "plausible-looking constant is how an assumed 60 bps outlived a measured 68."
+        ),
+    )
     parser.add_argument("--horizon-bars", type=int, default=12)
     parser.add_argument("--manifest-name", default="latest-manifest.json")
     parser.add_argument("--experiment-name", default="crypto-direction")
     arguments = parser.parse_args()
+
+    # Resolved here rather than defaulted in the parser, so the run reports which of the two it got.
+    cost_bps, provenance = resolve_round_trip_bps(
+        arguments.data_root, arguments.round_trip_cost_bps
+    )
+    print(f"round-trip cost: {provenance}", file=sys.stderr)
+
     result = run_experiment(
         arguments.data_root,
-        arguments.round_trip_cost_bps,
+        cost_bps,
         arguments.horizon_bars,
         arguments.manifest_name,
         arguments.experiment_name,
@@ -808,3 +895,32 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _forecast_uncertainty(evaluation: DirectionEvaluation) -> ForecastUncertainty:
+    """State how wrong this forecast could be, and what the model actually earned.
+
+    Two things are being said, and they are not the same thing. ``point_forecast`` above is the
+    model's raw per-bar prediction -- gross, owing nothing to any cost assumption, which is why
+    ``assumed_round_trip_cost_bps`` is zero here and non-zero for the deterministic-rule publisher
+    whose forecast is already net. ``historical_net_edge_bps`` is what the model's trades actually
+    returned after costs across the validation window, which is the only evidence that the
+    predictions are worth acting on at all.
+
+    The standard error is the dispersion of those realised trades, not of the model's residuals. It
+    is the honest proxy: a per-bar prediction interval would describe how well the model fits, while
+    what a trading decision needs to know is how much the *outcomes* of acting on it have varied.
+    It is recovered from the same bound the promotion gates were applied against, so the published
+    figure cannot disagree with the one that qualified the model.
+    """
+    critical = NormalDist().inv_cdf(1 - 0.025)
+    standard_error = max(
+        (evaluation.test_mean_net_bps - evaluation.test_lower_confidence_net_bps) / critical, 0.0
+    )
+    return ForecastUncertainty(
+        standard_error_bps=standard_error,
+        historical_net_edge_bps=evaluation.test_mean_net_bps,
+        historical_net_edge_standard_error_bps=standard_error,
+        historical_observations=evaluation.test_trade_count,
+        assumed_round_trip_cost_bps=0.0,
+    )

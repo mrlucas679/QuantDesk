@@ -5,6 +5,7 @@ using QuantDesk.Domain.Strategies;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
 using QuantDesk.Runtime.Tests.TestData;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Runtime.Tests.Strategies;
 
@@ -20,7 +21,7 @@ public sealed class DirectionalStrategyCompilerTests
         Assert.True(Probability.TryCreate(0.2, out Probability down));
         var forecast = new DirectionalForecast(metadata, 50, 0.01, up, neutral, down, 0.8);
         var bundle = new ForecastBundle(0, 1, forecast);
-        var compiler = new DirectionalStrategyCompiler(new Usd(1_000), 0.02, TimeSpan.FromMinutes(1));
+        var compiler = new DirectionalStrategyCompiler(new Usd(1_000), 0.02, TimeSpan.FromMinutes(1), new LiveRuntimeClock());
         TradeCandidate[] destination = new TradeCandidate[1];
 
         int written = compiler.Compile(bundle, FinancialTestData.HealthyMarket(), FinancialTestData.Portfolio(),
@@ -37,7 +38,7 @@ public sealed class DirectionalStrategyCompilerTests
         Assert.True(Probability.TryCreate(0.6, out Probability up));
         Assert.True(Probability.TryCreate(0.2, out Probability neutral));
         Assert.True(Probability.TryCreate(0.2, out Probability down));
-        var compiler = new DirectionalStrategyCompiler(new Usd(1_000), 0.02, TimeSpan.FromMinutes(1));
+        var compiler = new DirectionalStrategyCompiler(new Usd(1_000), 0.02, TimeSpan.FromMinutes(1), new LiveRuntimeClock());
 
         int written = compiler.Compile(
             new ForecastBundle(0, 1, new DirectionalForecast(metadata, 50, 0.01, up, neutral, down, 0.8)),

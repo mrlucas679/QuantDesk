@@ -6,6 +6,7 @@ from quantdesk_research.experiments.crypto_direction import (
     build_feature_frame,
     build_frame,
     chronological_slices,
+    conservative_lower_mean,
     non_overlapping_returns,
     rolling_outer_slices,
     run_rolling_contrarian_baseline,
@@ -62,6 +63,15 @@ def test_selected_trade_returns_do_not_overlap():
     )
 
     assert selected.tolist() == [0.1, 0.4]
+
+
+def test_regime_comparison_budget_makes_the_lower_bound_stricter():
+    returns = np.array([0.004, 0.002, -0.001, 0.003, 0.001, 0.002])
+
+    unadjusted = conservative_lower_mean(returns)
+    four_cap_adjusted = conservative_lower_mean(returns, 0.025 / 4)
+
+    assert four_cap_adjusted < unadjusted
 
 
 def test_rolling_test_windows_exclude_targets_that_cross_their_boundary():

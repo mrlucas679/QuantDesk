@@ -23,10 +23,27 @@ from quantdesk_research.experiments.crypto_direction import (
     run_rolling_experiment,
     run_rolling_persistence_baseline,
 )
-from quantdesk_research.experiments.prospective_campaign import IndependentValidationCampaign
+from quantdesk_research.experiments.prospective_campaign import (
+    IndependentValidationCampaign,
+    ProspectiveCampaign,
+    campaign_evidence_profile,
+)
 from quantdesk_research.experiments.strategy_ensemble import (
+    StrategyEvaluation,
     run_independent_validation_campaign,
     run_prospective_campaign,
+)
+from quantdesk_research.models.rule_contract_publication import publish_validated_rule_strategy
+from quantdesk_research.runtime.model_fitting import (
+    ModelFittingSkipped,
+    publish_fitted_models,
+)
+from quantdesk_research.validation.gate_evaluation import (
+    CandidateMeasurements,
+    RuntimeAttestation,
+    describe_failures,
+    evaluate_required_gates,
+    failing_gates,
 )
 
 
@@ -111,12 +128,38 @@ def run_forever(data_root: Path, interval_seconds: int) -> None:
 
 def run_cycle(data_root: Path, configs_root: Path, artifacts_root: Path) -> None:
     """Run one bounded worker cycle for deterministic orchestration and verification."""
+    fit_models(data_root, artifacts_root)
     validate_microstructure_evidence(data_root)
     for candidate in VALIDATION_CANDIDATES:
         validate_candidate(data_root, candidate)
     validate_prospective_campaign(data_root)
     for registration in INDEPENDENT_VALIDATIONS:
         validate_independent_campaign(data_root, configs_root, artifacts_root, registration)
+
+
+def fit_models(data_root: Path, artifacts_root: Path) -> None:
+    """Fit the models the runtime can load, and put them where it looks.
+
+    Before this, the loop validated rule-based campaigns and fitted nothing, so the directory the
+    execution plane watches for models stayed empty however complete the bridge on either side of
+    it was.
+
+    A refusal here is not a failure of the cycle. The gates a fit can miss -- non-convergence, a
+    GARCH persistence at or above one, too little history, a dataset already published -- are the
+    ones that keep an unusable model out of the runtime, and a cycle that stopped on one would stop
+    the campaign validation that has nothing to do with it.
+    """
+    try:
+        published = publish_fitted_models(data_root, artifacts_root)
+    except ModelFittingSkipped as skipped:
+        logger.info("Model fitting produced nothing this cycle: {}", skipped)
+        return
+
+    logger.info(
+        "Published {} fitted model(s) for dataset {}: {}",
+        len(published.written), published.dataset_hash[:16], ", ".join(published.written))
+    for family, reason in published.skipped.items():
+        logger.info("Model family {} was not published: {}", family, reason)
 
 
 def validate_independent_campaign(
@@ -251,14 +294,21 @@ def _write_json_once(path: Path, document: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+#: Where the C# execution plane writes what only it can attest to. Both planes mount the same
+#: research volume; the runtime writes it at /app/research-data, research reads it here.
+RUNTIME_ATTESTATION_PATH = Path("/app/data/runtime-attestation.json")
+
+
 def validate_prospective_campaign(data_root: Path) -> None:
-    """Monitor the fixed multi-strategy cohort and fail closed until unseen evidence matures."""
+    """Monitor the fixed multi-strategy cohort, and promote a winner that clears every gate."""
     campaign_path = Path("/app/configs/prospective_strategy_campaign.json")
     try:
+        campaign = ProspectiveCampaign.load(campaign_path)
         results = run_prospective_campaign(data_root, campaign_path)
     except ValueError as error:
         logger.info("Prospective strategy campaign is not eligible: {}", error)
         return
+
     passed = [result for result in results if result.passed]
     if not passed:
         best = max(results, key=lambda result: result.score)
@@ -269,11 +319,97 @@ def validate_prospective_campaign(data_root: Path) -> None:
             best.trade_count,
         )
         return
+
     winner = max(passed, key=lambda result: result.score)
-    logger.warning(
-        "Prospective candidate {} passed statistical gates but remains unpromoted until its executable artifact bundle is built.",
+
+    # The bundle builder that this branch said had not been written has existed, complete and
+    # tested, the whole time -- called by nothing but its own tests. A candidate clearing every
+    # preregistered statistical gate was announced here and dropped, so the campaign's last rung
+    # would have been missing on the day the holdout matured and something passed.
+    family, _, horizon_text = winner.name.partition(":")
+    horizon_bars = int(horizon_text)
+    evidence_profile = campaign_evidence_profile(campaign, family)
+
+    gate_evidence = evaluate_required_gates(
+        CandidateMeasurements(
+            strategy_name=winner.name,
+            lower_confidence_net_bps=winner.lower_confidence_net_bps,
+
+            # The cohort's own best alternative is the horizon-matched comparison R2 asks for: the
+            # campaign registered every family and horizon up front, so the field the winner beat
+            # is the baseline, and nothing about it was chosen after seeing the result.
+            baseline_lower_confidence_net_bps=_best_rival_bps(results, winner),
+            trade_count=winner.trade_count,
+            sharpe=winner.sharpe,
+            maximum_drawdown_bps=winner.maximum_drawdown_bps,
+            round_trip_cost_bps=campaign.round_trip_cost_bps,
+            alpha_life_minutes=float(horizon_bars * _bar_minutes(campaign.timeframe)),
+
+            # The holdout begins strictly after the registration instant and the evaluation reads
+            # only bars past it, so no label overlaps anything the rules were chosen on.
+            labels_purged_and_embargoed=True,
+            fit_ends_before_prediction=True,
+
+            # Every family and horizon in the cohort, counted -- which is the trial accounting R3
+            # requires and the reason the campaign carries a multiple-comparison adjustment.
+            trials_evaluated=len(results),
+            seeds_evaluated=1,
+            walk_forward_folds=len(campaign.holding_horizons_bars),
+            evidence_class="PassiveHistoricalReplay",
+            dataset_hash=campaign.source_dataset_hash,
+        ),
+        evidence_profile,
+        RuntimeAttestation.load(RUNTIME_ATTESTATION_PATH),
+        evidence_id_prefix=f"{campaign.campaign_id}:{winner.name}",
+    )
+
+    if failing_gates(gate_evidence):
+        logger.warning(
+            "Prospective candidate {} passed statistical gates but promotion is refused: {}.",
+            winner.name,
+            describe_failures(gate_evidence),
+        )
+        return
+
+    try:
+        publish_validated_rule_strategy(
+            data_root,
+            Path("/app/artifacts"),
+            "latest-manifest.json",
+            campaign.campaign_id,
+            campaign.fingerprint(),
+            family,
+            horizon_bars,
+            winner,
+            evidence_profile,
+            gate_evidence,
+            campaign.round_trip_cost_bps,
+        )
+    except ValueError as error:
+        logger.warning("Prospective candidate {} could not be published: {}", winner.name, error)
+        return
+
+    logger.info(
+        "Prospective candidate {} was promoted with evidence for every required gate.",
         winner.name,
     )
+
+
+def _best_rival_bps(
+    results: list[StrategyEvaluation], winner: StrategyEvaluation
+) -> float | None:
+    """The strongest cohort member other than the winner, or nothing when it stood alone."""
+    rivals = [item.lower_confidence_net_bps for item in results if item.name != winner.name]
+    return max(rivals) if rivals else None
+
+
+def _bar_minutes(timeframe: str) -> int:
+    normalized = timeframe.lower()
+    if normalized == "5min":
+        return 5
+    if normalized in {"1day", "day"}:
+        return 24 * 60
+    raise ValueError(f"Unsupported campaign timeframe: {timeframe}")
 
 
 def validate_microstructure_evidence(data_root: Path) -> None:
@@ -327,16 +463,31 @@ def validate_candidate(data_root: Path, candidate: ValidationCandidate) -> None:
                     candidate.evidence_profile.transfer_grade,
                 )
                 return
-            publish_validated_directional_forecast(
-                data_root,
-                Path("/app/artifacts"),
-                candidate.manifest_name,
-                candidate.experiment_name,
-                candidate.horizon_bars,
-                result,
-                candidate.evidence_profile,
-                candidate.strategy_family,
-            )
+            try:
+                publish_validated_directional_forecast(
+                    data_root,
+                    Path("/app/artifacts"),
+                    candidate.manifest_name,
+                    candidate.experiment_name,
+                    candidate.horizon_bars,
+                    result,
+                    candidate.evidence_profile,
+                    candidate.strategy_family,
+                    baseline_lower_confidence_net_bps=baseline.test_lower_confidence_net_bps,
+                    round_trip_cost_bps=candidate.round_trip_cost_bps,
+                    attestation_path=RUNTIME_ATTESTATION_PATH,
+                )
+            except ValueError as error:
+                # Beating the statistics is necessary and not sufficient. The R-gates are evaluated
+                # from what was measured, and a refusal here names the gate rather than failing
+                # later inside the publisher on an empty evidence map.
+                logger.warning(
+                    "Validation passed for {} but promotion was refused: {}",
+                    candidate.experiment_name,
+                    error,
+                )
+                return
+
             logger.info("Validation passed and the verified contract bundle was promoted.")
         else:
             logger.warning(

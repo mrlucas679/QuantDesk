@@ -1,6 +1,7 @@
 using System.Text.Json;
 using QuantDesk.Domain.Market;
 using QuantDesk.Runtime.Ingestion;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -11,9 +12,10 @@ namespace QuantDesk.Api.PaperTrading;
 public sealed class MicrostructureEvidenceCaptureService(
     MicrostructureEvidenceBuffer buffer,
     PaperTradingOptions options,
-    ILogger<MicrostructureEvidenceCaptureService> logger) : BackgroundService
+    ILogger<MicrostructureEvidenceCaptureService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = QuantDesk.Domain.Serialization.ContractJson.Web;
     private long _recordedGapCount;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -38,11 +40,11 @@ public sealed class MicrostructureEvidenceCaptureService(
             return;
 
         var gap = new MicrostructureEvidenceGapRecord(
-            DateTimeOffset.UtcNow,
+            clock.UtcNow,
             snapshot.GapCount,
             snapshot.LastGapReason ?? "unknown",
             snapshot.LastGapMonotonicTicks);
-        await AppendAsync("microstructure-gaps", "capture-gaps", gap, cancellationToken);
+        await AppendAsync("microstructure-gaps", "capture-gaps", gap, clock.UtcNow, cancellationToken);
         _recordedGapCount = snapshot.GapCount;
         logger.LogWarning("Recorded microstructure evidence gap {GapCount}: {ReasonCode}.", gap.GapCount, gap.ReasonCode);
     }
@@ -50,7 +52,7 @@ public sealed class MicrostructureEvidenceCaptureService(
     private Task AppendOrderBookAsync(OrderBookEvent orderBook, string symbol, CancellationToken cancellationToken)
     {
         var record = new OrderBookEvidenceRecord(
-            DateTimeOffset.UtcNow,
+            clock.UtcNow,
             symbol,
             orderBook.EventUnixNanoseconds,
             orderBook.SourceSequence,
@@ -59,16 +61,16 @@ public sealed class MicrostructureEvidenceCaptureService(
             orderBook.BidDepth,
             orderBook.AskDepth);
         string safeSymbol = new string(symbol.Where(char.IsAsciiLetterOrDigit).ToArray()).ToLowerInvariant();
-        return AppendAsync("orderbook-events", safeSymbol, record, cancellationToken);
+        return AppendAsync("orderbook-events", safeSymbol, record, clock.UtcNow, cancellationToken);
     }
 
     private static async Task AppendAsync(
         string directoryName,
         string filePrefix,
         object record,
+        DateTimeOffset capturedAt,
         CancellationToken cancellationToken)
     {
-        DateTimeOffset capturedAt = DateTimeOffset.UtcNow;
         string root = Environment.GetEnvironmentVariable("QUANTDESK_RESEARCH_DATA_ROOT") ?? "/app/research-data";
         string directory = Path.Combine(root, directoryName);
         Directory.CreateDirectory(directory);

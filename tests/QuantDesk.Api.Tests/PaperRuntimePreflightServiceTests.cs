@@ -1,6 +1,7 @@
 using QuantDesk.Api.PaperTrading;
 using QuantDesk.Domain.Execution;
 using QuantDesk.Runtime.Modes;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.Tests;
 
@@ -9,7 +10,7 @@ public sealed class PaperRuntimePreflightServiceTests
     [Fact]
     public async Task NonPaperGatewayCannotSetPaperVerification()
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         var service = CreateService(new FakeBroker(false), readiness);
 
         await service.CheckOnceAsync(CancellationToken.None);
@@ -21,7 +22,7 @@ public sealed class PaperRuntimePreflightServiceTests
     [Fact]
     public async Task UnexplainedPositionCannotSetBrokerReconciliation()
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         var broker = new FakeBroker(true)
         {
             Positions = [new BrokerPositionSnapshot("BTC/USD", 1, 0.001m, 100_000m)]
@@ -37,7 +38,7 @@ public sealed class PaperRuntimePreflightServiceTests
     [Fact]
     public async Task HealthyFlatPaperAccountSetsBrokerReadiness()
     {
-        var readiness = new FullSystemReadinessState();
+        var readiness = new FullSystemReadinessState(new LiveRuntimeClock());
         var service = CreateService(new FakeBroker(true), readiness);
 
         await service.CheckOnceAsync(CancellationToken.None);

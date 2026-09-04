@@ -41,7 +41,8 @@ internal static class FinancialTestData
         MaximumAbsDollarGamma1Pct: 100_000,
         MaximumAbsDollarVega1Vol: 100_000,
         MaximumRelativeSpread: 0.05,
-        MaximumShortConvexityScore: 1);
+        MaximumShortConvexityScore: 1,
+        MaximumCorrelatedExposure: new Usd(100_000));
 
     public static TradeCandidate Candidate(decimal stressLoss = 100, decimal notional = 500) => new(
         CandidateId: 1,

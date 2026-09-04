@@ -119,6 +119,34 @@ public sealed class MarketStateStore
         return validation;
     }
 
+    /// <summary>
+    /// Marks every instrument's evidence as gapped, because the feed stopped and started again.
+    ///
+    /// This venue publishes no usable sequence number -- crypto quotes and order books carry a
+    /// constant zero and trades carry what looks like a hashed id -- so a dropped message is
+    /// undetectable from the messages themselves. Measured over a live session: 16,396 order-book
+    /// events on one instrument, every consecutive sequence delta zero.
+    ///
+    /// A disconnection is therefore the only evidence of loss the feed offers. An unknown number of
+    /// updates happened while the socket was down, so on reconnect the book on hand is not the
+    /// venue's book, and it is not merely old -- it is wrong by an unknown amount, which is worse,
+    /// because staleness at least shows up in a timestamp. Until a fresh event arrives for an
+    /// instrument, nothing may trade on it.
+    ///
+    /// Without this the snapshots kept reporting Healthy across a reconnect, carrying the
+    /// pre-disconnect book forward as though nothing had happened.
+    /// </summary>
+    public void MarkStreamInterrupted()
+    {
+        foreach (InstrumentState state in _states)
+        {
+            state.QuoteQuality = DataQuality.GapDetected;
+            state.TradeQuality = DataQuality.GapDetected;
+            state.OrderBookQuality = DataQuality.GapDetected;
+            state.Version++;
+        }
+    }
+
     public InstrumentSnapshot Snapshot(int instrumentSlot)
     {
         InstrumentState state = GetState(instrumentSlot);

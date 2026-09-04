@@ -8,6 +8,7 @@ using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Portfolio;
 using QuantDesk.Runtime.Positions;
 using QuantDesk.Runtime.Tests.TestData;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Runtime.Tests.Integration;
 
@@ -24,7 +25,7 @@ public sealed class PaperTradingLifecycleTests
         Assert.Equal(-12, ledger.Snapshot().Positions[0].UnrealizedPnl.Value);
 
         var plan = new PositionManagementPlan(TimeSpan.FromMinutes(5), false, false, new Usd(10), null, "exit-v1");
-        ExitEvaluation exit = new ExitEngine().Evaluate(plan, 0, 1, ledger.Snapshot().Positions[0].UnrealizedPnl, true, true);
+        ExitEvaluation exit = new ExitEngine(new LiveRuntimeClock()).Evaluate(plan, 0, 1, ledger.Snapshot().Positions[0].UnrealizedPnl, true, true);
         Assert.True(exit.ShouldExit);
         Assert.Equal(ExitReason.MaximumAdverseLoss, exit.Reason);
     }

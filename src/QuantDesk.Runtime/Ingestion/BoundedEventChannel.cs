@@ -10,6 +10,7 @@ public sealed class BoundedEventChannel<T>
     private readonly object _bookkeepingGate = new();
     private int _depth;
     private int _highWater;
+    private long _rejected;
     private long _oldestEnqueuedTicks;
 
     public BoundedEventChannel(int capacity)
@@ -35,11 +36,28 @@ public sealed class BoundedEventChannel<T>
 
     public int HighWater => Volatile.Read(ref _highWater);
 
+    /// <summary>
+    /// How many events this channel refused because it was full.
+    ///
+    /// Gate R12 asks whether queues are bounded, and a capacity alone does not answer it: every
+    /// channel here is bounded by construction, so the property that actually matters is whether
+    /// the bound was ever reached. A non-zero count means the runtime dropped market data it had
+    /// already received, which is a different and worse thing than being slow.
+    /// </summary>
+    public long Rejected => Interlocked.Read(ref _rejected);
+
+    /// <summary>True when the bound has never been reached.</summary>
+    public bool WithinBounds => Rejected == 0;
+
     public bool TryPublish(T value, long monotonicTimestamp)
     {
         lock (_bookkeepingGate)
         {
-            if (!_channel.Writer.TryWrite(new Entry(value, monotonicTimestamp))) return false;
+            if (!_channel.Writer.TryWrite(new Entry(value, monotonicTimestamp)))
+            {
+                Interlocked.Increment(ref _rejected);
+                return false;
+            }
 
             _timestamps.Enqueue(monotonicTimestamp);
             int depth = Interlocked.Increment(ref _depth);

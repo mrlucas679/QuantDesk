@@ -1,10 +1,40 @@
 services:
+  # Populates the research-data volume from the datasets committed to this repository, then exits.
+  # Without it a fresh machine starts with an empty volume and every research service has nothing
+  # to read, which is the difference between "clone and run" and "clone, then hunt for data".
+  # Re-running is safe: existing files are not overwritten.
+  quantdesk-dataset-seed:
+    image: alpine:3.20
+    # BusyBox cp -n silently copies nothing, so idempotency is an explicit emptiness check
+    # rather than a no-clobber flag. A dataset already present is left untouched.
+    command:
+      - sh
+      - -c
+      - >-
+        set -e;
+        for dataset in /seed-source/*/; do
+          name=$$(basename "$$dataset");
+          if [ -d "/seed-target/$$name" ] && [ -n "$$(ls -A "/seed-target/$$name" 2>/dev/null)" ]; then
+            echo "dataset already present: $$name";
+          else
+            mkdir -p "/seed-target/$$name";
+            cp -r "$$dataset". "/seed-target/$$name/";
+            echo "seeded dataset: $$name ($$(ls -1 "/seed-target/$$name" | wc -l) files)";
+          fi;
+        done
+    volumes:
+      - ./research/python/data:/seed-source:ro
+      - quantdesk-research-data:/seed-target
+    restart: "no"
+
   quantdesk-research:
     build:
       context: research/python
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      # Agent harnesses on this machine can connect; other LAN hosts cannot reach the unauthenticated
+      # research surface. Container peers still use quantdesk-research:8000 on the Compose network.
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         - CMD
@@ -24,6 +54,9 @@ services:
     volumes:
       - quantdesk-research-data:/app/data
       - quantdesk-research-artifacts:/app/artifacts
+    depends_on:
+      quantdesk-dataset-seed:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   quantdesk-research-worker:
@@ -36,6 +69,15 @@ services:
       QUANTDESK_ENABLE_ALPACA: "false"
       # Keep the worker's HMM capability identical to the research API.
       LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+      # The commit a fitted model artifact was produced by. The exporter refuses to write one
+      # without it: an artifact that cannot name the code behind it cannot be traced back from a
+      # live decision, which is most of what its manifest is for.
+      # No default. A hardcoded fallback here did two kinds of damage at once: every artifact
+      # claimed a commit that had not produced it for weeks, and -- because the republish key is
+      # (dataset_hash, git_commit) -- a change to the fitting code never republished, so a stale
+      # artifact the runtime had begun refusing could not be replaced. The Python side already
+      # refuses to invent this value; the fallback was inventing it on the way in.
+      QUANTDESK_GIT_COMMIT: ${QUANTDESK_GIT_COMMIT:?set it to the deploying commit, e.g. $(git rev-parse --short HEAD)}
     volumes:
       - quantdesk-research-data:/app/data
       - quantdesk-research-artifacts:/app/artifacts
@@ -43,6 +85,14 @@ services:
       quantdesk-research:
         condition: service_healthy
     restart: unless-stopped
+
+  quantdesk-fault-campaign:
+    build:
+      context: .
+      dockerfile: Dockerfile.fault-campaign
+    volumes:
+      - quantdesk-runtime-data:/runtime-data
+    restart: "no"
 
   quantdesk-api:
     build:
@@ -63,53 +113,97 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # Credentials come from the .env file directly, not from ${...} interpolation.
+    #
+    # Interpolation reads the *shell* environment first and only falls back to .env, so a stale
+    # APCA_API_KEY_ID left in a user's environment silently overrides the file they just edited. That
+    # happened: the CLI (reading .env) authenticated while this container 401'd on a key/secret pair
+    # assembled from two different generations, and nothing in either place looked wrong.
+    #
+    # env_file loads the file into the container without consulting the shell at all, which makes .env
+    # the single source of truth for credentials and this class of confusion impossible.
+    env_file:
+      - .env
+    # Only values that must differ inside the container, or that .env does not define, are set here.
+    #
+    # Anything listed under `environment:` overrides `env_file`, so every `${VAR:-default}` entry
+    # silently replaced the operator's .env value with a shell value or a hardcoded default. That cost
+    # a working operator key (blank -> 401 on every operator endpoint) and, before it, a working
+    # Alpaca credential pair. Duplicating a .env key here does not add a default; it takes control away
+    # from the file the operator edits.
     environment:
-      APCA_API_BASE_URL: ${APCA_API_BASE_URL:?Set APCA_API_BASE_URL to the Alpaca paper endpoint}
-      APCA_API_KEY_ID: ${APCA_API_KEY_ID:?Set APCA_API_KEY_ID outside this file}
-      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:?Set APCA_API_SECRET_KEY outside this file}
       # Blank means operator-only endpoints fail closed; autonomous execution never uses this key.
-      QUANTDESK_OPERATOR_KEY: ${QUANTDESK_OPERATOR_KEY:-}
-      QUANTDESK_SYMBOLS: ${QUANTDESK_SYMBOLS:-SPY,BTC/USD}
-      QUANTDESK_MAX_PAPER_ORDER_NOTIONAL: ${QUANTDESK_MAX_PAPER_ORDER_NOTIONAL:-1000}
       # Alpaca rejected a $5 BTC/USD diagnostic below its $10 minimum on 2026-08-31.
-      QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL: ${QUANTDESK_DIAGNOSTIC_MAX_NOTIONAL:-10}
       QUANTDESK_DIAGNOSTIC_STORE_PATH: /app/runtime-data/diagnostic-executions.json
-      QUANTDESK_AUTONOMOUS_ENABLED: ${QUANTDESK_AUTONOMOUS_ENABLED:-false}
-      QUANTDESK_AUTONOMOUS_MODE: ${QUANTDESK_AUTONOMOUS_MODE:-ExperimentalPaper}
-      QUANTDESK_EXPERIMENT_ID: ${QUANTDESK_EXPERIMENT_ID:-EXP-001}
-      QUANTDESK_HYPOTHESIS_ID: ${QUANTDESK_HYPOTHESIS_ID:-QD-CAUSAL-MOMENTUM-001}
-      QUANTDESK_STRATEGY_VERSION: ${QUANTDESK_STRATEGY_VERSION:-EXP-001-v1}
-      QUANTDESK_EVIDENCE_REFERENCE: ${QUANTDESK_EVIDENCE_REFERENCE:-research.md#iteration-3}
-      QUANTDESK_EXPERIMENT_REGISTERED_AT: ${QUANTDESK_EXPERIMENT_REGISTERED_AT:-2026-08-30T00:00:00Z}
-      QUANTDESK_LEAKAGE_SANITY_PASSED: ${QUANTDESK_LEAKAGE_SANITY_PASSED:-true}
-      QUANTDESK_REPLAY_SANITY_PASSED: ${QUANTDESK_REPLAY_SANITY_PASSED:-true}
-      QUANTDESK_AUTONOMOUS_SYMBOL: ${QUANTDESK_AUTONOMOUS_SYMBOL:-BTC/USD}
-      QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL: ${QUANTDESK_AUTONOMOUS_ORDER_NOTIONAL:-20}
+      # Durable execution records for the multi-leg and spot lanes. Both live on the runtime-data
+      # volume so recovery survives a container restart rather than only a process restart.
+      QUANTDESK_MLEG_STORE_PATH: /app/runtime-data/mleg-executions.json
+      QUANTDESK_SPOT_STORE_PATH: /app/runtime-data/spot-executions.json
+      QUANTDESK_FAULT_CAMPAIGN_PATH: /app/runtime-data/fault-campaign.json
+      QUANTDESK_AGENT_STORE_PATH: /app/runtime-data/agent-runs.json
+      # Agent providers are opt-in and configured entirely from .env, deliberately not here.
+      #
+      # QUANTDESK_AGENTS_ENABLED, QUANTDESK_AGENT_BASE_URL and QUANTDESK_AGENT_MODEL used to sit in
+      # this block as ${VAR:-default}, which is the exact pattern the comment above this section
+      # describes as having cost a working operator key and an Alpaca credential pair: interpolation
+      # consults the shell first, so a stale shell value silently replaced whatever the operator had
+      # just written in .env, and the hardcoded default replaced it when neither was set.
+      #
+      # It was not hypothetical here either. The default was `qwen3:8b`, an Ollama tag, while .env
+      # documents Featherless -- whose model identifiers are of the form provider/model-id. An
+      # operator setting the key and the model in .env would have had the model quietly replaced by
+      # a name their provider has never heard of, and read the resulting failure as a bad key.
+      #
+      # env_file loads .env without consulting the shell at all, so leaving these out of this block
+      # is what makes the file the operator edits the one that decides.
+      # No execution symbol is implicit. Disabled research services retain their own BTC/USD
+      # dataset fallback, but enabling autonomy requires an explicit chosen symbol.
+      # Spot holds the instrument; DefinedRiskVertical expresses the view as a debit spread.
+      # Also the hard cap on what one opportunity can lose. A vertical needs 500; at 20 every
+      # spread is refused as uneconomic once per-contract fees are counted.
       # This is a long safety expiry, not an entry/exit timer. Thesis, regime, and loss rules manage exits.
-      QUANTDESK_AUTONOMOUS_MAX_HOLDING_HOURS: ${QUANTDESK_AUTONOMOUS_MAX_HOLDING_HOURS:-2}
-      QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS: ${QUANTDESK_AUTONOMOUS_FILL_TIMEOUT_SECONDS:-30}
-      QUANTDESK_AUTONOMOUS_CYCLE_INTERVAL_SECONDS: ${QUANTDESK_AUTONOMOUS_CYCLE_INTERVAL_SECONDS:-60}
       QUANTDESK_RESEARCH_BASE_URL: http://quantdesk-research:8000
       QUANTDESK_RESEARCH_DATA_ROOT: /app/research-data
       QUANTDESK_RESEARCH_ARTIFACT_ROOT: /app/research-artifacts
       QUANTDESK_RESEARCH_LOOKBACK_DAYS: ${QUANTDESK_RESEARCH_LOOKBACK_DAYS:-180}
+      # Research requires SIP and rejects anything else; IEX is the default because SIP is paid.
       # Bound authenticated quote collection while building the next point-in-time research dataset.
       QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS: ${QUANTDESK_QUOTE_CAPTURE_INTERVAL_SECONDS:-5}
+      # Where each session's replay log is written. On a volume rather than the container
+      # filesystem, because the start-up replay reads the *previous* session -- and a log that died
+      # with the container it was written in would leave nothing to replay after every restart,
+      # which is precisely when the check is worth running.
+      QUANTDESK_REPLAY_LOG_ROOT: /app/replay-logs
     volumes:
       - quantdesk-runtime-data:/app/runtime-data
       - quantdesk-research-data:/app/research-data
       - quantdesk-research-artifacts:/app/research-artifacts:ro
+      - quantdesk-replay-logs:/app/replay-logs
     depends_on:
       quantdesk-research:
+        condition: service_healthy
+      quantdesk-fault-campaign:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  quantdesk-dashboard:
+    build:
+      context: dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      quantdesk-api:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
+  # One replay log per session, kept across restarts so the previous one can be replayed.
+  quantdesk-replay-logs:
   quantdesk-runtime-data:
     name: quantdesk-runtime-data
   quantdesk-research-data:
     name: quantdesk-research-data
-    external: true
   quantdesk-research-artifacts:
     name: quantdesk-research-artifacts
     external: true

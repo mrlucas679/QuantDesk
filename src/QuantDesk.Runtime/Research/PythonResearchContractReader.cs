@@ -54,7 +54,7 @@ public static class PythonResearchContractReader
     {
         JsonElement root = RequireObject(definition);
         JsonElement exit = RequireObject(RequireProperty(root, "exit_policy"));
-        return new StrategyDefinitionContract(
+        var contract = new StrategyDefinitionContract(
             RequirePropertyString(root, "symbol"),
             RequirePositiveInt(root, "bar_duration_minutes"),
             RequirePositiveInt(root, "forecast_horizon_minutes"),
@@ -66,7 +66,25 @@ public static class PythonResearchContractReader
                 RequirePositiveInt(exit, "maximum_holding_minutes"),
                 RequireBoolean(exit, "exit_on_thesis_invalidation"),
                 RequireBoolean(exit, "exit_on_regime_change")));
+        string executionKind = OptionalString(root, "execution_kind") ?? "spot";
+        return executionKind switch
+        {
+            "spot" => contract,
+            "defined_risk_vertical" => contract with
+            {
+                ExecutionKind = StrategyExecutionKind.DefinedRiskVertical,
+                OptionVertical = ReadOptionVerticalPolicy(RequireObject(RequireProperty(root, "option_vertical")))
+            },
+            _ => throw new InvalidDataException("Strategy definition has an unsupported execution_kind.")
+        };
     }
+
+    private static OptionVerticalExecutionPolicyContract ReadOptionVerticalPolicy(JsonElement policy) => new(
+        RequirePositiveInt(policy, "minimum_days_to_expiry"),
+        RequirePositiveInt(policy, "maximum_days_to_expiry"),
+        RequirePositiveDecimal(policy, "strike_band_fraction"),
+        RequirePositiveDecimal(policy, "maximum_defined_loss"),
+        RequirePositiveDecimal(policy, "exit_limit_fraction"));
 
     private static IReadOnlyDictionary<string, ValidationGateEvidenceContract> ReadValidationEvidence(
         JsonElement evidence)
@@ -106,8 +124,51 @@ public static class PythonResearchContractReader
             RequirePropertyString(root, "feature_schema_hash"),
             RequirePropertyString(root, "artifact_hash"),
             status,
-            reason);
+            reason)
+        {
+            Uncertainty = ReadUncertainty(root),
+        };
         return contract.IsValid() ? contract : throw new InvalidDataException("Forecast contract is invalid.");
+    }
+
+    /// <summary>
+    /// Reads the uncertainty block, or null when the publisher did not emit one.
+    ///
+    /// A malformed block is an error rather than a null. Silently degrading bad uncertainty to
+    /// "unstated" would let a publishing bug quietly reopen the gap this field exists to close.
+    /// </summary>
+    private static ForecastUncertaintyContract? ReadUncertainty(JsonElement root)
+    {
+        if (!root.TryGetProperty("uncertainty", out JsonElement element)) return null;
+        if (element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
+        if (element.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Forecast uncertainty must be an object.");
+
+        var uncertainty = new ForecastUncertaintyContract(
+            RequireDouble(element, "standard_error_bps"),
+            RequireDouble(element, "historical_net_edge_bps"),
+            RequireDouble(element, "historical_net_edge_standard_error_bps"),
+            RequirePositiveInt(element, "historical_observations"),
+            RequireDouble(element, "assumed_round_trip_cost_bps"));
+
+        return uncertainty.IsValid()
+            ? uncertainty
+            : throw new InvalidDataException("Forecast uncertainty block is invalid.");
+    }
+
+    private static double RequireDouble(JsonElement element, string name)
+    {
+        // The kind is checked before the value is read. TryGetDouble throws rather than returning
+        // false when the element is not a number, and letting that escape would surface a JSON
+        // library exception where the caller is catching a contract error.
+        if (!element.TryGetProperty(name, out JsonElement value)
+            || value.ValueKind != JsonValueKind.Number
+            || !value.TryGetDouble(out double result))
+        {
+            throw new InvalidDataException($"Forecast uncertainty is missing a numeric '{name}'.");
+        }
+
+        return result;
     }
 
     public static void ValidateForecast(ModelArtifactContract artifact, FeatureSchemaContract schema, ForecastSnapshotContract forecast)
@@ -179,6 +240,10 @@ public static class PythonResearchContractReader
 
     private static int RequirePositiveInt(JsonElement root, string name) => RequireProperty(root, name).TryGetInt32(out int value) && value > 0
         ? value : throw new InvalidDataException($"Research contract '{name}' must be a positive integer.");
+
+    private static decimal RequirePositiveDecimal(JsonElement root, string name) =>
+        RequireProperty(root, name).TryGetDecimal(out decimal value) && value > 0
+            ? value : throw new InvalidDataException($"Research contract '{name}' must be a positive decimal.");
 
     private static decimal RequireDecimal(JsonElement root, string name) => RequireProperty(root, name).TryGetDecimal(out decimal value)
         ? value : throw new InvalidDataException($"Research contract '{name}' must be a finite number.");

@@ -15,3 +15,9 @@ tests
 *.log
 .output.txt
 
+
+# The dashboard is built and served by its own image; its node_modules contains broken
+# symlinks that fail the build context scan for every other image in this repo.
+dashboard/node_modules
+harness/**/bin
+harness/**/obj

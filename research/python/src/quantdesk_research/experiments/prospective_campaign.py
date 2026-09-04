@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from quantdesk_research.contracts.model_artifact import EvidenceProfile
+
 
 @dataclass(frozen=True)
 class ProspectiveCampaign:
@@ -192,3 +194,74 @@ class IndependentValidationCampaign:
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
+
+
+#: The economic claim behind each preregistered family, and the way it most plausibly fails.
+#:
+#: Registered here, in code, rather than assembled at promotion time. Gate R0 exists to stop a
+#: hypothesis being written to fit a result that has already been seen, and a profile composed after
+#: the winner is known is exactly that -- however true its wording happens to be.
+_FAMILY_HYPOTHESES: dict[str, tuple[str, str]] = {
+    "donchian_breakout": (
+        "A break of the recent range marks the start of a move rather than its end.",
+        "Range breaks are mostly noise, and the ones that persist do not pay the round trip.",
+    ),
+    "moving_average_trend": (
+        "Short-horizon drift persists long enough to be captured after costs.",
+        "Crossovers lag the move that caused them and enter after the edge is gone.",
+    ),
+    "bollinger_reversion": (
+        "Deviation from a short mean reverts within the holding horizon.",
+        "Deviation marks a regime change, so reversion arrives after a stop would.",
+    ),
+    "rsi_reversion": (
+        "Exhausted short-term momentum reverses within the holding horizon.",
+        "Oversold conditions persist in a trend, and the rule buys into a continuing fall.",
+    ),
+    "volatility_breakout": (
+        "A volatility expansion carries directional information worth the wider spread it brings.",
+        "Volatility widens the spread faster than it moves the price, so the cost rises first.",
+    ),
+    "regime_ensemble": (
+        "Conditioning entry on regime avoids the states where the base rules lose.",
+        "Regime labels are only knowable late, so the filter removes winners and keeps losers.",
+    ),
+    "volume_confirmed_breakout": (
+        "Volume separates a real break from a false one.",
+        "Volume arrives with the move, confirming breaks only once they are already paid for.",
+    ),
+    "compression_breakout": (
+        "Range compression precedes a directional expansion.",
+        "Compression resolves in either direction, and the rule pays the spread to find out which.",
+    ),
+}
+
+
+def campaign_evidence_profile(campaign: ProspectiveCampaign, family: str) -> EvidenceProfile:
+    """The evidence backing one family's promotion, from the campaign's own registration.
+
+    The transfer grade is ``A_Direct`` and that is not a courtesy. Evidence transfer is graded by
+    how far the evidence sits from the thing being traded, and this evidence is the instrument, the
+    venue, the timeframe and the cost assumption the strategy would actually run under, gathered on
+    bars that did not exist when the cohort was registered. There is no closer grade of evidence
+    than a preregistered prospective holdout on the traded instrument itself.
+
+    What makes it credible is the registration, not the result -- the fingerprint binds the cohort,
+    the gates and the holdout boundary to a moment before any of these bars arrived.
+    """
+    if family not in _FAMILY_HYPOTHESES:
+        raise ValueError(f"No registered hypothesis for strategy family {family!r}.")
+
+    hypothesis, counter = _FAMILY_HYPOTHESES[family]
+    return EvidenceProfile(
+        evidence_id=f"{campaign.campaign_id}:{family}",
+        economic_hypothesis=hypothesis,
+        counter_hypothesis=counter,
+        primary_evidence_ids=[campaign.campaign_id, f"fingerprint:{campaign.fingerprint()}"],
+        transfer_grade="A_Direct",
+        transfer_reason=(
+            f"Preregistered prospective holdout on {campaign.instrument} {campaign.timeframe}, "
+            f"evaluated only on bars after {campaign.holdout_start_exclusive.isoformat()} at "
+            f"{campaign.round_trip_cost_bps:g} bps round-trip cost."
+        ),
+    )

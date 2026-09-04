@@ -9,6 +9,8 @@ namespace QuantDesk.Domain.Options;
 
 public enum OptionRight { Call, Put }
 
+public enum OptionExerciseStyle { American, European }
+
 public sealed record OptionContractDefinition(
     InstrumentId Id,
     InstrumentId UnderlyingId,
@@ -24,11 +26,17 @@ public readonly record struct OptionQuoteSnapshot(
     double Ask,
     double Mid,
     double RelativeSpread,
-    double? ImpliedVolatility,
-    double? Delta,
-    double? Gamma,
-    double? Vega,
-    double? Theta,
+    long EventNs,
+    DataQuality Quality);
+
+/// <summary>Greeks returned by the authenticated option snapshot feed for risk admission.</summary>
+public readonly record struct OptionRiskSnapshot(
+    int ContractSlot,
+    double ImpliedVolatility,
+    double Delta,
+    double Gamma,
+    double Vega,
+    double Theta,
     long EventNs,
     DataQuality Quality);
 

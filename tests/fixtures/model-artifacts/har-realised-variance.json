@@ -1,0 +1,137 @@
+{
+ "artifact_hash": "b35a13e90d09c4796b879c66e16af1cfdd500f38a6692d1b951227625793eaca",
+ "artifact_id": "har-realised-variance-fixture",
+ "artifact_schema_version": "runtime-inference-v2",
+ "as_of": "2026-09-03T00:00:00Z",
+ "created_at": "2026-09-03T00:00:00Z",
+ "dataset_hash": "fixture-har-dataset",
+ "diagnostics": {
+  "coefficients": [
+   3.651412281840682e-06,
+   -0.06490028273927051,
+   0.14993209862373535,
+   -1.5920911783994791
+  ],
+  "long_bars": 288,
+  "medium_bars": 60,
+  "short_bars": 12
+ },
+ "evidence_grade": "B",
+ "feature_schema": {
+  "dtypes": {
+   "rv_long": "float64",
+   "rv_medium": "float64",
+   "rv_short": "float64"
+  },
+  "feature_hash": "435d6ea2ca2c1251e71fd73a1854684a734f7bc63425bf6e75d913696cb5086e",
+  "feature_names": [
+   "rv_short",
+   "rv_medium",
+   "rv_long"
+  ],
+  "lookback_periods": 288,
+  "normalization": {},
+  "schema_version": "har-realised-variance-v1",
+  "source_requirements": [
+   "alpaca_ohlcv"
+  ]
+ },
+ "feature_schema_hash": "435d6ea2ca2c1251e71fd73a1854684a734f7bc63425bf6e75d913696cb5086e",
+ "feature_semantics": {
+  "bar_duration_minutes": 5,
+  "lookback_periods": 288,
+  "missing_policy": "refuse",
+  "units": {
+   "rv_long": "mean_squared_log_return",
+   "rv_medium": "mean_squared_log_return",
+   "rv_short": "mean_squared_log_return"
+  }
+ },
+ "git_commit": "fixture-generated",
+ "model_family": "har",
+ "model_id": "crypto-realised-variance",
+ "model_version": "1.0.0",
+ "parameters": {
+  "beta_long": -1.5920911783994791,
+  "beta_medium": 0.14993209862373535,
+  "beta_short": -0.06490028273927051,
+  "intercept": 3.651412281840682e-06
+ },
+ "parity": {
+  "absolute_tolerance": 1e-18,
+  "cases": [
+   {
+    "expected": [
+     1.6167903884479476e-06
+    ],
+    "inputs": [
+     [
+      1.0816158038940553e-06,
+      1.1167188189975108e-06,
+      1.3390292886069548e-06
+     ]
+    ]
+   },
+   {
+    "expected": [
+     1.6101045398430672e-06
+    ],
+    "inputs": [
+     [
+      1.080643572962916e-06,
+      9.788415185473308e-07,
+      1.3302840065962424e-06
+     ]
+    ]
+   },
+   {
+    "expected": [
+     1.594486545246226e-06
+    ],
+    "inputs": [
+     [
+      1.1907927085267822e-06,
+      9.692902610139952e-07,
+      1.3347041331343879e-06
+     ]
+    ]
+   },
+   {
+    "expected": [
+     1.5838431261655131e-06
+    ],
+    "inputs": [
+     [
+      1.2668274689626743e-06,
+      9.595942539422292e-07,
+      1.337376718096606e-06
+     ]
+    ]
+   }
+  ],
+  "kind": "vector_to_scalar",
+  "relative_tolerance": 1e-09
+ },
+ "payload": {},
+ "producer": {
+  "library": "quantdesk_research.models.har",
+  "library_version": "1",
+  "numpy_version": "2.5.2"
+ },
+ "promotion_state": "VALIDATED",
+ "random_seed": 0,
+ "support_domain": {
+  "asset_class": "spot_crypto",
+  "bar_duration_minutes": 5,
+  "symbols": [
+   "BTC/USD"
+  ]
+ },
+ "variant": {
+  "long_bars": "288",
+  "medium_bars": "60",
+  "output_floor": "0.0",
+  "short_bars": "12",
+  "variance_units": "mean_squared_log_return"
+ }
+}

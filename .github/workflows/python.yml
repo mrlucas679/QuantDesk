@@ -1,0 +1,38 @@
+name: python
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: research/python
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # --frozen refuses to update the lockfile, so CI fails on an out-of-date uv.lock rather than
+      # quietly resolving something different from what a developer ran locally.
+      - name: Install the locked environment
+        run: uv sync --frozen
+
+      - name: ruff
+        run: uv run --frozen ruff check .
+
+      # Strict typing covers src only. The test suite is not annotated, and pretending otherwise by
+      # running mypy over everything would fail on ~50 missing annotations that say nothing about
+      # whether the research plane is correct. The narrower scope is the honest claim.
+      - name: mypy (src)
+        run: uv run --frozen mypy src
+
+      - name: pytest
+        run: uv run --frozen pytest -q

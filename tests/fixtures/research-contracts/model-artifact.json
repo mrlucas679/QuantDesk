@@ -1,0 +1,183 @@
+{
+  "artifact_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "artifact_id": "FIXTURE-001-donchian_breakout-12-abcdef012345",
+  "calibration_window": null,
+  "config_hash": "abcdef012345",
+  "creation_timestamp": "2026-09-01T12:00:00Z",
+  "dataset_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "evidence_grade": "A_Direct",
+  "evidence_profile": {
+    "counter_hypothesis": "Breakouts revert once liquidity replenishes.",
+    "economic_hypothesis": "Breakouts persist while institutional flow is one-sided.",
+    "evidence_id": "EV-FIXTURE-001",
+    "primary_evidence_ids": [
+      "EV-FIXTURE-001"
+    ],
+    "transfer_grade": "A_Direct",
+    "transfer_reason": "Independently validated on an untouched slice."
+  },
+  "feature_schema_hash": "db0d751b847c5606cbde333ac1a904907dcaf0c8bde6a7aa270c74bf619276bd",
+  "git_commit": "fixture",
+  "metrics": {
+    "passed": true,
+    "sharpe": 0.9
+  },
+  "model_id": "FIXTURE-001-donchian_breakout",
+  "model_type": "deterministic_rule",
+  "model_version": "v1",
+  "parameters": {
+    "horizon_bars": 12
+  },
+  "random_seed": 0,
+  "strategy_definition": {
+    "bar_duration_minutes": 5,
+    "entry_rule_version": "donchian_breakout-v1",
+    "execution_kind": "spot",
+    "exit_policy": {
+      "exit_on_regime_change": true,
+      "exit_on_thesis_invalidation": true,
+      "maximum_holding_minutes": 60,
+      "policy_version": "donchian_breakout-managed-v1"
+    },
+    "forecast_horizon_minutes": 60,
+    "option_vertical": null,
+    "parameters": {
+      "lookback_bars": 20
+    },
+    "signal_type": "State",
+    "symbol": "BTC/USD"
+  },
+  "strategy_family": "donchian_breakout",
+  "support_domain": {
+    "instrument": "BTC/USD",
+    "timeframe": "5Min"
+  },
+  "test_window": {
+    "campaign_fingerprint": "abcdef012345"
+  },
+  "training_window": {},
+  "validation_evidence": {
+    "R0": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R0-001"
+      ],
+      "gate_id": "R0",
+      "passed": true
+    },
+    "R1": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R1-001"
+      ],
+      "gate_id": "R1",
+      "passed": true
+    },
+    "R11": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R11-001"
+      ],
+      "gate_id": "R11",
+      "passed": true
+    },
+    "R12": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R12-001"
+      ],
+      "gate_id": "R12",
+      "passed": true
+    },
+    "R2": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R2-001"
+      ],
+      "gate_id": "R2",
+      "passed": true
+    },
+    "R3": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R3-001"
+      ],
+      "gate_id": "R3",
+      "passed": true
+    },
+    "R4": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R4-001"
+      ],
+      "gate_id": "R4",
+      "passed": true
+    },
+    "R5": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R5-001"
+      ],
+      "gate_id": "R5",
+      "passed": true
+    },
+    "R6": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R6-001"
+      ],
+      "gate_id": "R6",
+      "passed": true
+    },
+    "R7": {
+      "details": {
+        "source": "cross-language fixture"
+      },
+      "evaluated_at": "2026-09-01T12:00:00Z",
+      "evidence_ids": [
+        "EV-R7-001"
+      ],
+      "gate_id": "R7",
+      "passed": true
+    }
+  },
+  "validation_gates": [
+    "R0",
+    "R1",
+    "R2",
+    "R3",
+    "R4",
+    "R5",
+    "R6",
+    "R7",
+    "R11",
+    "R12"
+  ]
+}

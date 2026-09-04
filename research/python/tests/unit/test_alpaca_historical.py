@@ -72,6 +72,11 @@ def test_write_immutable_dataset_hashes_content_and_excludes_credentials(tmp_pat
     assert manifest.sha256 == f"sha256:{hashlib.sha256(data).hexdigest()}"
     assert manifest.row_count == 2
     assert json.loads(data)[0]["t"] == "2026-01-01T14:30:00Z"
+    persisted = json.loads(manifest_text)
+    assert persisted["dataFile"] == manifest.data_file
+    assert persisted["rowCount"] == manifest.row_count
+    assert "data_file" not in persisted
+    assert "row_count" not in persisted
     assert "test-secret" not in manifest_text
     assert "APCA-API-SECRET-KEY" not in manifest_text
 

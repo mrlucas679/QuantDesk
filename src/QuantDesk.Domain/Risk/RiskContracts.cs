@@ -12,7 +12,8 @@ public sealed record RiskLimits(
     double MaximumAbsDollarGamma1Pct,
     double MaximumAbsDollarVega1Vol,
     double MaximumRelativeSpread,
-    double MaximumShortConvexityScore)
+    double MaximumShortConvexityScore,
+    Usd MaximumCorrelatedExposure)
 {
     public void Validate()
     {
@@ -20,7 +21,8 @@ public sealed record RiskLimits(
             MaximumDailyLoss.Value <= 0 || MaximumCampaignLoss.Value <= 0 ||
             MaximumOpenPositions <= 0 || MaximumAbsDollarDelta <= 0 ||
             MaximumAbsDollarGamma1Pct <= 0 || MaximumAbsDollarVega1Vol <= 0 ||
-            MaximumRelativeSpread <= 0 || MaximumShortConvexityScore <= 0)
+            MaximumRelativeSpread <= 0 || MaximumShortConvexityScore <= 0 ||
+            MaximumCorrelatedExposure.Value <= 0)
         {
             throw new InvalidOperationException("Every risk limit must be positive and explicitly bounded.");
         }
@@ -30,6 +32,16 @@ public sealed record RiskLimits(
 public enum RiskReason
 {
     Approved,
+
+    /// <summary>
+    /// Admitted despite a negative expected edge, against a bounded exploration budget.
+    ///
+    /// Never a synonym for Approved. A position opened under this reason is buying information at a
+    /// price that was known in advance, and its P&amp;L is evidence about the rule rather than
+    /// evidence of an edge. Anything that reports performance has to be able to tell the two apart,
+    /// which is why this is a distinct reason and not a flag on the old one.
+    /// </summary>
+    ApprovedAsExploration,
     SystemHalted,
     CandidateExpired,
     StaleMarketData,

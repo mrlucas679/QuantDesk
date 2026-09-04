@@ -17,6 +17,7 @@ public sealed class AlpacaLatestCryptoQuoteClientTests
         var client = new AlpacaLatestCryptoQuoteClient(httpClient, new AlpacaOptions
         {
             BaseUrl = new Uri("https://paper-api.alpaca.markets"),
+        DataBaseUrl = new Uri("https://data.alpaca.markets/"),
             KeyId = "test-key",
             SecretKey = "test-secret"
         });
@@ -37,6 +38,7 @@ public sealed class AlpacaLatestCryptoQuoteClientTests
         var client = new AlpacaLatestCryptoQuoteClient(httpClient, new AlpacaOptions
         {
             BaseUrl = new Uri("https://paper-api.alpaca.markets"),
+        DataBaseUrl = new Uri("https://data.alpaca.markets/"),
             KeyId = "test-key",
             SecretKey = "test-secret"
         });
@@ -60,6 +62,7 @@ public sealed class AlpacaLatestCryptoQuoteClientTests
         var client = new AlpacaLatestCryptoQuoteClient(httpClient, new AlpacaOptions
         {
             BaseUrl = new Uri("https://paper-api.alpaca.markets"),
+        DataBaseUrl = new Uri("https://data.alpaca.markets/"),
             KeyId = "test-key",
             SecretKey = "test-secret"
         });

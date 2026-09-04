@@ -26,4 +26,22 @@ public sealed class ExpertCommitteeTests
         Assert.False(result.Actionable);
         Assert.Equal("insufficient_valid_evidence", result.ReasonCode);
     }
+
+    [Fact]
+    public void ReturnsTypedUncertainInsteadOfAveragingContradictoryMechanisms()
+    {
+        var positive = new DirectionalForecast(
+            new ForecastMetadata(1, 2, ForecastType.DirectionalReturn, TimeSpan.FromMinutes(5), 1, 10, 20, 3, 1, ForecastStatus.Valid),
+            20, 1, new Probability(.7), new Probability(.2), new Probability(.1), .9);
+        var negative = new DirectionalForecast(
+            new ForecastMetadata(2, 2, ForecastType.DirectionalReturn, TimeSpan.FromMinutes(5), 1, 10, 20, 3, 1, ForecastStatus.Valid),
+            -15, 1, new Probability(.1), new Probability(.2), new Probability(.7), .9);
+
+        CommitteeDecision result = new ExpertCommittee(.8, 5).Evaluate(
+            2, [new ExpertVote(1, positive, 1), new ExpertVote(2, negative, 1)], 15, 3);
+
+        Assert.False(result.Actionable);
+        Assert.Equal("mechanism_conflict", result.ReasonCode);
+        Assert.Equal(CommitteeVerdict.Uncertain, result.Verdict);
+    }
 }

@@ -49,6 +49,7 @@ public sealed class AlpacaCapabilityProbeTests
     private static AlpacaOptions PaperOptions() => new()
     {
         BaseUrl = new Uri("https://paper-api.alpaca.markets"),
+        DataBaseUrl = new Uri("https://data.alpaca.markets/"),
         KeyId = "test-key",
         SecretKey = "test-secret"
     };

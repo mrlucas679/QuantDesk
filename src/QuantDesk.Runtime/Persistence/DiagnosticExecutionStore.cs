@@ -5,7 +5,7 @@ namespace QuantDesk.Runtime.Persistence;
 /// <summary>Durably records one diagnostic lifecycle and reserves its client IDs.</summary>
 public sealed class DiagnosticExecutionStore(string path)
 {
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Options = QuantDesk.Domain.Serialization.ContractJson.Web;
     private readonly Lock gate = new();
 
     /// <summary>Verifies that the configured store can be read and durably replaced.</summary>
@@ -90,6 +90,23 @@ public sealed class DiagnosticExecutionStore(string path)
                     "Complete" or "ReconciliationFailed" or "EmergencyFlattenFailed" or
                     "EntryCanceled" or "EntryRejected" or "EntryExpired" or
                     "ExitCanceled" or "ExitRejected" or "ExitExpired"))
+                .ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Every round trip that completed cleanly, for measuring what trading actually cost.
+    ///
+    /// Deliberately excludes the failure states. A trip that was rejected, cancelled, expired, or
+    /// emergency-flattened either paid no cost or paid an exceptional one, and averaging those into
+    /// a cost curve would describe a kind of trading this system does not do on purpose.
+    /// </summary>
+    public IReadOnlyList<DiagnosticExecutionRecord> ListCompleted()
+    {
+        lock (gate)
+        {
+            return LoadOrEmpty().Records
+                .Where(record => record.State is "Complete")
                 .ToArray();
         }
     }
@@ -330,6 +347,33 @@ public sealed record DiagnosticExecutionRecord(
     public decimal FinalInternalQuantity { get; init; }
     public string? ReconciliationResult { get; init; }
     public decimal? GrossPaperPnl { get; init; }
+
+    /// <summary>
+    /// Realised profit after the venue's fee, or null while the round trip is incomplete.
+    ///
+    /// Kept beside <see cref="GrossPaperPnl"/> rather than replacing it, because the difference between
+    /// the two is the fee and is worth being able to see. Measured over 20 live round trips the gap was
+    /// 24.6 bps of notional per trip — Alpaca's taker fee almost exactly — and it turned two apparent
+    /// winners into losses.
+    /// </summary>
+    public decimal? NetPaperPnl { get; init; }
+
+    /// <summary>Account equity immediately before the entry was reserved.</summary>
+    public decimal? AccountEquityBefore { get; init; }
+
+    /// <summary>Account equity once the lane reconciled flat.</summary>
+    public decimal? AccountEquityAfter { get; init; }
+
+    /// <summary>
+    /// What the round trip actually cost the account, from the broker's own equity.
+    ///
+    /// Ground truth, and the only figure here that owes nothing to a fee model. Measured across 59
+    /// live round trips the store reported −$2.12 while the account moved −$4.04: gross saw 11 bps of
+    /// cost, the fee-aware net saw 36, and the account said 68. The missing half is the separate USD
+    /// "Coin Pair Transaction Fee" cash charge, which never appears in a fill price or quantity and so
+    /// cannot be derived from fills at all.
+    /// </summary>
+    public decimal? RealisedAccountPnl { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public string? EmergencyClientOrderId { get; init; }
     public string? EmergencyBrokerOrderId { get; init; }

@@ -4,5 +4,10 @@
     <ProjectReference Include="..\QuantDesk.Domain\QuantDesk.Domain.csproj" />
     <ProjectReference Include="..\QuantDesk.Runtime\QuantDesk.Runtime.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The autonomous evaluation cycle is the money path and must be directly testable without
+         exposing it on the public surface or starting a hosted service loop. -->
+    <InternalsVisibleTo Include="QuantDesk.Api.Tests" />
+  </ItemGroup>
 </Project>
 

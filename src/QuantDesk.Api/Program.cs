@@ -1,23 +1,35 @@
+using System.Globalization;
 using QuantDesk.Alpaca.Capabilities;
 using QuantDesk.Alpaca.Configuration;
 using QuantDesk.Alpaca.Mapping;
 using QuantDesk.Alpaca.MarketData;
 using QuantDesk.Alpaca.Trading;
 using QuantDesk.Api.PaperTrading;
+using QuantDesk.Api.Agents;
 using QuantDesk.Api.Security;
+using QuantDesk.Domain.Contracts;
 using QuantDesk.Domain.Execution;
+using QuantDesk.Domain.Forecasts;
+using QuantDesk.Domain.Scoring;
 using QuantDesk.Domain.Market;
 using QuantDesk.Domain.Numerics;
 using QuantDesk.Domain.Risk;
 using QuantDesk.Domain.Runtime;
+using QuantDesk.Domain.Trading;
 using QuantDesk.Runtime.Actionability;
 using QuantDesk.Runtime.Costs;
 using QuantDesk.Runtime.Execution;
 using QuantDesk.Runtime.Experts;
+using QuantDesk.Runtime.Indicators;
 using QuantDesk.Runtime.Ingestion;
 using QuantDesk.Runtime.Modes;
+using QuantDesk.Runtime.Options;
 using QuantDesk.Runtime.Persistence;
 using QuantDesk.Runtime.Positions;
+using QuantDesk.Runtime.Research;
+using QuantDesk.Runtime.Reliability;
+using QuantDesk.Runtime.Scoring;
+using QuantDesk.Runtime.Telemetry;
 using QuantDesk.Runtime.Risk;
 using QuantDesk.Runtime.State;
 using QuantDesk.Runtime.Strategies;
@@ -27,6 +39,16 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddProblemDetails();
 builder.Services.AddHealthChecks();
+AgentRuntimeOptions agentOptions = AgentRuntimeOptions.FromEnvironment();
+builder.Services.AddSingleton(agentOptions);
+builder.Services.AddSingleton(new AgentRunStore(agentOptions.StorePath));
+builder.Services.AddSingleton<AgentPlaneState>();
+builder.Services.AddHttpClient<IAgentCompletionClient, AgentCompletionClient>(client =>
+    client.Timeout = agentOptions.RequestTimeout);
+builder.Services.AddSingleton<ReviewAgent>();
+builder.Services.AddSingleton<ResearchAgent>();
+builder.Services.AddSingleton<PolicyAgent>();
+builder.Services.AddHostedService<AgentOrchestrationService>();
 builder.Services.AddSingleton<IRuntimeClock, LiveRuntimeClock>();
 builder.Services.AddSingleton<RuntimeModeState>();
 builder.Services.AddSingleton<FullSystemReadinessState>();
@@ -43,22 +65,104 @@ builder.Services.AddSingleton(services =>
         ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "diagnostic-executions.json");
     return new DiagnosticExecutionStore(Path.GetFullPath(configured));
 });
+// Every lane that can hold exposure registers a claim source, so the entry gate can tell exposure this
+// system created from exposure nobody can account for. A lane added without one is reported as foreign,
+// which halts entry rather than trading over it.
+builder.Services.AddSingleton<IExposureClaimSource, DiagnosticExposureClaimSource>();
+builder.Services.AddSingleton<IExposureClaimSource, SpotExposureClaimSource>();
+builder.Services.AddSingleton<IExposureClaimSource, MultiLegExposureClaimSource>();
+builder.Services.AddSingleton<BrokerExposureAttributor>();
+builder.Services.AddSingleton<DiagnosticEmergencyFlatten>();
 builder.Services.AddSingleton<CryptoDiagnosticExecutionService>();
 builder.Services.AddSingleton<DiagnosticExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<DiagnosticExecutionRecoveryService>());
-builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.FromEnvironment(
+// The lane set. One per asset class: crypto and US equities are different instruments with
+// different costs, sessions, and sensible holding periods, and a single lane would have to average
+// all of that into one setting.
+builder.Services.AddSingleton(services => AutonomousPaperTradingOptions.AllLanes(
     services.GetRequiredService<PaperTradingOptions>()));
+// The first lane, for the parts of the graph that are configured once for the whole process --
+// order-notional-derived risk limits and the compiler's default sizing.
+builder.Services.AddSingleton(services =>
+    services.GetRequiredService<IReadOnlyList<AutonomousPaperTradingOptions>>()[0]);
 builder.Services.AddSingleton(services =>
 {
     string configured = Environment.GetEnvironmentVariable("QUANTDESK_MLEG_STORE_PATH")
         ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "mleg-executions.json");
     return new MultiLegExecutionStore(Path.GetFullPath(configured));
 });
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_AUTONOMOUS_STORE_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "autonomous-executions.json");
+    return new AutonomousExecutionStore(Path.GetFullPath(configured));
+});
 builder.Services.AddSingleton<IInstrumentSymbolResolver>(services =>
     new DictionaryInstrumentSymbolResolver(services.GetRequiredService<PaperTradingOptions>().Symbols));
+// Shared across lanes on purpose: correlation is a property of the account, not of a lane.
+builder.Services.AddHttpClient<AlpacaCryptoOrderBookClient>();
+// The regime classifier, and the shared place its answer is written and read. Bounded by the
+// traded universe, which is fixed at startup.
+// The gate every typed forecast passes through. Section 10.1 keeps the families apart here, so a
+// volatility reading cannot become a direction, and the staleness and calibration checks a single
+// expert's output does not carry are applied in one place rather than at each call site.
+// What the experts report as their own calibration, measured by the scorer rather than assumed.
+// Refreshed when an outcome resolves, which is the only moment the answer can have changed.
+// One replay log per session, written as the stream is read. Section 22's gate is only a gate for
+// sessions that were recorded, and until now none were.
+builder.Services.AddSingleton(services => new MarketDataSessionRecorder(
+    services.GetRequiredService<IRuntimeClock>(),
+    services.GetRequiredService<ILoggerFactory>().CreateLogger<MarketDataSessionRecorder>()));
+// Replays the previous session on start-up and reports whether it reproduced. This is what makes
+// section 22 a gate rather than a facility: until something in the running system replays what the
+// recorder writes, determinism is only ever demonstrated by tests against their own deciders.
+// Section 17.3's decomposition of completed round trips, and the residual that keeps it honest.
+builder.Services.AddSingleton<EpisodeAttributionState>();
+builder.Services.AddHostedService<EpisodeAttributionService>();
+builder.Services.AddSingleton<SessionReplayState>();
+builder.Services.AddHostedService<SessionReplayService>();
+
+// Answers gates R11 and R12 for the research plane, which cannot observe the execution plane
+// at all. Registered after the replay state because the attestation carries its trace hash.
+builder.Services.AddSingleton<StreamConnectionTracker>();
+builder.Services.AddHostedService<RuntimeAttestationService>();
+builder.Services.AddSingleton<MeasuredCalibrationSource>();
+builder.Services.AddSingleton<IForecastCalibrationSource>(services =>
+    services.GetRequiredService<MeasuredCalibrationSource>());
+builder.Services.AddSingleton<TypedForecastCommittee>();
+builder.Services.AddSingleton<MarketRegimeExpert>();
+// The models the research plane fits, and the service that loads them. Registered before the
+// experts that read them so the store exists when they are resolved -- the expert reads it on every
+// forecast rather than capturing a model at construction, because artifacts arrive after boot.
+builder.Services.AddSingleton<FittedModelStore>();
+builder.Services.AddSingleton<IFittedModelSource>(services =>
+    services.GetRequiredService<FittedModelStore>());
+builder.Services.AddHostedService<FittedModelMonitorService>();
+builder.Services.AddSingleton<RealizedVolatilityExpert>();
+// Where forecasts and their outcomes are kept, so the scorers have something to score. Volatility
+// is the family whose loop closes without a trade in between: the expert predicts a variance and
+// the variance that realises is computable from the same bars.
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_FORECAST_OUTCOME_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "forecast-outcomes.json");
+    return new ForecastOutcomeLog(Path.GetFullPath(configured));
+});
+builder.Services.AddSingleton<IndicatorRegimeSource>();
+builder.Services.AddSingleton<IRegimeSource>(services =>
+    services.GetRequiredService<IndicatorRegimeSource>());
+builder.Services.AddSingleton<LatencyRecorder>();
+builder.Services.AddSingleton<ReturnSeriesCache>();
+// What every rule would have done, recorded without trading it. Shared across lanes because a
+// strategy's shadow record is a fact about the strategy, not about which lane happened to ask.
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_SHADOW_LOG_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "shadow-signals.json");
+    return new ShadowSignalLog(Path.GetFullPath(configured));
+});
 builder.Services.AddSingleton<PaperOrderApplicationService>();
-builder.Services.AddSingleton<CryptoResearchGate>();
 builder.Services.AddSingleton(services =>
     new MarketStateStore(services.GetRequiredService<PaperTradingOptions>().Symbols.Count));
 builder.Services.AddSingleton(new BoundedEventChannel<NormalizedMarketEvent>(8_192));
@@ -94,36 +198,171 @@ builder.Services.AddSingleton(new ExpertCommittee(0.60, 1));
 builder.Services.AddSingleton(services =>
 {
     AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
+
+    // The lane's own instrument decides which permission is required and which beta the position is
+    // booked against. Assuming crypto meant an equity lane asked the venue for a permission it does
+    // not need and reported its exposure to the risk governor under the wrong factor entirely.
+    // No asset class here: the compiler is told per call, from the route of the instrument being
+    // compiled. Holding it on the instance was correct only while one lane traded one venue.
     return new CryptoDirectionalStrategyCompiler(
-        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration);
+        new Usd(configured.OrderNotional), 0.05, TimeSpan.FromMinutes(5), configured.HoldDuration,
+        services.GetRequiredService<IRuntimeClock>());
 });
-builder.Services.AddSingleton(CryptoFeeSchedule.AlpacaTier1(DateTimeOffset.UtcNow));
+builder.Services.AddSingleton(services =>
+    CryptoFeeSchedule.AlpacaTier1(services.GetRequiredService<IRuntimeClock>().UtcNow));
+builder.Services.AddSingleton<IRealisedCostSource>(services =>
+    new DiagnosticStoreRealisedCostSource(
+        services.GetRequiredService<DiagnosticExecutionStore>(),
+        services.GetRequiredService<SpotExecutionStore>()));
+
+// The cost the decision actually gets charged.
+//
+// The modelled figure alone was Alpaca's published 50 bps schedule rate plus the live spread. The
+// Both the admission hurdle and the cost model are resolved per instrument now, not once at
+// startup from a single configured symbol. See AssetClassPricing: binding them at registration is
+// what let an equity be charged a crypto hurdle and a crypto fee, refusing profitable trades twice
+// over while looking entirely reasonable. A lane trading several instruments cannot resolve either
+// once, and a lane that happens to be all-crypto today would re-acquire the same bug silently the
+// first time something else was added.
 builder.Services.AddSingleton(services =>
 {
-    CryptoFeeSchedule fees = services.GetRequiredService<CryptoFeeSchedule>();
-    return new CryptoCostModel(new BasisPoints((double)(fees.TakerBps * 2m)), new BasisPoints(10));
+    // The holding period in five-minute bars, so the viability gate can ask whether the instrument
+    // moves far enough over the time a position is actually held.
+    AutonomousPaperTradingOptions configured = services.GetRequiredService<AutonomousPaperTradingOptions>();
+    int holdingBars = Math.Max(1, (int)(configured.HoldDuration.TotalMinutes / 5));
+    return new AssetClassPricing(services.GetRequiredService<IRealisedCostSource>(), holdingBars);
 });
 builder.Services.AddSingleton(new ActionabilityGate(0.01, new Usd(0.01m)));
-builder.Services.AddSingleton(new RiskGovernor(new RiskLimits(
-    new Usd(5), new Usd(25), new Usd(100), new Usd(250), 1,
-    100_000, 100_000, 100_000, 0.01, 1)));
+builder.Services.AddSingleton(services => new RiskGovernor(
+    RiskLimitOptions.FromEnvironment(
+        services.GetRequiredService<AutonomousPaperTradingOptions>().OrderNotional)));
 builder.Services.AddSingleton<ExitEngine>();
+// Shared across lanes on purpose: it balances live trades across strategies, and two lanes each
+// keeping their own count would each independently under-sample the same mechanisms.
+builder.Services.AddSingleton<StrategyRotation>();
 builder.Services.AddSingleton<AutonomousDecisionPipeline>();
+
+// Runs every configured lane. Registered as a single hosted service that owns them all rather than
+// one registration per lane, because the lane set is only known once configuration is read.
+static AutonomousLaneHost BuildLanes(IServiceProvider services) => new(
+    [.. services.GetRequiredService<IReadOnlyList<AutonomousPaperTradingOptions>>()
+        .Select(options => BuildLane(services, options))]);
+
+static AutonomousPaperTradingService BuildLane(
+    IServiceProvider services, AutonomousPaperTradingOptions options)
+{
+    // Its own compiler and pipeline: the compiler carries this lane's order size and holding
+    // period, so sharing one would silently give the equity lane crypto's sizing.
+    var compiler = new CryptoDirectionalStrategyCompiler(
+        new Usd(options.OrderNotional), 0.05, TimeSpan.FromMinutes(5), options.HoldDuration,
+        services.GetRequiredService<IRuntimeClock>());
+    var pipeline = new AutonomousDecisionPipeline(
+        services.GetRequiredService<MarketStateStore>(),
+        services.GetRequiredService<ExpertCommittee>(),
+        compiler,
+        services.GetRequiredService<AssetClassPricing>(),
+        services.GetRequiredService<StrategyRotation>(),
+        services.GetRequiredService<ActionabilityGate>(),
+        services.GetRequiredService<RiskGovernor>(),
+        services.GetRequiredService<IRuntimeClock>(),
+        services.GetRequiredService<ILogger<AutonomousDecisionPipeline>>(),
+        // Live shadow evidence overrules the backtest in both directions, which is what gives a
+        // stood-down rule a way back and a favoured one a way out.
+        //
+        // Summarised per book. Both books define rules under the same identifiers, and pooling them
+        // promoted an equity rule on evidence gathered almost entirely from crypto -- which trades
+        // every hour across seven symbols against the equity book's six and a half across four --
+        // while holding it to costs an order of magnitude apart.
+        // The bar each lane actually computes on. Crypto reads five-minute bars and equities read
+        // thirty, so each book is asked for the figures measured on its own clock -- serving the
+        // five-minute equity numbers to a thirty-minute lane would spend a measurement earned under
+        // one sampling interval under another.
+        assetClass => SignalStrategies.Tradable(
+            assetClass,
+            LaneBars.For(assetClass),
+            services.GetRequiredService<ShadowSignalLog>().Summarise(assetClass)),
+        services.GetRequiredService<ShadowSignalLog>(),
+        options.HoldDuration,
+        services.GetRequiredService<IndicatorRegimeSource>(),
+        // Measured skill, per book. Without this the directional votes carried a literal weight of
+        // 0.5 and a literal calibration of 0.75, so the committee's agreement floor was being
+        // tested against a constant and the scorer's output reached no decision.
+        services.GetRequiredService<MeasuredCalibrationSource>());
+
+    return new AutonomousPaperTradingService(
+        services.GetRequiredService<IBrokerExecutionGateway>(),
+        services.GetRequiredService<IInstrumentSymbolResolver>(),
+        services.GetRequiredService<IRealisedCostSource>(),
+        services.GetRequiredService<SpotExecutionStore>(),
+        services.GetRequiredService<MarketStateStore>(),
+        services.GetRequiredService<StrategyRotation>(),
+        services.GetRequiredService<QuantDesk.Alpaca.MarketData.AlpacaMarketClock>(),
+        services.GetRequiredService<IMarketEvidenceProvider>(),
+        services.GetRequiredService<BrokerExposureAttributor>(),
+        services.GetRequiredService<OpportunityRouter>(),
+        services.GetRequiredService<OptionExecutionCoordinator>(),
+        services.GetRequiredService<SpotExecutionLifecycle>(),
+        services.GetRequiredService<IAlpacaCapabilityProbe>(),
+        pipeline,
+        services.GetRequiredService<ResearchArtifactState>(),
+        options,
+        services.GetRequiredService<RuntimeModeState>(),
+        services.GetRequiredService<AutonomousTradingState>(),
+        services.GetRequiredService<IRuntimeClock>(),
+        services.GetRequiredService<ReturnSeriesCache>(),
+        services.GetRequiredService<ShadowSignalLog>(),
+        services.GetRequiredService<IHeldPositionMarker>(),
+        services.GetService<AlpacaCryptoOrderBookClient>(),
+        // The fitted variance models, for position sizing. They were adopted per instrument on
+        // every cycle and read by nothing that sized anything.
+        services.GetRequiredService<IFittedModelSource>(),
+        services.GetRequiredService<LatencyRecorder>(),
+        services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
+}
 builder.Services.AddSingleton<AutonomousTradingState>();
-builder.Services.AddHostedService<PaperRuntimePreflightService>();
-builder.Services.AddHostedService<AutonomousPaperTradingService>();
+// Registered as a singleton and then hosted from it, so /api/system/resume can ask for one
+// reconciliation pass on demand rather than waiting out the 30-second timer.
+builder.Services.AddSingleton<PaperRuntimePreflightService>();
+builder.Services.AddHostedService(services =>
+    services.GetRequiredService<PaperRuntimePreflightService>());
+// One running service per lane, each with its own compiler and pipeline so its order size and
+// holding period are its own. Everything below them -- the broker, the durable stores, attribution,
+// risk, and the per-symbol state -- is deliberately shared, because it is one account.
+builder.Services.AddHostedService(services => BuildLanes(services));
 builder.Services.AddHostedService<MarketDataRuntimeService>();
 builder.Services.AddHostedService<MicrostructureEvidenceCaptureService>();
 builder.Services.AddHostedService<CryptoQuoteCaptureService>();
 builder.Services.AddHostedService<TradeUpdateRuntimeService>();
-builder.Services.AddHostedService<HistoricalCryptoDatasetService>();
+// The crypto history publisher gets its own client rather than sharing the trading lane's.
+//
+// The same typed client serves the evidence path, where a request must fail fast because a
+// decision made on a stale quote is worse than no decision, and this publisher, which downloads
+// months of bars. One timeout cannot be right for both: at ten seconds the download times out
+// every cycle, and at two minutes a hung quote would stall a symbol's evaluation. So they are
+// separate instances with separate budgets.
+builder.Services.AddHttpClient("bulk-crypto-history", client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
+builder.Services.AddHostedService(services => new HistoricalCryptoDatasetService(
+    new AlpacaLatestCryptoQuoteClient(
+        services.GetRequiredService<IHttpClientFactory>().CreateClient("bulk-crypto-history"),
+        services.GetRequiredService<AlpacaOptions>()),
+    services.GetRequiredService<AutonomousPaperTradingOptions>(),
+    services.GetRequiredService<OpportunityRouter>(),
+    services.GetRequiredService<ILogger<HistoricalCryptoDatasetService>>(),
+    services.GetRequiredService<IRuntimeClock>()));
 builder.Services.AddHostedService<HistoricalEquityDatasetService>();
 builder.Services.AddHttpClient<ResearchReadinessMonitorService>(client =>
 {
     string configured = Environment.GetEnvironmentVariable("QUANTDESK_RESEARCH_BASE_URL")
         ?? "http://localhost:8000";
     client.BaseAddress = new Uri(configured.TrimEnd('/') + "/");
-    client.Timeout = TimeSpan.FromSeconds(5);
+
+    // Taken from the service so the two cannot drift. A five-second budget against an endpoint
+    // measured at 4.1, 5.0 and 8.5 seconds was writing the readiness ledger from a timeout rather
+    // than from the plane's answer.
+    client.Timeout = ResearchReadinessMonitorService.ProbeTimeout;
 });
 builder.Services.AddHostedService<ResearchReadinessMonitorService>(
     services => services.GetRequiredService<ResearchReadinessMonitorService>());
@@ -145,17 +384,93 @@ builder.Services.AddSingleton(services => new MultiLegExecutionLifecycle(
     services.GetRequiredService<IBrokerExecutionGateway>(),
     services.GetRequiredService<MultiLegExecutionStore>(),
     services.GetRequiredService<IRuntimeClock>(),
-    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout));
+    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout,
+    services.GetRequiredService<IHoldInterrupt>()));
+builder.Services.AddSingleton(services =>
+{
+    string configured = Environment.GetEnvironmentVariable("QUANTDESK_SPOT_STORE_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "runtime-data", "spot-executions.json");
+    return new SpotExecutionStore(Path.GetFullPath(configured));
+});
+builder.Services.AddSingleton<IHeldPositionMarker>(services => new MarketStateHeldPositionMarker(
+    services.GetRequiredService<MarketStateStore>(),
+    services.GetRequiredService<IInstrumentSymbolResolver>()));
+
+// The reasons a hold may end early. Until this existed the only one was the clock: a position whose
+// research had been retracted ran to its timer, and a position past its defined maximum loss ran to
+// its timer, because that maximum sized the capital reservation but was never compared to anything.
+// Retraction is listed first so it names the exit when both fire at once.
+builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInterrupt(
+    new ArtifactRetractionHoldInterrupt(services.GetRequiredService<ResearchArtifactState>()),
+    // Options only. A defined-risk vertical days from expiry is not the position that was opened
+    // with weeks to run: gamma rises, spreads widen as makers step back, and assignment on the
+    // short leg becomes real. MinimumDteToHold existed on the management plan to say this and was
+    // passed as null by every compiler, so the rule was stated in the domain and absent from the
+    // system. Spot carries no expiry and the rule correctly ignores it.
+    new ExpiryHoldInterrupt(services.GetRequiredService<IRuntimeClock>(), minimumDaysToExpiry: 2),
+    new AdverseLossHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>()),
+    new ProfitTargetHoldInterrupt(services.GetRequiredService<IHeldPositionMarker>()),
+    // The rule that opened the position is no longer one the system would open it with. The
+    // management plan has always said ExitOnThesisInvalidation and ExitEngine has always
+    // implemented it; no live position ever consulted either, so a stood-down thesis ran out its
+    // timer regardless. On 2026-09-02 every rule in both books became a known loser at 16:22Z
+    // while a position opened at 11:36Z under one of them was still held.
+    new ThesisInvalidationHoldInterrupt(symbol =>
+        services.GetRequiredService<OpportunityRouter>()
+                .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
+            // Per book, for the reason the entry fence is per book: the identifiers are shared, so
+            // a pooled summary decides whether an equity thesis is still live using crypto
+            // evidence. Here that would exit a sound position, or hold an invalidated one.
+            ? [.. SignalStrategies
+                .Tradable(
+                    route.AssetClass,
+                    services.GetRequiredService<ShadowSignalLog>().Summarise(route.AssetClass))
+                .Select(strategy => strategy.Id)]
+            : []),
+    // The rule that had no input. ExitOnRegimeChange has been set on every candidate since the
+    // compiler was written and ExitEngine has implemented it throughout; the Regime family was
+    // declared and never emitted, so it was reading a number nothing computed.
+    new RegimeChangeHoldInterrupt(services.GetRequiredService<IRegimeSource>())));
+
+builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
+    services.GetRequiredService<IBrokerExecutionGateway>(),
+    services.GetRequiredService<SpotExecutionStore>(),
+    services.GetRequiredService<IRuntimeClock>(),
+    services.GetRequiredService<AutonomousPaperTradingOptions>().FillTimeout,
+    services.GetRequiredService<IHoldInterrupt>(),
+    // Supplies the closing decision price when an execution reconciles flat, so the lane can
+    // measure what its own round trip cost instead of depending on another lane to do it.
+    services.GetRequiredService<IHeldPositionMarker>(),
+    // Read at submission, not at reservation. A reservation is permission to act on a decision,
+    // not permission to outlive it: a strategy stood down while the entry waited must not submit.
+    symbol => services.GetRequiredService<OpportunityRouter>()
+            .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
+        ? [.. SignalStrategies
+            .Tradable(route.AssetClass, services.GetRequiredService<ShadowSignalLog>().Summarise())
+            .Select(strategy => strategy.Id)]
+        : []));
+builder.Services.AddHostedService<RealisedCostPublisherService>();
+builder.Services.AddSingleton<SpotExecutionRecoveryService>();
+builder.Services.AddHostedService(services =>
+    services.GetRequiredService<SpotExecutionRecoveryService>());
 builder.Services.AddSingleton<MultiLegExecutionRecoveryService>();
 builder.Services.AddHostedService(services =>
     services.GetRequiredService<MultiLegExecutionRecoveryService>());
+builder.Services.AddHttpClient<QuantDesk.Alpaca.MarketData.AlpacaMarketClock>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
 builder.Services.AddHttpClient<QuantDesk.Alpaca.MarketData.AlpacaLatestCryptoQuoteClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+// Bulk history, not a quote. This client is used only by the equity dataset publisher, which pulls
+// months of five-minute bars in a single request; fifteen seconds was a quote's budget applied to a
+// download, and it timed out every cycle. The publisher failed closed and logged, so the research
+// plane's datasets quietly stopped refreshing while everything looked healthy.
 builder.Services.AddHttpClient<AlpacaHistoricalStockBarClient>(client =>
 {
-    client.Timeout = TimeSpan.FromSeconds(15);
+    client.Timeout = TimeSpan.FromMinutes(2);
 });
 builder.Services.AddHttpClient<AlpacaHistoricalOptionBarClient>(client =>
 {
@@ -165,6 +480,39 @@ builder.Services.AddHttpClient<AlpacaOptionContractClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(15);
 });
+builder.Services.AddSingleton<OptionResearchDatasetExporter>();
+builder.Services.AddHttpClient<AlpacaLatestOptionQuoteClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddHttpClient<AlpacaOptionRiskSnapshotClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddHttpClient<AlpacaLatestEquityQuoteClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddSingleton<OpportunityRouter>();
+builder.Services.AddSingleton<MarketEvidenceProvider>();
+builder.Services.AddSingleton<IMarketEvidenceProvider>(services =>
+    services.GetRequiredService<MarketEvidenceProvider>());
+// A defined-risk vertical's whole safety property is that the debit paid is the maximum loss, so
+// the risk budget per spread is the hard cap on what one options opportunity can cost. It is
+// derived from the same notional envelope the spot lane uses rather than invented here.
+builder.Services.AddSingleton(services =>
+{
+    AutonomousPaperTradingOptions trading = services.GetRequiredService<AutonomousPaperTradingOptions>();
+    return new DefinedRiskVerticalCompiler(
+        riskBudgetPerSpread: new Usd(trading.OrderNotional),
+        maximumRelativeSpread: 0.15,
+        minimumRewardToRisk: 0.5,
+        minimumDaysToExpiry: 7,
+        maximumDaysToExpiry: 60);
+});
+builder.Services.AddSingleton<OptionVerticalOpportunityService>();
+builder.Services.AddSingleton<OptionExecutionCoordinator>();
+builder.Services.AddSingleton<DefinedRiskVerticalLifecycleService>();
 
 WebApplication app = builder.Build();
 app.Services.GetRequiredService<FullSystemReadinessState>().RecordDeterministicRuntime(
@@ -208,11 +556,61 @@ app.MapGet("/api/system/capabilities", async (
     });
 });
 app.MapGet("/api/autonomous/status", (AutonomousTradingState autonomous) =>
-    Results.Ok(autonomous.Snapshot()));
+    // Every instrument, not just the most recently evaluated one. With one snapshot for the whole
+    // lane an operator could not tell a flat symbol from one that simply was not assessed last.
+    Results.Ok(new { lane = autonomous.Snapshot(), symbols = autonomous.SnapshotAll() }));
+app.MapGet("/api/agents/status", (AgentPlaneState agents) => Results.Ok(agents.Snapshot()));
 app.MapGet("/api/research/status", (ResearchArtifactState artifacts) =>
     Results.Ok(artifacts.Snapshot()));
 app.MapGet("/api/research/microstructure-status", (MicrostructureEvidenceBuffer evidence) =>
     Results.Ok(evidence.Snapshot()));
+app.MapGet("/api/system/fault-campaign", () =>
+{
+    string path = Environment.GetEnvironmentVariable("QUANTDESK_FAULT_CAMPAIGN_PATH")
+        ?? Path.Combine(AppContext.BaseDirectory, "fault-campaign.json");
+    FaultCampaignReport? report = FaultCampaign.Load(path);
+    return Results.Ok(new
+    {
+        campaignId = FaultCampaign.CampaignId,
+
+        // Three outcomes, not two. "partial" is a case nobody has written a driver for yet, and
+        // reporting that as "passed" is how this campaign spent its life claiming 21 of 21 while
+        // running no production code at all.
+        status = report is null ? "not-run"
+            : !report.NoExercisedFailure ? "failed"
+            : report.FullyCovered ? "passed"
+            : "partial",
+        total = FaultCampaign.Cases.Count,
+        exercised = report?.Exercised ?? 0,
+        passed = report?.Passed ?? 0,
+        fullyCovered = report?.FullyCovered ?? false,
+        startedAt = report?.StartedAt,
+        completedAt = report?.CompletedAt,
+        cases = report is null
+            ? FaultCampaign.Cases.Select(item => new
+            {
+                item.Id,
+                item.Category,
+                expectedDisposition = item.ExpectedDisposition.ToString(),
+                observedDisposition = (string?)null,
+                item.BrokerMutationAllowed,
+                exercised = false,
+                passed = false,
+                item.Recovery
+            })
+            : report.Cases.Select(item => new
+            {
+                item.Id,
+                item.Category,
+                expectedDisposition = item.ExpectedDisposition.ToString(),
+                observedDisposition = item.ObservedDisposition?.ToString(),
+                item.BrokerMutationAllowed,
+                exercised = item.Exercised,
+                passed = item.Passed,
+                item.Recovery
+            })
+    });
+});
 app.MapGet("/api/diagnostics/recovery", (
     HttpRequest request,
     DiagnosticExecutionRecoveryService recovery,
@@ -228,6 +626,78 @@ app.MapGet("/api/diagnostics/recovery", (
         recovery.LastError
     });
 });
+app.MapGet("/api/options/recovery", (
+    HttpRequest request,
+    MultiLegExecutionRecoveryService recovery,
+    MultiLegExecutionStore store,
+    OperatorKeyAuthorizer authorizer) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+    return Results.Ok(new
+    {
+        active = recovery.StartedAt is not null && recovery.LastError is null,
+        recovery.StartedAt,
+        recovery.LastCycleAt,
+        recovery.LastError,
+        nonterminalCount = store.ListNonterminal().Count
+    });
+});
+app.MapPost("/api/options/{executionId}/emergency-flatten", async (
+    HttpRequest request,
+    string executionId,
+    MultiLegExecutionLifecycle lifecycle,
+    MultiLegExecutionStore store,
+    OperatorKeyAuthorizer authorizer,
+    CancellationToken cancellationToken) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+    if (store.Find(executionId) is null)
+        return Results.NotFound();
+    MultiLegExecutionLifecycle.EmergencyFlattenResult result = await lifecycle.EmergencyFlattenAsync(
+        executionId, cancellationToken);
+    return Results.Json(result, statusCode: result.Complete
+        ? StatusCodes.Status200OK
+        : result.Pending ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+});
+app.MapPost("/api/paper/spot/{executionId}/close", async (
+    HttpRequest request,
+    string executionId,
+    SpotExecutionLifecycle lifecycle,
+    OperatorKeyAuthorizer authorizer,
+    CancellationToken cancellationToken) =>
+{
+    // Closing one held position on demand, through the managed exit rather than around it.
+    //
+    // There was no way to do this. An operator watching a position lose money could halt the whole
+    // system, flatten an options execution, or wait out the hold timer -- so on 2026-09-03 a
+    // bleeding crypto position ran its remaining hours because the only alternative was stopping
+    // everything.
+    //
+    // Operator-keyed, like every other endpoint that moves money. It brings the exit forward; it
+    // does not send an order, so the deterministic client order ID, lookup-before-retry, selling
+    // only what the account holds and reconciliation before completion all still apply.
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+
+    SpotExecutionRecord? record =
+        await lifecycle.RequestImmediateExitAsync(executionId, "operator", cancellationToken);
+
+    // Null covers three different situations -- unknown, already finished, or not yet holding --
+    // and 409 says "not in a state this can act on" without claiming to know which, since the
+    // record may legitimately have moved between the read and the request.
+    return record is null
+        ? Results.Conflict(new { executionId, reason = "NotHoldingOrAlreadyClosing" })
+        : Results.Ok(new
+        {
+            executionId,
+            record.Symbol,
+            state = record.State.ToString(),
+            record.EarlyExitReason,
+            record.ExitClientOrderId,
+        });
+});
 app.MapGet("/api/diagnostics/{experimentId}", (
     HttpRequest request,
     string experimentId,
@@ -238,6 +708,156 @@ app.MapGet("/api/diagnostics/{experimentId}", (
         return Results.Unauthorized();
     DiagnosticExecutionRecord? record = store.Find(experimentId);
     return record is null ? Results.NotFound() : Results.Ok(record);
+});
+app.MapGet("/api/system/replay", (SessionReplayState replay) => Results.Ok(replay.Snapshot()));
+app.MapGet("/api/research/attribution", (EpisodeAttributionState attribution) =>
+    Results.Ok(attribution.Snapshot()));
+
+app.MapGet("/api/system/latency", (LatencyRecorder latency) =>
+{
+    // Percentiles, not an average. Section 24.1 says average latency alone is insufficient, and a
+    // mean hides exactly the behaviour that matters: the slow cycles are the ones that cause harm
+    // and they are by definition rare. The p99 is also what says whether the entry fence's 30 bps
+    // adverse-move bound protects anything -- that depends on how long the gap it guards really is.
+    RuntimeHealth health = RuntimeHealthProbe.Read();
+    return Results.Ok(new
+    {
+        stages = latency.Summarise()
+            .OrderBy(stage => stage.Stage.ToString(), StringComparer.Ordinal)
+            .Select(stage => new
+            {
+                stage = stage.Stage.ToString(),
+                observations = stage.Count,
+                p50Ms = Math.Round(stage.P50, 1),
+                p95Ms = Math.Round(stage.P95, 1),
+                p99Ms = Math.Round(stage.P99, 1),
+                maxMs = Math.Round(stage.Maximum, 1),
+            }),
+        runtime = new
+        {
+            managedHeapMb = Math.Round(health.ManagedHeapBytes / 1024d / 1024d, 1),
+            workingSetMb = Math.Round(health.WorkingSetBytes / 1024d / 1024d, 1),
+            gen0 = health.Gen0Collections,
+            gen1 = health.Gen1Collections,
+            // Gen 2 matters more than heap size: a process can hold a large heap happily, but one
+            // collecting gen 2 repeatedly is spending its time on memory instead of decisions, and
+            // each collection is a pause during which a quote goes stale.
+            gen2 = health.Gen2Collections,
+            gcPauseMs = Math.Round(health.TotalPauseMilliseconds, 1),
+            threadPoolThreads = health.ThreadPoolThreads,
+            // The queue-depth signal the constitution asks for. A number that grows is a lane
+            // falling behind its cadence, which shows up as staleness before it shows up as error.
+            pendingWorkItems = health.PendingWorkItems,
+            uptimeSeconds = Math.Round(health.UptimeSeconds, 0),
+        },
+    });
+});
+app.MapGet("/api/research/expert-scores", (ForecastOutcomeLog outcomes) =>
+{
+    // Each expert judged on its own forecast, never on the trade's profit. Withheld below twelve
+    // independent episodes rather than reported wide, and separated by regime so an expert that is
+    // excellent in a range and useless in stress does not average to mediocre.
+    IReadOnlyList<ExpertForecastScore> scores = outcomes.Scores();
+    return Results.Ok(new
+    {
+        recorded = outcomes.Count,
+        resolved = outcomes.Resolved().Count,
+        minimumIndependentEpisodes = ExpertForecastScorer.MinimumIndependentEpisodes,
+        scores = scores.Select(score => new
+        {
+            expertId = score.ExpertId,
+            family = score.ForecastType.ToString(),
+            regime = score.Regime,
+            metric = score.PrimaryMetric.ToString(),
+            status = score.Status.ToString(),
+            samples = score.SampleCount,
+            independentEpisodes = score.IndependentEpisodeCount,
+            primaryLoss = score.PrimaryLoss,
+            qlike = score.QLike,
+            rmse = score.RootMeanSquaredError,
+            directionalAccuracy = score.DirectionalAccuracy,
+        }),
+    });
+});
+app.MapGet("/api/research/regimes", (IndicatorRegimeSource regimes) =>
+{
+    // The context family, visible. Two exit rules were written against regime and could not be
+    // implemented while nothing emitted one; this is what they now read.
+    IReadOnlyDictionary<string, MarketRegime> current = regimes.Snapshot();
+    return Results.Ok(new
+    {
+        classified = current.Count,
+        basis = "deterministic baseline from volatility percentile and trend strength; no HMM fitted",
+        regimes = current
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => new { symbol = pair.Key, regime = pair.Value.ToString() }),
+    });
+});
+app.MapGet("/api/research/shadow", (ShadowSignalLog shadow) =>
+{
+    // What every rule would have earned, had it been allowed to trade.
+    //
+    // With both books stood down this is the only evidence the system still generates, and the only
+    // route by which a rule can earn its way back. Reported as an upper bound and labelled as one:
+    // a shadow signal never touched the book, so it pays the venue's round trip but not the spread
+    // or the slippage a real fill would have.
+    IReadOnlyList<ShadowSignal> all = shadow.ListAll();
+    return Results.Ok(new
+    {
+        recorded = all.Count,
+        resolved = all.Count(item => item.IsResolved),
+        basis = "reference-price move less the venue round trip; excludes spread and slippage",
+
+        // Reported per book, because that is how it is read. The two books define rules under the
+        // same identifiers while paying costs an order of magnitude apart, so a single figure per
+        // identifier describes neither -- and the pooled number, being almost all crypto, reads as
+        // an endorsement of an equity rule that has barely traded.
+        books = new[] { TradedAssetClass.SpotCrypto, TradedAssetClass.UsEquity }
+            .Select(book => new
+            {
+                book = book.ToString(),
+                roundTripBps = VenueRoundTripCosts.For(book),
+                strategies = shadow.Summarise(book)
+                    .OrderByDescending(pair => pair.Value.MeanNetBps)
+                    .Select(pair => new
+                    {
+                        strategyId = pair.Key,
+                        signals = pair.Value.Signals,
+                        meanNetBps = Math.Round(pair.Value.MeanNetBps, 1),
+                        lowerBoundBps = Math.Round(pair.Value.LowerBoundBps, 1),
+                        tradable = pair.Value.Signals >= SignalStrategies.MinimumShadowSignals
+                            && pair.Value.LowerBoundBps > 0d,
+                    }),
+            }),
+    });
+});
+app.MapGet("/api/costs/realised", (
+    HttpRequest request,
+    IRealisedCostSource realisedCosts,
+    OperatorKeyAuthorizer authorizer) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+
+    // The same source the decision path charges against, so what an operator reads here is what a
+    // trade is actually priced with. Derived on read: a cached copy would keep answering after new
+    // evidence had arrived.
+    RealisedCostContract? contract = realisedCosts.Current();
+
+    // Why the dataset is the size it is, reported either way.
+    //
+    // "InsufficientCompletedRoundTrips" alone could not distinguish a system that has not traded
+    // from one that has traded and cannot measure any of it -- and on 2026-09-02 it was the second:
+    // five of nine completed spot round trips carried no exit reference price and the rest had
+    // shared the account. Finding that out meant reading the durable store by hand.
+    RealisedCostCoverage coverage = realisedCosts.Coverage();
+
+    // 404 rather than an empty dataset or a zero. Too few completed round trips is not a cost of
+    // zero; it is the absence of a measurement, and the caller has to be able to tell the
+    // difference before deciding whether to trade on it.
+    return contract is null
+        ? Results.NotFound(new { reason = "InsufficientCompletedRoundTrips", coverage })
+        : Results.Ok(new { contract, coverage });
 });
 app.MapPost("/api/diagnostics/{experimentId}/start", async (
     HttpRequest request,
@@ -251,6 +871,29 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
 {
     if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
         return Results.Unauthorized();
+
+    // The diagnostic lane has no strategy and no opinion. It exists to prove the durable execution
+    // path works -- reservation before POST, recovery by client order ID, reconciliation -- by
+    // opening and closing a real position. That proof was obtained long ago.
+    //
+    // Left reachable, it kept being driven: 132 of the 151 orders placed in the twenty-four hours
+    // to 2026-09-02 came from this lane, 66 BTC round trips on roughly 12.65 USD each, paying the
+    // venue's 0.25% a side every time for a result that was already known. It was the majority of
+    // the day's order flow and the majority of its fees.
+    //
+    // It now requires an explicit opt-in rather than merely an operator key. A lane that can be
+    // driven into unbounded fee-paying churn by one endpoint should not be a default-on capability
+    // once what it proves has been proven.
+    if (!bool.TryParse(Environment.GetEnvironmentVariable("QUANTDESK_DIAGNOSTIC_ENABLED"), out bool diagnosticsAllowed)
+        || !diagnosticsAllowed)
+    {
+        return Results.Conflict(new
+        {
+            reason = "DIAGNOSTIC_LANE_DISABLED",
+            detail = "Set QUANTDESK_DIAGNOSTIC_ENABLED=true to run the durable-execution proof. "
+                   + "It trades a real position and pays real fees for a result already recorded.",
+        });
+    }
 
     DiagnosticExecutionRecord? existing = store.Find(experimentId);
     DiagnosticExecutionResult result = existing is null
@@ -282,7 +925,8 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
         reserved = store.Find(experimentId)!;
     }
     if (reserved.State == "EntryReserved" && reserved.EntrySubmissionAttemptedAt is null)
-        result = await diagnostics.AdvanceAsync(experimentId, 0, 0.00000001m, cancellationToken);
+        result = await diagnostics.AdvanceAsync(
+            experimentId, DiagnosticExecutionOptions.MinimumCryptoQuantity, cancellationToken);
     else if (reserved.State == "ReconciliationFailed")
     {
         store.Update(experimentId, current => current with
@@ -291,10 +935,10 @@ app.MapPost("/api/diagnostics/{experimentId}/start", async (
             Failure = DiagnosticExecutionFailure.None,
             FailureReason = null
         });
-        result = await diagnostics.AdvanceAsync(experimentId, 0, 0, cancellationToken);
+        result = await diagnostics.AdvanceAsync(experimentId, 0, cancellationToken);
     }
     else if (reserved.State == "Complete" && reserved.GrossPaperPnl is null)
-        result = await diagnostics.AdvanceAsync(experimentId, 0, 0, cancellationToken);
+        result = await diagnostics.AdvanceAsync(experimentId, 0, cancellationToken);
     return Results.Json(new { result, record = store.Find(experimentId) }, statusCode:
         result.Allowed ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
 });
@@ -307,6 +951,66 @@ app.MapPost("/api/system/halt", (
         return Results.Unauthorized();
     runtimeMode.Transition(SystemMode.EntryHalted, "operator_halt");
     return Results.Ok(new { mode = SystemMode.EntryHalted.ToString() });
+});
+// Clearing an operator halt.
+//
+// Halt and risk-reduction are deliberately sticky: the preflight preserves them so a routine
+// reconciliation cycle cannot quietly undo a human decision. Without a way to release them, though,
+// the only route back to Ready was restarting the process — an operator could stop the system and
+// then not start it. This hands the decision back to the preflight rather than forcing Ready
+// directly, so the system resumes only if it independently reconciles.
+app.MapPost("/api/system/resume", async (
+    HttpRequest request,
+    RuntimeModeState runtimeMode,
+    PaperRuntimePreflightService preflight,
+    FullSystemReadinessState readiness,
+    OperatorKeyAuthorizer authorizer,
+    CancellationToken cancellationToken) =>
+{
+    if (!authorizer.IsAuthorized(request.Headers["X-QuantDesk-Operator-Key"].FirstOrDefault()))
+        return Results.Unauthorized();
+
+    (SystemMode mode, string? reason) = runtimeMode.Snapshot();
+    if (mode is not (SystemMode.EntryHalted or SystemMode.RiskReductionOnly))
+        return Results.Json(new { mode = mode.ToString(), resumed = false, reason = "NOT_HALTED" });
+
+    runtimeMode.Transition(SystemMode.Syncing, "operator_resume");
+    await preflight.CheckOnceAsync(cancellationToken);
+    SystemMode resulting = runtimeMode.Snapshot().Mode;
+    FullSystemReadinessSnapshot snapshot = readiness.Snapshot();
+
+    // A bare "resumed: false" tells an operator nothing about what to fix. Name the gates that are
+    // still down, and say separately whether execution can proceed at all — full readiness includes
+    // the research plane, which is not a prerequisite for the diagnostic or manual order paths.
+    string[] blocking =
+    [
+        .. new (string Name, bool Ready)[]
+        {
+            ("marketDataHealthy", snapshot.MarketDataHealthy),
+            ("tradeUpdatesHealthy", snapshot.TradeUpdatesHealthy),
+            ("brokerReconciled", snapshot.BrokerReconciled),
+            ("portfolioKnown", snapshot.PortfolioKnown),
+            ("featuresReady", snapshot.FeaturesReady),
+            ("expertsReady", snapshot.ExpertsReady),
+            ("committeesReady", snapshot.CommitteesReady),
+            ("riskReady", snapshot.RiskReady),
+            ("reservationReady", snapshot.ReservationReady),
+            ("executionReady", snapshot.ExecutionReady),
+            ("exitEngineReady", snapshot.ExitEngineReady),
+            ("paperEndpointVerified", snapshot.PaperEndpointVerified)
+        }.Where(gate => !gate.Ready).Select(gate => gate.Name)
+    ];
+
+    return Results.Json(new
+    {
+        mode = resulting.ToString(),
+        resumed = resulting == SystemMode.Ready,
+        previous = mode.ToString(),
+        previousReason = reason,
+        infrastructureExecutionReady = snapshot.InfrastructureExecutionReady,
+        exitExecutionReady = snapshot.ExitExecutionReady,
+        blockingFullReadiness = blocking
+    });
 });
 app.MapPost("/api/system/risk-reduction", (
     HttpRequest request,

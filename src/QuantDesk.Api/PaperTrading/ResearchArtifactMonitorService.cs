@@ -1,6 +1,7 @@
 using System.Text.Json;
 using QuantDesk.Domain.Contracts;
 using QuantDesk.Runtime.Research;
+using QuantDesk.Runtime.Time;
 
 namespace QuantDesk.Api.PaperTrading;
 
@@ -43,7 +44,8 @@ public sealed record ResearchArtifactSnapshot(
 /// </summary>
 public sealed class ResearchArtifactMonitorService(
     ResearchArtifactState state,
-    ILogger<ResearchArtifactMonitorService> logger) : BackgroundService
+    ILogger<ResearchArtifactMonitorService> logger,
+    IRuntimeClock clock) : BackgroundService
 {
     private static readonly TimeSpan ProbeInterval = TimeSpan.FromSeconds(10);
     private readonly string _artifactRoot = Environment.GetEnvironmentVariable("QUANTDESK_RESEARCH_ARTIFACT_ROOT")
@@ -75,11 +77,11 @@ public sealed class ResearchArtifactMonitorService(
             PythonResearchContractReader.ValidateForecast(artifact, schema, forecast);
             if (!string.Equals(forecast.Status, "valid", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Forecast publication is not valid.");
-            if (DateTimeOffset.UtcNow - forecast.AsOfTime > TimeSpan.FromMinutes(forecast.HorizonMinutes))
+            if (clock.UtcNow - forecast.AsOfTime > TimeSpan.FromMinutes(forecast.HorizonMinutes))
                 throw new InvalidDataException("Forecast publication is stale.");
             state.RecordValid(artifact, forecast);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (HostedServiceFaults.IsFault(exception, cancellationToken))
         {
             state.RecordInvalid("artifact_unavailable_or_invalid");
             logger.LogDebug(exception, "Research artifact probe failed closed.");

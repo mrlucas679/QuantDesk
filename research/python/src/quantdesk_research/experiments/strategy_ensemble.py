@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import NormalDist
@@ -10,6 +11,8 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 
+from quantdesk_research.backtest.realised_costs import resolve_round_trip_bps
+from quantdesk_research.data.manifest_keys import require_manifest_value
 from quantdesk_research.experiments.prospective_campaign import (
     IndependentValidationCampaign,
     ProspectiveCampaign,
@@ -199,7 +202,7 @@ def run_campaign(
 ) -> list[StrategyEvaluation]:
     """Run the preregistered fixed-family campaign without promoting a winner."""
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     frame = build_strategy_frame(bars, horizon_bars)
     names = (
         "donchian_breakout",
@@ -222,9 +225,9 @@ def run_prospective_campaign(
     """Evaluate only genuinely unseen bars for the immutable preregistered cohort."""
     campaign = ProspectiveCampaign.load(campaign_path)
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
-    if manifest["symbol"] != campaign.instrument or manifest["timeframe"] != campaign.timeframe:
+    if require_manifest_value(manifest, "symbol") != campaign.instrument or require_manifest_value(manifest, "timeframe") != campaign.timeframe:
         raise ValueError("PROSPECTIVE_SUPPORT_DOMAIN_MISMATCH")
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     campaign.require_sufficient_unseen_data(bars)
     comparison_count = len(campaign.strategy_families) * len(campaign.holding_horizons_bars)
     results: list[StrategyEvaluation] = []
@@ -247,9 +250,9 @@ def run_independent_validation_campaign(
     """Evaluate the fixed strategy cohort once on a disjoint historical validation interval."""
     campaign = IndependentValidationCampaign.load(campaign_path)
     manifest = json.loads((data_root / manifest_name).read_text(encoding="utf-8"))
-    if manifest["symbol"] != campaign.instrument or manifest["timeframe"] != campaign.timeframe:
+    if require_manifest_value(manifest, "symbol") != campaign.instrument or require_manifest_value(manifest, "timeframe") != campaign.timeframe:
         raise ValueError("INDEPENDENT_SUPPORT_DOMAIN_MISMATCH")
-    bars = json.loads((data_root / manifest["dataFile"]).read_text(encoding="utf-8"))
+    bars = json.loads((data_root / require_manifest_value(manifest, "data_file")).read_text(encoding="utf-8"))
     timestamps = pd.to_datetime([bar["t"] for bar in bars], utc=True)
     in_cohort = [
         bar
@@ -280,13 +283,24 @@ def main() -> int:
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--manifest-name", default="latest-manifest.json")
     parser.add_argument("--horizon-bars", type=int, default=12)
-    parser.add_argument("--round-trip-cost-bps", type=float, default=60.0)
+    parser.add_argument(
+        "--round-trip-cost-bps",
+        type=float,
+        default=None,
+        help="Override the measured round-trip cost; otherwise read from the published dataset.",
+    )
     arguments = parser.parse_args()
+
+    cost_bps, provenance = resolve_round_trip_bps(
+        arguments.data_root, arguments.round_trip_cost_bps
+    )
+    print(f"round-trip cost: {provenance}", file=sys.stderr)
+
     results = run_campaign(
         arguments.data_root,
         arguments.manifest_name,
         arguments.horizon_bars,
-        arguments.round_trip_cost_bps,
+        cost_bps,
     )
     print(json.dumps([asdict(result) for result in results], sort_keys=True))
     return 0 if any(result.passed for result in results) else 1

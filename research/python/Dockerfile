@@ -42,4 +42,4 @@ USER quantdesk
 
 EXPOSE 8000
 
-CMD ["python", "-m", "quantdesk_research.cli.main", "mcp", "--port", "8000"]
+CMD ["python", "-m", "quantdesk_research.cli.main", "mcp", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,15 @@
+{
+  "dtypes": {
+    "donchian_breakout": "bool"
+  },
+  "feature_hash": "db0d751b847c5606cbde333ac1a904907dcaf0c8bde6a7aa270c74bf619276bd",
+  "feature_names": [
+    "donchian_breakout"
+  ],
+  "lookback_periods": 20,
+  "normalization": {},
+  "schema_version": "deterministic-rule-v1",
+  "source_requirements": [
+    "alpaca_ohlcv"
+  ]
+}

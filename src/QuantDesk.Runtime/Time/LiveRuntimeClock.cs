@@ -10,4 +10,11 @@ public sealed class LiveRuntimeClock : IRuntimeClock
 
     public double ElapsedMilliseconds(long start, long end) =>
         (end - start) * 1000.0 / Stopwatch.Frequency;
+
+    public long MonotonicTicksFor(TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero) return 0L;
+        double ticks = duration.TotalSeconds * Stopwatch.Frequency;
+        return ticks >= long.MaxValue ? long.MaxValue : (long)Math.Ceiling(ticks);
+    }
 }

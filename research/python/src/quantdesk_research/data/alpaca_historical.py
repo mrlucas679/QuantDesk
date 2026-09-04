@@ -128,8 +128,28 @@ def write_immutable_dataset(
         data_file=data_file,
     )
     manifest_path = output_root / f"latest-{slug}-{timeframe.lower()}-{feed}.manifest.json"
+    # This is the same durable manifest contract emitted by the C# publishers.  Keep the
+    # wire keys explicit: dataclass snake_case is an implementation detail, not a second schema.
     manifest_path.write_text(
-        json.dumps(asdict(manifest), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(
+            {
+                "datasetId": manifest.dataset_id,
+                "symbol": manifest.symbol,
+                "timeframe": manifest.timeframe,
+                "start": manifest.start,
+                "end": manifest.end,
+                "rowCount": manifest.row_count,
+                "sha256": manifest.sha256,
+                "generatedAt": manifest.generated_at,
+                "dataFile": manifest.data_file,
+                "feed": manifest.feed,
+                "adjustment": manifest.adjustment,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
     )
     return manifest
 
