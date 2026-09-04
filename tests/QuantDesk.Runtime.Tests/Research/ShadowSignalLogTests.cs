@@ -15,6 +15,16 @@ public sealed class ShadowSignalLogTests : IDisposable
 {
     private static readonly DateTimeOffset Fired = DateTimeOffset.Parse("2026-09-02T12:00:00Z");
 
+    /// <summary>
+    /// A minute past a signal's due time, which is inside the resolver's lateness tolerance.
+    ///
+    /// These tests used to resolve an hour late and assert the resulting figure, which is exactly
+    /// the behaviour that made shadow score a market rally as a rule's skill: the exit price
+    /// available at resolution is the mid *now*, so a signal scored long after its horizon is
+    /// scored against a hold nobody took.
+    /// </summary>
+    private static readonly DateTimeOffset OnTime = Fired.AddHours(4).AddMinutes(1);
+
     private readonly string _path =
         Path.Combine(Path.GetTempPath(), $"qd-shadow-{Guid.NewGuid():N}.json");
 
@@ -50,7 +60,7 @@ public sealed class ShadowSignalLogTests : IDisposable
         ShadowSignalLog log = Log();
         log.TryRecord(Signal("a.trend.v1", "BTC/USD", 100m));
 
-        Assert.Equal(1, log.Resolve(Fired.AddHours(5), _ => 102m));
+        Assert.Equal(1, log.Resolve(OnTime, _ => 102m));
 
         ShadowSignal resolved = Assert.Single(log.ListAll());
         Assert.True(resolved.IsResolved);
@@ -69,18 +79,26 @@ public sealed class ShadowSignalLogTests : IDisposable
     }
 
     [Fact]
-    public void ASignalThatCannotBePricedStaysOpenRatherThanResolvingAtAGuess()
+    public void ASignalThatCannotBePricedStaysOpenAndIsAbandonedRatherThanScoredLate()
     {
-        // Late but honest. It resolves on a later pass, and the lateness is visible in the gap
-        // between ResolveAt and the exit it eventually gets.
+        // This test used to assert "late but honest": a signal that could not be priced on time
+        // resolved on a later pass, at whatever the mid happened to be by then. That is the defect.
+        // The exit price available at resolution is the mid *now*, so scoring a signal five hours
+        // past its horizon measures a hold nobody took -- and on a day when the market rallied, it
+        // recorded the rally as the rule's skill.
         ShadowSignalLog log = Log();
         log.TryRecord(Signal("a.trend.v1", "BTC/USD", 100m));
 
-        Assert.Equal(0, log.Resolve(Fired.AddHours(5), _ => null));
+        // Still open while it is merely unpriced and not yet late.
+        Assert.Equal(0, log.Resolve(OnTime, _ => null));
         Assert.False(log.ListAll()[0].IsResolved);
 
+        // Past the tolerance it is abandoned, not scored. An observation that was never made is
+        // not a losing observation; counting it either way invents evidence.
         Assert.Equal(1, log.Resolve(Fired.AddHours(9), _ => 103m));
-        Assert.True(log.ListAll()[0].IsResolved);
+        Assert.True(log.ListAll()[0].Abandoned);
+        Assert.Null(log.ListAll()[0].NetBps);
+        Assert.Empty(log.Summarise(minimumSignals: 1));
     }
 
     [Fact]
@@ -183,7 +201,10 @@ public sealed class ShadowSignalLogTests : IDisposable
     private void Record(ShadowSignalLog log, string strategyId, int minute, decimal exit)
     {
         log.TryRecord(Signal(strategyId, "BTC/USD", 100m, minute));
-        log.Resolve(Fired.AddMinutes(minute).AddHours(5), _ => exit);
+
+        // Resolved at its own due time. Resolving a batch at one later instant is what the
+        // production bug did, and a test that does it cannot detect the bug.
+        log.Resolve(Fired.AddMinutes(minute).AddHours(4).AddMinutes(1), _ => exit);
     }
 
     // ------------------------------------------------------- the two books share rule identifiers
@@ -242,12 +263,15 @@ public sealed class ShadowSignalLogTests : IDisposable
         // Entry 100, so an exit of 100 * (1 + (net + venue) / 10_000) lands on the wanted net.
         decimal exit = 100m * (1m + ((decimal)(net + 60d) / 10_000m));
 
+        // Each signal resolved at its own deadline rather than the whole run at one later instant.
+        // The batch form is precisely the production defect: it prices every signal at whatever the
+        // clock says when the resolver runs, so a run recorded over forty minutes gets scored
+        // against one price up to forty minutes past the earliest signal's horizon.
         for (int minute = 0; minute < count; minute++)
         {
             log.TryRecord(Signal(strategyId, symbol, 100m, minute));
+            log.Resolve(Fired.AddMinutes(minute).AddHours(4).AddMinutes(1), _ => exit);
         }
-
-        log.Resolve(Fired.AddMinutes(count).AddHours(5), _ => exit);
     }
 
     private static ShadowSignal Signal(

@@ -66,6 +66,33 @@ public sealed record ShadowSignal(
     /// </summary>
     public SignalDirection Direction { get; init; } = SignalDirection.Long;
 
+    /// <summary>
+    /// Which resolution rule produced <see cref="NetBps"/>, so a figure measured under a broken one
+    /// cannot go on authorising trades.
+    ///
+    /// Records written before this field carry version 0 and are excluded from every summary. They
+    /// were scored by taking the *current* mid whenever the resolver happened to run, rather than
+    /// the mid at the moment the signal was due -- so a signal due four hours ago and resolved after
+    /// a restart was scored against a price hours later than its own hold. On a day when ETH, AAVE
+    /// and BTC each rallied about four and a half percent, that scored a rally as though every rule
+    /// had predicted it.
+    ///
+    /// The damage was not academic. Shadow overrules the research record in <c>Tradable</c>, so
+    /// these figures were what made rules measured at -10 bps net appear to earn +40, and they
+    /// authorised every crypto position the lane opened.
+    /// </summary>
+    public int ResolutionBasis { get; init; }
+
+    /// <summary>
+    /// Set when the signal's exit price was never observed close enough to its due time to score.
+    ///
+    /// Distinct from unresolved and from resolved-at-a-loss: an absent observation is not a losing
+    /// one, and counting it either way invents evidence. It is recorded rather than deleted so the
+    /// proportion abandoned stays visible -- a rule whose signals mostly go unscored is telling you
+    /// something about the feed, not about the market.
+    /// </summary>
+    public bool Abandoned { get; init; }
+
     public decimal? ExitReferencePrice { get; init; }
 
     public double? NetBps { get; init; }
@@ -204,6 +231,21 @@ public sealed class ShadowSignalLog(string path)
     /// <param name="now">The current time.</param>
     /// <param name="midFor">Current mid per symbol, or null when no healthy quote exists.</param>
     /// <returns>How many signals were resolved.</returns>
+    /// <summary>
+    /// How far past its due time a signal may still be scored.
+    ///
+    /// One bar. The resolver runs every cycle, so a signal resolved within a bar of its deadline was
+    /// priced close enough to its own horizon for the figure to describe the hold it claims.
+    /// Anything later is describing a different hold.
+    /// </summary>
+    public static readonly TimeSpan MaximumResolutionLateness = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The current resolution rule's version. Bumped whenever the meaning of NetBps changes, so
+    /// figures measured the old way stop being counted rather than quietly persisting.
+    /// </summary>
+    public const int CurrentBasis = 1;
+
     public int Resolve(DateTimeOffset now, Func<string, decimal?> midFor)
     {
         ArgumentNullException.ThrowIfNull(midFor);
@@ -218,9 +260,27 @@ public sealed class ShadowSignalLog(string path)
                 ShadowSignal signal = all[id];
                 if (signal.IsResolved || now < signal.ResolveAt) continue;
 
+                // Too late to score honestly.
+                //
+                // The exit price available here is the mid *now*, not the mid when this signal was
+                // due. Resolving a signal long past its time therefore measures a hold nobody took:
+                // the previous rule called that "late but honest", and it was neither -- a signal
+                // due four hours ago and resolved after a restart was scored against a price hours
+                // beyond its own horizon, so a market that rallied in the interval was recorded as a
+                // rule that predicted the rally.
+                //
+                // Abandoned rather than resolved, because a signal whose exit price was never
+                // observed is not a losing observation, it is an absent one, and scoring it either
+                // way would be inventing evidence.
+                if (now - signal.ResolveAt > MaximumResolutionLateness)
+                {
+                    all[id] = signal with { Abandoned = true, ResolutionBasis = CurrentBasis };
+                    resolved++;
+                    continue;
+                }
+
                 // A signal that cannot be priced stays open rather than being resolved at a guess.
-                // It will resolve on a later pass, late but honest, and the lateness is visible in
-                // the gap between ResolveAt and the exit it eventually gets.
+                // It becomes abandoned above once it is too late to score.
                 if (midFor(signal.Symbol) is not { } exit || exit <= 0m) continue;
 
                 double moveBps =
@@ -235,6 +295,7 @@ public sealed class ShadowSignalLog(string path)
                 {
                     ExitReferencePrice = exit,
                     NetBps = directedBps - signal.VenueRoundTripBps,
+                    ResolutionBasis = CurrentBasis,
                 };
                 resolved++;
             }
@@ -284,6 +345,10 @@ public sealed class ShadowSignalLog(string path)
         Dictionary<string, List<double>> byStrategy = new(StringComparer.Ordinal);
         foreach (ShadowSignal signal in ListAll())
         {
+            // Scored under the current resolution rule, and only that. A figure produced by the
+            // rule that priced signals at whatever the clock happened to say is not a worse estimate
+            // of the same quantity -- it is an estimate of a different one.
+            if (signal.Abandoned || signal.ResolutionBasis != CurrentBasis) continue;
             if (signal.NetBps is not { } net) continue;
             if (assetClass is { } book && signal.AssetClass != book) continue;
             if (!byStrategy.TryGetValue(signal.StrategyId, out List<double>? nets))

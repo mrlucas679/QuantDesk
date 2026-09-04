@@ -83,7 +83,7 @@ public sealed class SignalDirectionTests
             var log = new ShadowSignalLog(path);
             log.TryRecord(Signal(path: "s", direction: SignalDirection.Short));
 
-            log.Resolve(Fired.AddHours(5), _ => 98m);
+            log.Resolve(OnTime, _ => 98m);
 
             ShadowSignal resolved = Assert.Single(log.ListAll());
 
@@ -105,7 +105,7 @@ public sealed class SignalDirectionTests
             var log = new ShadowSignalLog(path);
             log.TryRecord(Signal(path: "l", direction: SignalDirection.Long));
 
-            log.Resolve(Fired.AddHours(5), _ => 102m);
+            log.Resolve(OnTime, _ => 102m);
 
             Assert.Equal(140d, Assert.Single(log.ListAll()).NetBps!.Value, precision: 6);
         }
@@ -191,6 +191,16 @@ public sealed class SignalDirectionTests
     // ------------------------------------------------------------------------------- fixtures
 
     private static readonly DateTimeOffset Fired = DateTimeOffset.Parse("2026-09-03T12:00:00Z");
+
+    /// <summary>
+    /// A minute past a signal's due time, which is inside the resolver's lateness tolerance.
+    ///
+    /// These tests used to resolve an hour late and assert the resulting figure, which is exactly
+    /// the behaviour that made shadow score a market rally as a rule's skill: the exit price
+    /// available at resolution is the mid *now*, so a signal scored long after its horizon is
+    /// scored against a hold nobody took.
+    /// </summary>
+    private static readonly DateTimeOffset OnTime = Fired.AddHours(4).AddMinutes(1);
 
     private static SignalDirection Fire(SignalStrategy rule, IndicatorSet set) =>
         rule.Fires(set, set.Length - 1);
