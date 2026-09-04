@@ -430,7 +430,8 @@ public sealed class AutonomousPaperTradingService(
             experimental ? null : forecast!.Uncertainty,
             experimental ? null : MeasuredCostUpperBoundBps(),
             new Usd(breadth.CorrelatedExposure),
-            explorationBudgetAvailable);
+            explorationBudgetAvailable,
+            new Usd(RiskLimitOptions.MaximumCorrelatedExposure(options.OrderNotional)));
         latency?.Record(LatencyStage.Decision, decisionStarted);
 
         if (!decision.Approved || decision.Candidate is not TradeCandidate candidate ||

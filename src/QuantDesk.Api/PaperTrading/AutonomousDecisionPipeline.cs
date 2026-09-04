@@ -311,7 +311,8 @@ public sealed class AutonomousDecisionPipeline(
         ForecastUncertaintyContract? forecastUncertainty = null,
         double? allInCostUpperBoundBps = null,
         Usd projectedCorrelatedExposure = default,
-        bool explorationBudgetAvailable = false)
+        bool explorationBudgetAvailable = false,
+        Usd? maximumCorrelatedExposure = null)
     {
         // Capabilities are required, not defaulted.
         //
@@ -577,7 +578,10 @@ public sealed class AutonomousDecisionPipeline(
         RiskDecision risk = riskGovernor.Evaluate(
             candidate, estimate, market, portfolio, brokerHealthy, portfolioReconciled, nowTicks,
             projectedCorrelatedExposure,
-            explorationBudgetAvailable);
+            explorationBudgetAvailable,
+            // This lane's cap, scaled to this lane's position size. The governor is shared and its
+            // own limits were built from whichever lane was read first.
+            maximumCorrelatedExposure);
         return risk.Approved
             ? new(true, "Approved", candidate, estimate, risk, committeeDecision, market)
             : new(false, risk.Reason.ToString(), candidate, estimate, risk, committeeDecision, market);

@@ -27,7 +27,8 @@ public sealed class RiskGovernor
         bool portfolioReconciled,
         long nowTicks,
         Usd projectedCorrelatedExposure = default,
-        bool explorationBudgetAvailable = false)
+        bool explorationBudgetAvailable = false,
+        Usd? maximumCorrelatedExposure = null)
     {
         if (!brokerHealthy) return Reject(RiskReason.BrokerUnhealthy);
         if (!portfolioReconciled) return Reject(RiskReason.PortfolioUnreconciled);
@@ -70,8 +71,16 @@ public sealed class RiskGovernor
         // the governor stays deterministic and free of data-fetching, and the caller that has the
         // return history does the arithmetic. Passing nothing leaves the check inert, which is why
         // the lane test pins that the lane passes it.
+        // The lane's own limit when it supplies one, because this governor is a singleton shared by
+        // every lane and its limits were built from whichever lane happened to be read first.
+        //
+        // That was the crypto lane at a $200 position, giving a $600 correlated-exposure cap, and it
+        // was then enforced against equity positions sized at $1,600 -- refusing every one of them
+        // on a flat account, where there was no correlated exposure to speak of. A limit scaled to
+        // one lane's position size says nothing about another's.
+        Usd correlatedCap = maximumCorrelatedExposure ?? _limits.MaximumCorrelatedExposure;
         if (projectedCorrelatedExposure.Value > 0 &&
-            projectedCorrelatedExposure > _limits.MaximumCorrelatedExposure)
+            projectedCorrelatedExposure > correlatedCap)
             return Reject(RiskReason.CommonExposureLimit);
 
         Usd projectedRisk = portfolio.OpenRisk + portfolio.ReservedRisk + candidate.EstimatedStressLoss;
