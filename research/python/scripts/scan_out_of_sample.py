@@ -39,7 +39,14 @@ EQUITY = ["SPY", "QQQ", "IWM", "DIA"]
 # this scan produced was roughly 26 bps too generous, which is the whole reason crypto rules cleared
 # a committee floor that honest equity rules did not, and why the registry showed a "best" crypto
 # rule at +1.5 bps net that is really about -25.
-CRYPTO_COST = 60.0
+# 52.6, and this one is measured from the account rather than read off a comment. Alpaca charges
+# roughly 25.6 bps in kind on the buy -- the delivered quantity is short by that much -- and about
+# 27.0 bps in USD on the sell. Reconstructed over 132 buys and 130 sells: $35.39 of missing
+# quantity and $36.25 of cash the fills do not account for.
+#
+# The two previous values here were both guesses wearing a comment's authority. 33.7 was the
+# research assumption; 60.0 was mine, written from a code comment on 2026-09-04 without measuring.
+CRYPTO_COST = 52.6
 EQUITY_COST = 8.0
 
 # Holding periods in 5-minute bars: one hour through twelve.
@@ -51,7 +58,15 @@ EQUITY_COST = 8.0
 # that never looked past four hours could not have found any of it.
 HOLDS = (12, 24, 48, 96, 144)
 TRAIN_FRACTION = 0.6
-BAR_MINUTES = 5
+
+# The bar the scan reads. Everything in this system has been 5-minute bars and nothing else -- one
+# timeframe, never chosen, just inherited.
+#
+# It is worth questioning on its own terms. A rule firing on 5-minute bars gets many more
+# opportunities than the same rule on 30-minute bars, and each one is charged the same fixed toll.
+# Coarser bars also mean fewer, larger moves per decision, which is the same square-root argument
+# the holding-period sweep tests, applied to the sampling interval instead of the hold.
+BARS = ("5Min", "15Min", "30Min")
 
 HEAD = {
     "APCA-API-KEY-ID": os.environ["APCA_API_KEY_ID"],
@@ -60,18 +75,20 @@ HEAD = {
 
 
 # --------------------------------------------------------------------------------- data
-def fetch(symbol: str, days: int = 60) -> dict[str, np.ndarray] | None:
+def fetch(symbol: str, timeframe: str = "5Min", days: int = 60) -> dict[str, np.ndarray] | None:
     start = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     crypto = "/" in symbol
     if crypto:
         url = (
             "https://data.alpaca.markets/v1beta3/crypto/us/bars"
-            f"?symbols={urllib.parse.quote(symbol)}&timeframe=5Min&start={start}&limit=10000"
+            f"?symbols={urllib.parse.quote(symbol)}"
+            f"&timeframe={urllib.parse.quote(timeframe)}&start={start}&limit=10000"
         )
     else:
         url = (
             f"https://data.alpaca.markets/v2/stocks/{symbol}/bars"
-            f"?timeframe=5Min&start={start}&limit=10000&adjustment=raw"
+            f"?timeframe={urllib.parse.quote(timeframe)}&start={start}"
+            "&limit=10000&adjustment=raw"
         )
 
     rows: list[dict[str, object]] = []
@@ -324,15 +341,25 @@ def summarise(nets: list[float]):
     return n, mean, lower, sharpe, sd
 
 
-def run(symbols: list[str], cost: float, label: str, session_scoped: bool) -> None:
-    print(f"\n{'=' * 92}\n{label}   cost {cost:.1f} bps per round trip\n{'=' * 92}")
+def run(
+    symbols: list[str],
+    cost: float,
+    label: str,
+    session_scoped: bool,
+    timeframe: str = "5Min",
+    days: int = 60,
+) -> None:
+    print("")
+    print("============================================================================================")
+    print(f"{label}   {timeframe} bars   cost {cost:.1f} bps per round trip")
+    print("============================================================================================")
 
     train: dict[str, list[float]] = {}
     test: dict[str, list[float]] = {}
     curves: dict[str, list[float]] = {}
 
     for symbol in symbols:
-        bars = fetch(symbol)
+        bars = fetch(symbol, timeframe, days)
         if bars is None:
             print(f"  {symbol}: insufficient history")
             continue
@@ -398,7 +425,7 @@ def run(symbols: list[str], cost: float, label: str, session_scoped: bool) -> No
     destination = (
         pathlib.Path(__file__).resolve().parent.parent
         / "artifacts"
-        / f"scan_{label.split()[0].lower()}.json"
+        / f"scan_{label.split()[0].lower()}_{timeframe.lower()}.json"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as handle:
@@ -415,5 +442,11 @@ def run(symbols: list[str], cost: float, label: str, session_scoped: bool) -> No
 
 
 if __name__ == "__main__":
-    run(CRYPTO, CRYPTO_COST, "CRYPTO -- 7 pairs, 5-minute bars, ~60 days", session_scoped=False)
-    run(EQUITY, EQUITY_COST, "US EQUITY ETFs -- 4 symbols, 5-minute bars, ~60 days", session_scoped=True)
+    # A coarser bar covers more calendar time for the same row limit, so the window widens with it
+    # -- otherwise the 30-minute scan would run on a third of the sample and look noisier for that
+    # reason alone rather than because the timeframe is worse.
+    for timeframe, days in (("5Min", 60), ("15Min", 180), ("30Min", 360)):
+        run(CRYPTO, CRYPTO_COST, "CRYPTO -- 7 pairs", session_scoped=False,
+            timeframe=timeframe, days=days)
+        run(EQUITY, EQUITY_COST, "US EQUITY ETFs -- 4 symbols", session_scoped=True,
+            timeframe=timeframe, days=days)

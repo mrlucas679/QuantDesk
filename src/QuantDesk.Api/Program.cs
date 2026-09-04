@@ -307,6 +307,9 @@ static AutonomousPaperTradingService BuildLane(
         services.GetRequiredService<ShadowSignalLog>(),
         services.GetRequiredService<IHeldPositionMarker>(),
         services.GetService<AlpacaCryptoOrderBookClient>(),
+        // The fitted variance models, for position sizing. They were adopted per instrument on
+        // every cycle and read by nothing that sized anything.
+        services.GetRequiredService<IFittedModelSource>(),
         services.GetRequiredService<LatencyRecorder>(),
         services.GetRequiredService<ILogger<AutonomousPaperTradingService>>());
 }

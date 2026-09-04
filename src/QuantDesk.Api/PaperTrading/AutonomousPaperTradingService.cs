@@ -1,4 +1,5 @@
 using QuantDesk.Domain.Risk;
+using QuantDesk.Runtime.Experts;
 using System.Diagnostics;
 using QuantDesk.Alpaca.Capabilities;
 using QuantDesk.Domain.Capabilities;
@@ -54,10 +55,63 @@ public sealed class AutonomousPaperTradingService(
     ShadowSignalLog shadow,
     IHeldPositionMarker heldMarker,
     AlpacaCryptoOrderBookClient? orderBooks,
+    IFittedModelSource? fittedModels,
     LatencyRecorder? latency,
     ILogger<AutonomousPaperTradingService> logger) : BackgroundService
 {
     private static readonly TimeSpan PositionMonitorInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The volatility each position is meant to carry over its holding period, as a fraction.
+    ///
+    /// One percent over the hold. Chosen so the defined maximum loss and the expected move are on
+    /// speaking terms: a $200 position at 1% expects to move about $2 over the hold against a $10
+    /// stop, which is roughly five expected moves of room. A stop tighter than the instrument's own
+    /// noise exits on nothing, which is what a flat notional produced on the more volatile pairs.
+    /// </summary>
+    private const double TargetPositionVolatility = 0.01d;
+
+    /// <summary>
+    /// What this instrument is forecast to do over the holding period, from its own fitted model.
+    ///
+    /// The fitted variance models were adopted per instrument and read by nothing that sized
+    /// anything -- verified, loaded, and inert. This is the consumer.
+    ///
+    /// Falls back to realised variance over the same window when no model covers this symbol, which
+    /// is the honest state for an instrument whose fit was refused -- SPY and DIA both failed the
+    /// GARCH persistence gate -- rather than a reason to stop sizing.
+    /// </summary>
+    private double ForecastVolatility(string symbol, DirectionalMarketEvidence evidence)
+    {
+        int bars = (int)Math.Max(
+            options.HoldDuration.TotalMinutes / RealizedVolatilityExpert.BarDurationMinutes, 1);
+
+        double shortRun = RealisedVariance(evidence.Closes, RealizedVolatilityExpert.ShortBars);
+        double medium = RealisedVariance(evidence.Closes, RealizedVolatilityExpert.MediumBars);
+        double longRun = RealisedVariance(evidence.Closes, RealizedVolatilityExpert.LongBars);
+
+        double perBar = fittedModels?
+            .Har(symbol, RealizedVolatilityExpert.BarDurationMinutes)
+            .Predict(shortRun, medium, longRun) ?? medium;
+
+        return VolatilityScaledSizing.VolatilityOver(perBar, bars);
+    }
+
+    /// <summary>Mean squared log return over the last <paramref name="bars"/> closes.</summary>
+    private static double RealisedVariance(IReadOnlyList<decimal> closes, int bars)
+    {
+        if (closes is null || closes.Count < bars + 1) return double.NaN;
+
+        double total = 0d;
+        for (int i = closes.Count - bars; i < closes.Count; i++)
+        {
+            if (closes[i] <= 0m || closes[i - 1] <= 0m) return double.NaN;
+            double step = Math.Log((double)(closes[i] / closes[i - 1]));
+            total += step * step;
+        }
+
+        return total / bars;
+    }
 
     /// <summary>Expiry window for an options expression of a short-horizon directional view.</summary>
     private const int MinimumOptionDaysToExpiry = 7;
@@ -442,8 +496,19 @@ public sealed class AutonomousPaperTradingService(
         PositionOwnership? ownership,
         CancellationToken cancellationToken)
     {
-        decimal quantity = decimal.Round(
-            options.OrderNotional / evidence.Ask, 8, MidpointRounding.ToZero);
+        // Sized by how volatile this instrument is expected to be, not by a flat notional.
+        //
+        // w = (sigma_target / sigma_hat) * s, from the handbook's formula library. Until this line
+        // every order was the same notional whether it was BTC or DIA, so identical-looking
+        // positions carried quite different risk, and the same defined maximum loss sat much closer
+        // to the noise in one than in the other.
+        decimal notional = VolatilityScaledSizing.NotionalFor(
+            options.OrderNotional,
+            TargetPositionVolatility,
+            ForecastVolatility(symbol, evidence),
+            options.OrderNotional * (decimal)VolatilityScaledSizing.MaximumScale);
+
+        decimal quantity = decimal.Round(notional / evidence.Ask, 8, MidpointRounding.ToZero);
         if (quantity <= 0)
         {
             // Rounding to zero means the notional cannot buy a tradable unit at this price.
