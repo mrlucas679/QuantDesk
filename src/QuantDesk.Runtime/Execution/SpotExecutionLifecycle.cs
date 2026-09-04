@@ -215,6 +215,27 @@ public sealed class SpotExecutionLifecycle(
         return await AdvanceAsync(executionId, cancellationToken);
     }
 
+    /// <summary>
+    /// The time in force this venue will accept for this order.
+    ///
+    /// Immediate-or-cancel everywhere except a fractional equity order, which Alpaca rejects
+    /// outright: "fractional orders must be DAY orders" (42210000). The lane sent IOC for
+    /// everything, so the first equity order it ever produced was refused by the venue after
+    /// passing every internal gate.
+    ///
+    /// Day rather than IOC costs something real and worth stating: an unfilled day order rests
+    /// rather than cancelling, so the entry fence's guarantee -- that a decision is not acted on
+    /// after its price has run away -- ends at submission for these. The managed exit still bounds
+    /// the hold, and the reservation still bounds the size; what is lost is the immediacy, and only
+    /// on the orders the venue will not take any other way.
+    ///
+    /// Crypto is unaffected: it is fractional by nature and accepts IOC.
+    /// </summary>
+    private static ExecutionTimeInForce TimeInForceFor(SpotExecutionRecord record) =>
+        record.AssetClass is TradedAssetClass.UsEquity && record.Quantity != decimal.Truncate(record.Quantity)
+            ? ExecutionTimeInForce.Day
+            : ExecutionTimeInForce.Ioc;
+
     /// <summary>Resumes every nonterminal execution. Called on startup and on a timer.</summary>
     public async Task RecoverAllAsync(CancellationToken cancellationToken)
     {
@@ -266,7 +287,7 @@ public sealed class SpotExecutionLifecycle(
             claimed.Direction is SignalDirection.Short ? OrderSide.Sell : OrderSide.Buy,
             PositionIntent.Open,
             claimed.EntryLimitPrice is > 0 ? ExecutionOrderType.Limit : ExecutionOrderType.Market,
-            ExecutionTimeInForce.Ioc,
+            TimeInForceFor(claimed),
             claimed.Quantity,
             claimed.EntryLimitPrice,
             clock.MonotonicTimestamp,
@@ -662,7 +683,7 @@ public sealed class SpotExecutionLifecycle(
             claimed.Direction is SignalDirection.Short ? OrderSide.Buy : OrderSide.Sell,
             PositionIntent.Close,
             claimed.ExitLimitPrice is > 0 ? ExecutionOrderType.Limit : ExecutionOrderType.Market,
-            ExecutionTimeInForce.Ioc,
+            TimeInForceFor(claimed),
             sellable,
             claimed.ExitLimitPrice,
             clock.MonotonicTimestamp,

@@ -68,6 +68,15 @@ public sealed record SpotExecutionRecord(
     /// </summary>
     public SignalDirection Direction { get; init; } = SignalDirection.Long;
 
+    /// <summary>
+    /// The book this execution trades on, derived from its symbol.
+    ///
+    /// Needed at submission because the two venues accept different orders: Alpaca refuses a
+    /// fractional equity order that is not DAY, and refuses a fractional equity short outright.
+    /// Crypto has neither restriction.
+    /// </summary>
+    public TradedAssetClass AssetClass => SymbolAssetClass.Of(Symbol);
+
     public decimal DefinedMaximumLoss { get; init; }
 
     /// <summary>

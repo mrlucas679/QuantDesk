@@ -521,6 +521,29 @@ public sealed class AutonomousPaperTradingService(
             options.OrderNotional * (decimal)VolatilityScaledSizing.MaximumScale);
 
         decimal quantity = decimal.Round(notional / evidence.Ask, 8, MidpointRounding.ToZero);
+
+        // A short equity position has to be whole shares. Alpaca does not lend fractions, and an
+        // order for 0.26 SPY short is refused at the venue -- so rounding down here is what turns a
+        // rejection into either a valid order or an honest abstention, rather than a surprise from
+        // the broker after the reservation is already taken.
+        if (candidate.Direction is SignalDirection.Short &&
+            SymbolAssetClass.Of(symbol) is TradedAssetClass.UsEquity)
+        {
+            quantity = decimal.Truncate(quantity);
+            if (quantity <= 0)
+            {
+                // One share costs more than this position is allowed to be. That is a sizing
+                // decision meeting a venue rule, not a market judgement, and it says so.
+                state.UpdateSymbol(
+                    symbol, "abstained", symbol, reason: "ShortBelowOneShare");
+                logger.LogInformation(
+                    "Short on {Symbol} refused: {Notional:0.00} of notional cannot buy one share " +
+                    "at {Ask:0.00}, and a fractional short is not borrowable.",
+                    symbol, notional, evidence.Ask);
+                return;
+            }
+        }
+
         if (quantity <= 0)
         {
             // Rounding to zero means the notional cannot buy a tradable unit at this price.
