@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Market;
 using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -161,6 +162,30 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
             volumes.Add(volume);
         }
 
+        // Drop the bar that has not finished forming.
+        //
+        // The venue returns the in-progress bar alongside the completed ones, and everything here
+        // used it: the newest close was not a close, the newest high and low had not finished
+        // moving, and the newest volume was whatever fraction of the bar had traded so far. Because
+        // the lane re-evaluates every few seconds, the same candle produced a different answer on
+        // each pass, so a rule could fire, stop firing and fire again inside one bar -- and the pass
+        // that happened to catch the extreme is the one that opened a position.
+        //
+        // Volume rules suffered most: comparing a part-formed bar against completed ones makes
+        // every bar look quiet early and expand through its own life, which is a signal generated
+        // by the clock rather than by the market.
+        int closed = ClosedBars.CompletedCount(timestamps, BarDuration, DateTimeOffset.UtcNow);
+        if (closed < timestamps.Count)
+        {
+            // Truncated together. These series are read by index, so trimming one and not the
+            // others is worse than not trimming at all.
+            timestamps.RemoveRange(closed, timestamps.Count - closed);
+            closes.RemoveRange(closed, closes.Count - closed);
+            if (highs.Count > closed) highs.RemoveRange(closed, highs.Count - closed);
+            if (lows.Count > closed) lows.RemoveRange(closed, lows.Count - closed);
+            if (volumes.Count > closed) volumes.RemoveRange(closed, volumes.Count - closed);
+        }
+
         if (!complete)
         {
             highs.Clear();
@@ -176,6 +201,9 @@ public sealed class AlpacaLatestCryptoQuoteClient(HttpClient httpClient, AlpacaO
             Timestamps = Tail(timestamps),
         };
     }
+
+    /// <summary>The bar this client requests, which decides when one has finished.</summary>
+    private static readonly TimeSpan BarDuration = TimeSpan.FromMinutes(5);
 
     private static IReadOnlyList<T> Tail<T>(List<T> values) =>
         values.Count <= RetainedBars ? values : values[^RetainedBars..];

@@ -1,3 +1,4 @@
+using QuantDesk.Domain.Market;
 using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -128,6 +129,20 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
             volumes.Add(volume);
         }
 
+        // Drop the bar that has not finished forming. See AlpacaLatestCryptoQuoteClient for the
+        // full account: the venue returns the in-progress bar, everything here used it, and because
+        // the lane re-evaluates every few seconds the same candle produced a different answer on
+        // each pass -- so a rule could fire, stop firing and fire again inside one bar.
+        int closed = ClosedBars.CompletedCount(timestamps, BarDuration, DateTimeOffset.UtcNow);
+        if (closed < timestamps.Count)
+        {
+            timestamps.RemoveRange(closed, timestamps.Count - closed);
+            closes.RemoveRange(closed, closes.Count - closed);
+            if (highs.Count > closed) highs.RemoveRange(closed, highs.Count - closed);
+            if (lows.Count > closed) lows.RemoveRange(closed, lows.Count - closed);
+            if (volumes.Count > closed) volumes.RemoveRange(closed, volumes.Count - closed);
+        }
+
         if (!complete)
         {
             highs.Clear();
@@ -143,6 +158,9 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
             Timestamps = Tail(timestamps),
         };
     }
+
+    /// <summary>The bar this client requests, which decides when one has finished.</summary>
+    private static readonly TimeSpan BarDuration = TimeSpan.FromMinutes(5);
 
     private static IReadOnlyList<T> Tail<T>(List<T> values) =>
         values.Count <= RetainedBars ? values : values[^RetainedBars..];
