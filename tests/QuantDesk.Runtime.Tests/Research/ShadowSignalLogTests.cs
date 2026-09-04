@@ -134,7 +134,7 @@ public sealed class ShadowSignalLogTests : IDisposable
     {
         ShadowSignalLog log = Log();
         for (int i = 0; i < 12; i++) Record(log, "a.trend.v1", i, exit: 101m);
-        for (int i = 100; i < 120; i++) log.TryRecord(Signal("a.trend.v1", "BTC/USD", 100m, minute: i));
+        for (int i = 100; i < 120; i++) log.TryRecord(Signal("a.trend.v1", "BTC/USD", 100m, index: i));
 
         Assert.Equal(12, log.Summarise()["a.trend.v1"].Signals);
     }
@@ -204,7 +204,7 @@ public sealed class ShadowSignalLogTests : IDisposable
 
         // Resolved at its own due time. Resolving a batch at one later instant is what the
         // production bug did, and a test that does it cannot detect the bug.
-        log.Resolve(Fired.AddMinutes(minute).AddHours(4).AddMinutes(1), _ => exit);
+        log.Resolve(DueFor(minute), _ => exit);
     }
 
     // ------------------------------------------------------- the two books share rule identifiers
@@ -267,23 +267,39 @@ public sealed class ShadowSignalLogTests : IDisposable
         // The batch form is precisely the production defect: it prices every signal at whatever the
         // clock says when the resolver runs, so a run recorded over forty minutes gets scored
         // against one price up to forty minutes past the earliest signal's horizon.
-        for (int minute = 0; minute < count; minute++)
+        for (int index = 0; index < count; index++)
         {
-            log.TryRecord(Signal(strategyId, symbol, 100m, minute));
-            log.Resolve(Fired.AddMinutes(minute).AddHours(4).AddMinutes(1), _ => exit);
+            log.TryRecord(Signal(strategyId, symbol, 100m, index));
+            log.Resolve(DueFor(index), _ => exit);
         }
     }
 
+    /// <summary>
+    /// One signal, fired <paramref name="index"/> holding periods after the first.
+    ///
+    /// Spaced by the full hold rather than by a minute. Signals a minute apart with four-hour holds
+    /// are overlapping views of one price path -- forty of them are one market episode, not forty
+    /// observations -- and a summary that counted them as independent produced a lower bound tight
+    /// enough to overrule a research record measured over months. These tests build runs of
+    /// evidence, so the runs have to be evidence.
+    /// </summary>
     private static ShadowSignal Signal(
-        string strategyId, string symbol, decimal entry, int minute = 0) =>
+        string strategyId, string symbol, decimal entry, int index = 0) =>
         new(
-            SignalId: $"{strategyId}|{symbol}|{Fired.AddMinutes(minute):yyyyMMddTHHmm}",
+            SignalId: $"{strategyId}|{symbol}|{FiredAt(index):yyyyMMddTHHmm}",
             Symbol: symbol,
             StrategyId: strategyId,
-            FiredAt: Fired.AddMinutes(minute),
+            FiredAt: FiredAt(index),
             EntryReferencePrice: entry,
-            ResolveAt: Fired.AddMinutes(minute).AddHours(4),
+            ResolveAt: FiredAt(index).AddHours(4),
             VenueRoundTripBps: 60d);
+
+    /// <summary>When the nth independent signal fires: one full holding period apart.</summary>
+    private static DateTimeOffset FiredAt(int index) => Fired.AddHours(4 * index);
+
+    /// <summary>A minute past the nth signal's deadline, inside the resolver's tolerance.</summary>
+    private static DateTimeOffset DueFor(int index) =>
+        FiredAt(index).AddHours(4).AddMinutes(1);
 
     private ShadowSignalLog Log() => new(_path);
 

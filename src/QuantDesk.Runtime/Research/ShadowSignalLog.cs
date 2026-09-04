@@ -342,7 +342,7 @@ public sealed class ShadowSignalLog(string path)
     public IReadOnlyDictionary<string, ShadowSummary> Summarise(
         TradedAssetClass? assetClass, int minimumSignals = 12)
     {
-        Dictionary<string, List<double>> byStrategy = new(StringComparer.Ordinal);
+        Dictionary<string, List<ShadowSignal>> byStrategy = new(StringComparer.Ordinal);
         foreach (ShadowSignal signal in ListAll())
         {
             // Scored under the current resolution rule, and only that. A figure produced by the
@@ -351,18 +351,30 @@ public sealed class ShadowSignalLog(string path)
             if (signal.Abandoned || signal.ResolutionBasis != CurrentBasis) continue;
             if (signal.NetBps is not { } net) continue;
             if (assetClass is { } book && signal.AssetClass != book) continue;
-            if (!byStrategy.TryGetValue(signal.StrategyId, out List<double>? nets))
+            _ = net;
+            if (!byStrategy.TryGetValue(signal.StrategyId, out List<ShadowSignal>? scored))
             {
-                nets = [];
-                byStrategy[signal.StrategyId] = nets;
+                scored = [];
+                byStrategy[signal.StrategyId] = scored;
             }
 
-            nets.Add(net);
+            scored.Add(signal);
         }
 
         Dictionary<string, ShadowSummary> summaries = new(StringComparer.Ordinal);
-        foreach ((string strategyId, List<double> nets) in byStrategy)
+        foreach ((string strategyId, List<ShadowSignal> scored) in byStrategy)
         {
+            // Independent episodes, not signals.
+            //
+            // A rule fires on nearly every bar, so forty-three signals with four-hour holds are
+            // forty-three overlapping views of one afternoon -- one market episode, not
+            // forty-three observations. Averaging them is fine; dividing by the square root of
+            // forty-three is not, and that is what made a lower bound look tight enough to
+            // overrule a research record measured over months.
+            //
+            // The forecast scorer has required independent episodes since it was written. Shadow
+            // counted raw signals, and the two disagreed about what evidence means.
+            List<double> nets = IndependentNets(scored);
             if (nets.Count < minimumSignals) continue;
 
             double mean = 0d;
@@ -380,6 +392,41 @@ public sealed class ShadowSignalLog(string path)
         }
 
         return summaries;
+    }
+
+    /// <summary>
+    /// One observation per non-overlapping holding period, per instrument.
+    ///
+    /// Two signals on the same symbol whose holds overlap saw the same price path and cannot both
+    /// be evidence about it. Keeping the earlier and skipping everything inside its window is the
+    /// rule the research scan already applies when it counts non-overlapping returns, so a shadow
+    /// figure and a scan figure now mean the same thing and can be read against each other.
+    ///
+    /// Per instrument, because overlap is a property of a price path rather than of a clock. Two
+    /// signals firing at the same instant on BTC and on SPY are two observations; they are
+    /// correlated, and correlation between instruments is a separate problem the correlated-exposure
+    /// gate handles. Treating them as one would discard most of a multi-symbol book's evidence.
+    /// </summary>
+    private static List<double> IndependentNets(List<ShadowSignal> scored)
+    {
+        List<double> nets = [];
+        Dictionary<string, DateTimeOffset> freeAt = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (ShadowSignal signal in scored.OrderBy(entry => entry.FiredAt))
+        {
+            if (freeAt.TryGetValue(signal.Symbol, out DateTimeOffset busyUntil) &&
+                signal.FiredAt < busyUntil)
+            {
+                continue;
+            }
+
+            if (signal.NetBps is not { } net) continue;
+
+            nets.Add(net);
+            freeAt[signal.Symbol] = signal.ResolveAt;
+        }
+
+        return nets;
     }
 
     private Dictionary<string, ShadowSignal> Load()
