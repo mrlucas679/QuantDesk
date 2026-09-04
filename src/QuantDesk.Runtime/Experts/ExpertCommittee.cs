@@ -43,7 +43,27 @@ public sealed class ExpertCommittee(double minimumAgreementScore, double minimum
         }
         weightedReturn /= totalWeight;
         agreement /= totalWeight;
-        bool actionable = agreement >= minimumAgreementScore && weightedReturn >= minimumExpectedReturnBps;
+
+        // Magnitude against the floor, not the signed return.
+        //
+        // This read `weightedReturn >= minimumExpectedReturnBps`, so a bearish forecast could never
+        // be actionable however strong it was: a committee expecting -51 bps failed a +1 bps floor
+        // by construction and was reported as disagreement, which is not what happened -- the
+        // experts agreed, emphatically, that the price was going down.
+        //
+        // It was the last long-only assumption in the decision path, and the most expensive kind:
+        // the rules learned to say Short, execution learned to sell, the compiler learned to carry
+        // direction, and every one of those shorts still died here on a comparison. On 2026-09-04
+        // it refused three equity rules firing short on SPY, QQQ and IWM with a measured record
+        // behind them.
+        //
+        // The floor asks "is the expected move big enough to be worth a round trip", and that
+        // question is about size. Direction is carried by the sign and read downstream, where the
+        // compiler turns a negative expected return into a short and prices its gross P&L on the
+        // magnitude. Mechanism conflict is already refused above, so a near-zero average produced by
+        // experts pulling opposite ways cannot reach this line and be rescued by an absolute value.
+        bool actionable = agreement >= minimumAgreementScore
+            && Math.Abs(weightedReturn) >= minimumExpectedReturnBps;
         return new CommitteeDecision(instrumentSlot, weightedReturn, agreement, actionable,
             actionable ? "consensus" : "committee_disagreement", supporting)
         {
