@@ -415,17 +415,21 @@ builder.Services.AddSingleton<IHoldInterrupt>(services => new CompositeHoldInter
     // implemented it; no live position ever consulted either, so a stood-down thesis ran out its
     // timer regardless. On 2026-09-02 every rule in both books became a known loser at 16:22Z
     // while a position opened at 11:36Z under one of them was still held.
+    // What may be traded for a symbol, resolved the same way everywhere.
+    //
+    // Three call sites asked this question and two of them asked it differently: one omitted the
+    // lane's bar duration, so it read the empty five-minute equity book and reported every
+    // thirty-minute rule as stood down, and the same one pooled both books' shadow evidence, which
+    // is the defect its own sibling ten lines away carries a comment about. A reservation is
+    // permission to act on a decision, and a fence that disagrees with the pipeline about what is
+    // tradable refuses decisions the pipeline just made.
     new ThesisInvalidationHoldInterrupt(symbol =>
         services.GetRequiredService<OpportunityRouter>()
                 .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
             // Per book, for the reason the entry fence is per book: the identifiers are shared, so
             // a pooled summary decides whether an equity thesis is still live using crypto
             // evidence. Here that would exit a sound position, or hold an invalidated one.
-            ? [.. SignalStrategies
-                .Tradable(
-                    route.AssetClass,
-                    services.GetRequiredService<ShadowSignalLog>().Summarise(route.AssetClass))
-                .Select(strategy => strategy.Id)]
+            ? TradableIds(services, route.AssetClass)
             : []),
     // The rule that had no input. ExitOnRegimeChange has been set on every candidate since the
     // compiler was written and ExitEngine has implemented it throughout; the Regime family was
@@ -445,9 +449,7 @@ builder.Services.AddSingleton(services => new SpotExecutionLifecycle(
     // not permission to outlive it: a strategy stood down while the entry waited must not submit.
     symbol => services.GetRequiredService<OpportunityRouter>()
             .TryRoute(symbol, out OpportunityRoute? route, out _) && route is not null
-        ? [.. SignalStrategies
-            .Tradable(route.AssetClass, services.GetRequiredService<ShadowSignalLog>().Summarise())
-            .Select(strategy => strategy.Id)]
+        ? TradableIds(services, route.AssetClass)
         : []));
 builder.Services.AddHostedService<RealisedCostPublisherService>();
 builder.Services.AddSingleton<SpotExecutionRecoveryService>();
@@ -1062,5 +1064,23 @@ app.MapDelete("/api/paper/orders/{brokerOrderId}", async (
 });
 
 app.Run();
+
+/// <summary>
+/// The rules tradable for an asset class, on the bar that class's lane actually computes on and
+/// against that book's own shadow evidence.
+///
+/// A local function rather than three expressions, because the three had drifted: the entry fence
+/// asked without a bar duration and with pooled evidence, so it read the empty five-minute equity
+/// book and stood down every thirty-minute rule the pipeline had just approved.
+/// </summary>
+static string[] TradableIds(IServiceProvider services, TradedAssetClass assetClass) =>
+[
+    .. SignalStrategies
+        .Tradable(
+            assetClass,
+            LaneBars.For(assetClass),
+            services.GetRequiredService<ShadowSignalLog>().Summarise(assetClass))
+        .Select(strategy => strategy.Id),
+];
 
 public partial class Program;
