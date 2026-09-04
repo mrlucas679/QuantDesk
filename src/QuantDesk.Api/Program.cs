@@ -273,8 +273,14 @@ static AutonomousPaperTradingService BuildLane(
         // promoted an equity rule on evidence gathered almost entirely from crypto -- which trades
         // every hour across seven symbols against the equity book's six and a half across four --
         // while holding it to costs an order of magnitude apart.
+        // The bar each lane actually computes on. Crypto reads five-minute bars and equities read
+        // thirty, so each book is asked for the figures measured on its own clock -- serving the
+        // five-minute equity numbers to a thirty-minute lane would spend a measurement earned under
+        // one sampling interval under another.
         assetClass => SignalStrategies.Tradable(
-            assetClass, services.GetRequiredService<ShadowSignalLog>().Summarise(assetClass)),
+            assetClass,
+            LaneBars.For(assetClass),
+            services.GetRequiredService<ShadowSignalLog>().Summarise(assetClass)),
         services.GetRequiredService<ShadowSignalLog>(),
         options.HoldDuration,
         services.GetRequiredService<IndicatorRegimeSource>(),

@@ -89,9 +89,14 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
     private async Task<DirectionalMarketEvidence> GetRecentBarsAsync(
         string symbol, decimal bid, decimal ask, CancellationToken cancellationToken)
     {
-        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(-9).ToString("O"));
+        // Ninety days, because the window is counted in bars and the bar got six times longer.
+        // A regular session holds thirteen thirty-minute bars, so the 288-bar indicator window needs
+        // about twenty-two trading days -- nine calendar days would deliver roughly 117 bars and
+        // every long-window indicator would read NaN forever, which looks exactly like a quiet
+        // market.
+        string start = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(-90).ToString("O"));
         string requestUri = options.DataUri("v2/stocks/bars") +
-            $"?symbols={Uri.EscapeDataString(symbol)}&timeframe=5Min&start={start}" +
+            $"?symbols={Uri.EscapeDataString(symbol)}&timeframe={Timeframe}&start={start}" +
             $"&limit={BarLimit}&sort=asc&feed=iex&adjustment=all";
         using var request = AuthenticatedRequest(requestUri);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
@@ -159,8 +164,29 @@ public sealed class AlpacaLatestEquityQuoteClient(HttpClient httpClient, AlpacaO
         };
     }
 
-    /// <summary>The bar this client requests, which decides when one has finished.</summary>
-    private static readonly TimeSpan BarDuration = TimeSpan.FromMinutes(5);
+    /// <summary>
+    /// The bar this client requests, and therefore the clock the equity lane thinks on.
+    ///
+    /// Thirty minutes, and the change is evidence-led rather than a preference. Every equity figure
+    /// in the rule registry was measured on five-minute bars and every one is negative, so the
+    /// equity book has been empty since it was written and the lane has never opened an equity
+    /// position. Rescanned on thirty-minute bars, three families clear their cost at the 95% lower
+    /// bound.
+    ///
+    /// It also fixes something nothing else could. Crypto was the only thing trading, crypto has no
+    /// borrow at this venue, and so every position this system has ever taken has been long --
+    /// 262 fills, not one of them a short. Equities can be shorted; giving them a clock on which
+    /// they actually signal is what makes the short path reachable at all.
+    /// </summary>
+    private const string Timeframe = "30Min";
+
+    static AlpacaLatestEquityQuoteClient() =>
+        System.Diagnostics.Debug.Assert(
+            Timeframe == $"{LaneBars.UsEquityMinutes}Min",
+            "the equity client's timeframe and LaneBars must agree");
+
+    /// <inheritdoc cref="Timeframe"/>
+    private static readonly TimeSpan BarDuration = TimeSpan.FromMinutes(30);
 
     private static IReadOnlyList<T> Tail<T>(List<T> values) =>
         values.Count <= RetainedBars ? values : values[^RetainedBars..];

@@ -71,6 +71,9 @@ public sealed class AutonomousPaperTradingService(
     /// </summary>
     private const double TargetPositionVolatility = 0.01d;
 
+    /// <summary>The bar the equity lane computes on, from the one place that states it.</summary>
+    private const int EquityBarDurationMinutes = LaneBars.UsEquityMinutes;
+
     /// <summary>
     /// What this instrument is forecast to do over the holding period, from its own fitted model.
     ///
@@ -81,17 +84,26 @@ public sealed class AutonomousPaperTradingService(
     /// is the honest state for an instrument whose fit was refused -- SPY and DIA both failed the
     /// GARCH persistence gate -- rather than a reason to stop sizing.
     /// </summary>
-    private double ForecastVolatility(string symbol, DirectionalMarketEvidence evidence)
+    private double ForecastVolatility(
+        string symbol, TradedAssetClass assetClass, DirectionalMarketEvidence evidence)
     {
-        int bars = (int)Math.Max(
-            options.HoldDuration.TotalMinutes / RealizedVolatilityExpert.BarDurationMinutes, 1);
+        // The lane's own bar, not a constant. Equities compute on thirty-minute bars and crypto on
+        // five, so a variance per bar means two different things depending on which lane asked --
+        // and the holding period has to be counted in the same bars the variance was measured in.
+        int barMinutes = LaneBars.For(assetClass);
+        int bars = (int)Math.Max(options.HoldDuration.TotalMinutes / barMinutes, 1);
 
         double shortRun = RealisedVariance(evidence.Closes, RealizedVolatilityExpert.ShortBars);
         double medium = RealisedVariance(evidence.Closes, RealizedVolatilityExpert.MediumBars);
         double longRun = RealisedVariance(evidence.Closes, RealizedVolatilityExpert.LongBars);
 
+        // The support domain refuses a model fitted on another bar, so an equity lane on
+        // thirty-minute bars gets no fitted model and falls back to realised variance computed from
+        // its own bars. That is the correct outcome rather than a gap: the fitted artifacts were
+        // built on five-minute series, and feeding them thirty-minute variance would be the units
+        // error the domain exists to prevent.
         double perBar = fittedModels?
-            .Har(symbol, RealizedVolatilityExpert.BarDurationMinutes)
+            .Har(symbol, barMinutes)
             .Predict(shortRun, medium, longRun) ?? medium;
 
         return VolatilityScaledSizing.VolatilityOver(perBar, bars);
@@ -505,7 +517,7 @@ public sealed class AutonomousPaperTradingService(
         decimal notional = VolatilityScaledSizing.NotionalFor(
             options.OrderNotional,
             TargetPositionVolatility,
-            ForecastVolatility(symbol, evidence),
+            ForecastVolatility(symbol, SymbolAssetClass.Of(symbol), evidence),
             options.OrderNotional * (decimal)VolatilityScaledSizing.MaximumScale);
 
         decimal quantity = decimal.Round(notional / evidence.Ask, 8, MidpointRounding.ToZero);

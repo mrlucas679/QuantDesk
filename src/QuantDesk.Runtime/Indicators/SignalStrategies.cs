@@ -106,6 +106,23 @@ public sealed record SignalStrategy(
     public IReadOnlyList<string> RequiredSeries { get; init; } = [];
 
     /// <summary>
+    /// The bar these research figures were measured on.
+    ///
+    /// Part of the rule's identity, for the same reason the bar is part of a fitted model's support
+    /// domain: the mechanism is the same at five minutes and at thirty, and the *measured edge* is
+    /// not. Every figure in both books was measured on five-minute bars, and applying one of them
+    /// to a thirty-minute series would be the defect Phase 2 closed for models -- a number earned
+    /// under one sampling interval spent under another -- arriving through the rule registry
+    /// instead.
+    ///
+    /// It matters here in a way that is not theoretical. The same rule set scanned on thirty-minute
+    /// bars produced three families whose lower bound clears zero, where the five-minute scan
+    /// produced none. Those are different measurements of the same idea, and only one of them
+    /// describes what a thirty-minute lane would earn.
+    /// </summary>
+    public int BarDurationMinutes { get; init; } = 5;
+
+    /// <summary>
     /// The round-trip cost the research figures were measured against, in basis points.
     ///
     /// Recorded so that a net figure can be turned back into a gross one without a magic number.
@@ -245,6 +262,41 @@ public static class SignalStrategies
         Volume("volume.surge-breakout.v1", -3.6, -17.5, VolumeSurgeBreakout, ResearchCostAssumptions.Equity)
             with { Qualification = StrategyQualification.Stale, RequiredSeries = ["VolumeZ48"] },
         Trend("trend.ema-cross-12-48.v1", -11.8, -16.8, EmaCross, ResearchCostAssumptions.Equity),
+    ];
+
+    /// <summary>
+    /// The equity set measured on thirty-minute bars, which is a different measurement of the same
+    /// mechanisms rather than the same numbers at a different cadence.
+    ///
+    /// Why this book exists
+    /// --------------------
+    /// Every figure above was measured on five-minute bars and every one is negative, so the equity
+    /// book is empty of tradable rules and the lane has never opened an equity position. That has a
+    /// consequence nobody set out to choose: crypto is the only thing that trades, crypto has no
+    /// borrow at this venue, and therefore every position this system has ever taken is long. The
+    /// short path is wired end to end and has never once been reachable.
+    ///
+    /// Rescanned on thirty-minute bars over 360 days, three families are positive in both halves at
+    /// the 95% lower bound -- the first rules this system has produced that clear that bar. The
+    /// mechanism did not change; the sampling interval did, and a rule on five-minute bars pays the
+    /// same fixed toll six times as often as the same rule on thirty.
+    ///
+    /// What is not being claimed
+    /// -------------------------
+    /// The deflated Sharpe is 0.000 across 65 trials, and these samples are 64 to 92 non-overlapping
+    /// observations. That is enough to stop refusing and start measuring live; it is not enough to
+    /// call an edge established, and the promotion ladder still applies.
+    /// </summary>
+    public static IReadOnlyList<SignalStrategy> ForEquityHalfHour { get; } =
+    [
+        Reversion("reversion.vwap.v1", 50.7, 6.8, VwapReversion, ResearchCostAssumptions.Equity)
+            with { RequiredSeries = ["Vwap48"], BarDurationMinutes = 30 },
+        Trend("trend.momentum-dual-horizon.v1", 43.4, 1.2, MomentumDualHorizon,
+                ResearchCostAssumptions.Equity)
+            with { BarDurationMinutes = 30 },
+        Reversion("reversion.bollinger-lower.v1", 34.0, 0.4, BollingerLowerTouch,
+                ResearchCostAssumptions.Equity)
+            with { BarDurationMinutes = 30 },
     ];
 
     /// <summary>
@@ -478,12 +530,22 @@ public static class SignalStrategies
     /// </remarks>
     public static IReadOnlyList<SignalStrategy> Tradable(
         TradedAssetClass assetClass,
+        IReadOnlyDictionary<string, ShadowSummary>? shadow) =>
+        Tradable(assetClass, LaneBarDurationMinutes, shadow);
+
+    /// <inheritdoc cref="Tradable(TradedAssetClass, IReadOnlyDictionary{string, ShadowSummary})"/>
+    /// <param name="assetClass">The lane's instrument class.</param>
+    /// <param name="barDurationMinutes">The bar the lane computes on.</param>
+    /// <param name="shadow">Live shadow evidence for this book, or null when unknown.</param>
+    public static IReadOnlyList<SignalStrategy> Tradable(
+        TradedAssetClass assetClass,
+        int barDurationMinutes,
         IReadOnlyDictionary<string, ShadowSummary>? shadow)
     {
         double venueCost = VenueRoundTripCosts.For(assetClass);
         List<SignalStrategy> tradable = [];
 
-        foreach (SignalStrategy strategy in For(assetClass))
+        foreach (SignalStrategy strategy in For(assetClass, barDurationMinutes))
         {
             // A rule whose research describes a rule the code no longer computes is not evidence
             // either way, and shadow cannot rescue it -- it would be promoting on one measurement
@@ -520,10 +582,35 @@ public static class SignalStrategies
             strategy.Id is "trend.momentum-dual-horizon.v1" or "trend.ema-cross-12-48.v1"
                 or "trend.macd-histogram-flip.v1")];
 
-    public static IReadOnlyList<SignalStrategy> For(TradedAssetClass assetClass)
+    public static IReadOnlyList<SignalStrategy> For(TradedAssetClass assetClass) =>
+        For(assetClass, LaneBarDurationMinutes);
+
+    /// <summary>
+    /// The bar the live lane computes on, which decides which measurements apply to it.
+    ///
+    /// Configurable because it is a decision, not a constant. It had been five minutes everywhere
+    /// since the beginning, never chosen -- only inherited -- and the rescan says that inheritance
+    /// cost the equity book every rule it had.
+    /// </summary>
+    public static int LaneBarDurationMinutes { get; set; } = 5;
+
+    /// <inheritdoc cref="For(TradedAssetClass)"/>
+    /// <param name="assetClass">The lane's instrument class.</param>
+    /// <param name="barDurationMinutes">The bar the lane computes on.</param>
+    public static IReadOnlyList<SignalStrategy> For(
+        TradedAssetClass assetClass, int barDurationMinutes)
     {
-        IReadOnlyList<SignalStrategy> book =
-            assetClass is TradedAssetClass.SpotCrypto ? ForCrypto : ForEquity;
+        // The book whose figures were measured on the bar being traded. A rule's edge is a property
+        // of the mechanism *and* the sampling interval, so serving the five-minute figures to a
+        // thirty-minute lane would be spending a number earned under one regime under another --
+        // the same defect the model support domain exists to prevent, arriving through the rule
+        // registry instead.
+        IReadOnlyList<SignalStrategy> book = (assetClass, barDurationMinutes) switch
+        {
+            (TradedAssetClass.SpotCrypto, _) => ForCrypto,
+            (_, 30) => ForEquityHalfHour,
+            _ => ForEquity,
+        };
         if (Active.IsDefault) return book;
 
         // A moved threshold makes a different rule wearing the same name and the same statistics.
